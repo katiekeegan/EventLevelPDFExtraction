@@ -1,4 +1,0 @@
-  File "cl.py", line 143
-    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss_epoch:.4f}")
-                                                                      ^
-SyntaxError: invalid syntax

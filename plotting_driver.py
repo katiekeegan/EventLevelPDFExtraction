@@ -662,7 +662,7 @@ def plot_PDF_distribution_single_same_plot(
 def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='simplified_dis', device=None):
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    model_path = os.path.join(model_dir, 'final_inference_net.pth')
+    model_path = os.path.join(model_dir + '_inference', 'final_inference_net.pth')
     pointnet_model_path = os.path.join(model_dir, 'most_recent_model.pth')
     latent_path = os.path.join(model_dir, 'latent_features.h5')
 
@@ -697,11 +697,11 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
 
 
 def main():
-    problem = 'realistic_dis'  # 'simplified_dis' or 'realistic_dis'
+    problem = 'simplified_dis'  # 'simplified_dis' or 'realistic_dis'
     latent_dim = 1024
     num_samples = 100000
     num_events = 1000000
-    model_dir = f"experiments/{problem}_latent{latent_dim}_ns_{num_samples}_ne_{num_events}"'  # CHANGE per ablation
+    model_dir = f"experiments/{problem}_latent{latent_dim}_ns_{num_samples}_ne_{num_events}"  # CHANGE per ablation
     plot_dir = os.path.join(model_dir, "plots")
     os.makedirs(plot_dir, exist_ok=True)
     n_mc = 100
