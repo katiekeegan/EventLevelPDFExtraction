@@ -1,7 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
-from params_learning import LatentToParamsNN, PointNetEmbedding, EventDataset, generate_data,ConditionalRealNVP  # Adjust the import as needed
+from params_learning import LatentToParamsNN, PointNetEmbedding, EventDataset, generate_data  # Adjust the import as needed
 from simulator import *
 from models import *
 from torch.distributions import *
@@ -560,13 +560,13 @@ def load_model_and_data(model_path, pointnet_model_path, num_samples=100, num_ev
 
 # Main function to load, evaluate and plot the results
 def main():
-    model_path = 'trained_inference_net.pth'  # Path to the trained model
-    pointnet_model_path = 'pointnet_embedding_latent_dim_2048.pth'  # Path to the pretrained PointNet model
+    model_path = 'simplified_dis_latent1024_ns_1000_ne_100000_inference/final_inference_net.pth'  # Path to the trained model
+    pointnet_model_path = 'simplified_dis_latent1024_ns_1000_ne_100000/model_epoch_200.pth'  # Path to the pretrained PointNet model
     multi_log=True
     log=False
     # Load the model and data
     model, pointnet_model, dataloader, device = load_model_and_data(model_path, pointnet_model_path)
-    true_params = torch.tensor([1, 1, 1, 1])
+    true_params = torch.tensor([0.5, 0.5, 0.5, 0.5])
     # Plot loss values
     # Load and plot
     # loss_history = load_and_plot('loss_history.npy')

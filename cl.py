@@ -79,78 +79,72 @@ def contrastive_loss_fn(z, theta, temperature=0.1, sim_threshold=0.15, dissim_th
     total = (pos_loss + scale * neg_loss) / (1 + scale)
     return total
 
-def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.05, dissim_threshold=0.1):
-    """
-    z: [B, d] - normalized embeddings
-    theta: [B, d_theta] - ground-truth parameters
-    """
-    z = F.normalize(z, dim=-1)
-    theta_dists = torch.cdist(theta, theta, p=2)
-    theta_dists = theta_dists / (theta_dists.max() + 1e-8)
+def pairwise_cosine_similarity(x):
+    x = F.normalize(x, p=2, dim=1)
+    return x @ x.T  # [B, B]
 
-    B = z.size(0)
-    losses = []
 
-    for i in range(B):
-        anchor = z[i]
-        pos_mask = (theta_dists[i] < sim_threshold)
-        neg_mask = (theta_dists[i] > dissim_threshold)
+def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, dissim_threshold=0.3):
+    # Normalize embeddings
+    z = F.normalize(z, p=2, dim=1)  # [B, D]
 
-        pos_indices = pos_mask.nonzero(as_tuple=True)[0]
-        neg_indices = neg_mask.nonzero(as_tuple=True)[0]
+    # Pairwise distances in parameter space (faster than cdist)
+    theta_diff = theta[:, None, :] - theta[None, :, :]  # [B, B, D_theta]
+    theta_d = theta_diff.norm(dim=-1)  # [B, B]
 
-        if len(pos_indices) == 0 or len(neg_indices) == 0:
-            continue
+    # Positive and negative masks (excluding diagonal)
+    eye = torch.eye(theta_d.size(0), device=theta.device).bool()
+    sim = (theta_d < sim_threshold) & (~eye)
+    dissim = (theta_d > dissim_threshold) & (~eye)
 
-        # Choose hardest positive (farthest in embedding space)
-        pos_embs = z[pos_indices]
-        pos_dists = F.pairwise_distance(anchor.unsqueeze(0), pos_embs)
-        hardest_pos = pos_embs[pos_dists.argmax()]
+    dist = 1 - z @ z.T  # [B, B], cosine distances
 
-        # Choose hardest negative (closest in embedding space)
-        neg_embs = z[neg_indices]
-        neg_dists = F.pairwise_distance(anchor.unsqueeze(0), neg_embs)
-        hardest_neg = neg_embs[neg_dists.argmin()]
+    # Safe fill values depending on AMP dtype
+    fill_neg = torch.tensor(-1e3, dtype=z.dtype, device=z.device)
+    fill_pos = torch.tensor(1e3, dtype=z.dtype, device=z.device)
 
-        # Triplet loss: max(d(anchor, pos) - d(anchor, neg) + margin, 0)
-        triplet_loss = F.triplet_margin_loss(
-            anchor.unsqueeze(0),
-            hardest_pos.unsqueeze(0),
-            hardest_neg.unsqueeze(0),
-            margin=margin,
-            reduction='none'
-        )
-        losses.append(triplet_loss)
+    hardest_pos = dist.masked_fill(~sim, fill_neg)
+    easiest_neg = dist.masked_fill(~dissim, fill_pos)
 
-    if len(losses) == 0:
-        return torch.tensor(0.0, device=z.device, requires_grad=True)
+    hardest_pos_val, _ = hardest_pos.max(dim=1)
+    easiest_neg_val, _ = easiest_neg.min(dim=1)
 
-    return torch.cat(losses).mean()
+    triplet_loss = F.relu(hardest_pos_val - easiest_neg_val + margin)
+    return triplet_loss.mean()
 
-def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir):
+def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10):
     device = next(model.parameters()).device
     opt = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
-    alpha1, alpha2 = 0.01, 0.01
+    alpha1, alpha2 = 0.01, 0.01  # regularization weights
+
+    model.train()
+    torch.backends.cudnn.benchmark = True  # Enable autotuner
 
     for epoch in range(epochs):
-        model.train()
         total_loss = 0.0
+
         for theta, x_sets in dataloader:
             B, n_repeat, num_points, feat_dim = x_sets.shape
-            x_sets = x_sets.view(B * n_repeat, num_points, feat_dim)  # Flatten
-            theta = theta.repeat_interleave(n_repeat, dim=0)
 
-            theta, x_sets = theta.to(device), x_sets.to(device)
-            opt.zero_grad()
-            with torch.cuda.amp.autocast():
-                latent = model(x_sets)
+            # Efficient reshape and repeat
+            x_sets = x_sets.reshape(B * n_repeat, num_points, feat_dim).to(device)
+            theta = theta.repeat_interleave(n_repeat, dim=0).to(device)
+
+            opt.zero_grad(set_to_none=True)
+
+            with torch.cuda.amp.autocast(dtype=torch.float16):  # try float16 for better perf on A100s
+                latent = model(x_sets)  # [B * n_repeat, D]
                 contrastive = triplet_theta_contrastive_loss(latent, theta)
 
+                # Regularization: L2 norm of embeddings
                 l2_reg = latent.norm(p=2, dim=1).mean()
-                z = latent - latent.mean(dim=0)
-                cov = (z.T @ z) / (z.size(0) - 1)
-                decorrelation = ((cov * (1 - torch.eye(cov.size(0), device=cov.device))) ** 2).sum()
+
+                # Covariance decorrelation (fast)
+                z = latent - latent.mean(dim=0, keepdim=True)
+                cov = z.T @ z / (z.size(0) - 1)
+                off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
+                decorrelation = (off_diag ** 2).sum()
 
                 loss = contrastive + alpha1 * l2_reg + alpha2 * decorrelation
 
@@ -159,11 +153,26 @@ def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir):
             scaler.update()
             total_loss += loss.item()
 
+        # Logging and checkpointing (only on rank 0)
         if rank == 0:
             if wandb_enabled:
-                wandb.log({"epoch": epoch + 1, "loss": total_loss})
-            print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
-            torch.save(model.state_dict(), os.path.join(output_dir, "most_recent_model.pth"))
+                wandb.log({
+                    "epoch": epoch + 1,
+                    "loss": loss.item(),
+                    "contrastive": contrastive.item(),
+                    "l2_reg": l2_reg.item(),
+                    "decorrelation": decorrelation.item(),
+                    "param_mse": param_accuracy,
+                })
+            print(
+                f"Epoch {epoch + 1}, "
+                f"Loss: {loss.item():.4f}, "
+                f"Contrastive: {contrastive.item():.4f}, "
+                f"L2 Reg: {l2_reg.item():.4f}, "
+                f"Decorrelation: {decorrelation.item():.4f}"
+            )
+            if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
+                torch.save(model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"))
 
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
@@ -176,6 +185,7 @@ def setup(rank, world_size):
     os.environ['MASTER_PORT'] = '12355'
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
+    torch.set_num_threads(1)
 
 
 def cleanup():
@@ -184,6 +194,8 @@ def cleanup():
 
 def main_worker(rank, world_size, args):
     setup(rank, world_size)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
     device = torch.device(f"cuda:{rank}")
 
     # Generate experiment name if not provided
@@ -211,15 +223,39 @@ def main_worker(rank, world_size, args):
         )
         input_dim = 2
 
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=4, pin_memory=True)
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        num_workers=4,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
+    )
     if not (args.problem == 'gaussian'):
         dummy_theta = torch.rand(input_dim, device=device)
         dummy_x = simulator.sample(dummy_theta, args.num_events)
         input_dim = log_feature_engineering(dummy_x).shape[-1]
 
-    model = PointNetPMA(input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True).to(device)
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = DDP(model, device_ids=[rank])
+        model = PointNetPMA(
+            input_dim=input_dim,
+            latent_dim=args.latent_dim,
+            predict_theta=True
+        ).to(device)
+
+        if torch.__version__ >= "2.0":
+            os.environ["TRITON_CACHE_DIR"] = "/pscratch/sd/k/katiekee/triton_cache"
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/pscratch/sd/k/katiekee/inductor_cache"
+            try:
+                model = torch.compile(model, mode="default", dynamic=True)
+            except Exception as e:
+                print(f"[Rank {rank}] torch.compile failed: {e}")
+
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(model, device_ids=[rank])
+
+        # Wandb safety setup
+    if rank != 0:
+        os.environ["WANDB_MODE"] = "disabled"
 
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_cl", name=args.experiment_name, config=vars(args))
@@ -230,8 +266,8 @@ def main_worker(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_samples', type=int, default=10000)
-    parser.add_argument('--num_events', type=int, default=500000)
+    parser.add_argument('--num_samples', type=int, default=1000)
+    parser.add_argument('--num_events', type=int, default=100000)
     parser.add_argument('--num_epochs', type=int, default=200)
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-4)

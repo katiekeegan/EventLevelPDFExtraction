@@ -72,3 +72,9 @@ dist/
 coverage/
 # Ignore wandb
 wandb/
+experiments/
+sbi-logs/
+*.pth
+*.png
+*.sh
+*.out

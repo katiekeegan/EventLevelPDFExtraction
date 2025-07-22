@@ -44,40 +44,40 @@ class InferenceNet(nn.Module):
         
         return params
 
-class ConditionalRealNVP(nn.Module):
-    def __init__(self, latent_dim, param_dim, hidden_dim=256, num_flows=5):
-        super().__init__()
-        self.latent_dim = latent_dim
-        self.param_dim = param_dim
+# class ConditionalRealNVP(nn.Module):
+#     def __init__(self, latent_dim, param_dim, hidden_dim=256, num_flows=5):
+#         super().__init__()
+#         self.latent_dim = latent_dim
+#         self.param_dim = param_dim
         
-        def create_transform():
-            return MaskedAffineAutoregressiveTransform(
-                features=param_dim,
-                hidden_features=hidden_dim,
-                context_features=latent_dim,  # <- this makes it conditional
-                num_blocks=2,
-                use_residual_blocks=True,
-                activation=nn.ReLU()
-            )
+#         def create_transform():
+#             return MaskedAffineAutoregressiveTransform(
+#                 features=param_dim,
+#                 hidden_features=hidden_dim,
+#                 context_features=latent_dim,  # <- this makes it conditional
+#                 num_blocks=2,
+#                 use_residual_blocks=True,
+#                 activation=nn.ReLU()
+#             )
         
-        transforms = []
-        for _ in range(num_flows):
-            transforms.append(ReversePermutation(features=param_dim))
-            transforms.append(create_transform())
+#         transforms = []
+#         for _ in range(num_flows):
+#             transforms.append(ReversePermutation(features=param_dim))
+#             transforms.append(create_transform())
         
-        transform = CompositeTransform(transforms)
-        base_distribution = StandardNormal(shape=[param_dim])
+#         transform = CompositeTransform(transforms)
+#         base_distribution = StandardNormal(shape=[param_dim])
         
-        self.flow = Flow(transform=transform, distribution=base_distribution)
+#         self.flow = Flow(transform=transform, distribution=base_distribution)
 
-    def forward(self, latent_embedding, true_params):
-        # true_params: [batch_size, param_dim]
-        # latent_embedding: [batch_size, latent_dim]
-        return self.flow.log_prob(inputs=true_params, context=latent_embedding)
+#     def forward(self, latent_embedding, true_params):
+#         # true_params: [batch_size, param_dim]
+#         # latent_embedding: [batch_size, latent_dim]
+#         return self.flow.log_prob(inputs=true_params, context=latent_embedding)
 
-    def sample(self, latent_embedding, num_samples=1):
-        # latent_embedding: [batch_size, latent_dim]
-        return self.flow.sample(num_samples=num_samples, context=latent_embedding)
+#     def sample(self, latent_embedding, num_samples=1):
+#         # latent_embedding: [batch_size, latent_dim]
+#         return self.flow.sample(num_samples=num_samples, context=latent_embedding)
 
 class HierarchicalAttentionPooling(nn.Module):
     def __init__(self, hidden_dim, chunk_size=4096):
