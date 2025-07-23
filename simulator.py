@@ -2,6 +2,29 @@ import torch
 from torch.distributions import Uniform, Distribution
 import numpy as np
 
+import sys
+import numpy as np
+import pandas as pd
+from tqdm import tqdm
+from scipy.integrate import quad,fixed_quad
+
+#--matplotlib
+import matplotlib
+from matplotlib.lines import Line2D
+matplotlib.rc('text',usetex=True)
+import pylab as py
+from matplotlib import colors
+import matplotlib.gridspec as gridspec
+
+import params as par 
+import cfg
+from alphaS  import ALPHAS
+from eweak   import EWEAK
+from pdf     import PDF
+from mellin  import MELLIN
+from idis    import THEORY
+from mceg    import MCEG
+
 class Gaussian2DSimulator:
     """
     Unimodal 2D Gaussian simulator with 1D parameter vector input.
@@ -54,6 +77,31 @@ class SimplifiedDIS:
         sigma_n = torch.nan_to_num(sigma_n, nan=0.0)
 
         return torch.cat([sigma_p.unsqueeze(0), sigma_n.unsqueeze(0)], dim=0).t()
+
+class MCEGSimulator:
+    def __init__(self, device=None):
+        self.device = device
+        # Initialize MCEG Sampler with default parameters
+        self.mellin = MELLIN(npts=8)
+        self.alphaS = ALPHAS()
+        self.eweak  = EWEAK()
+        self.pdf    = PDF(self.mellin, self.alphaS)
+        self.idis   = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
+
+    def init(self, params):
+        # Take in new parameters and update MCEG class
+        new_cpar = self.pdf.get_current_par_array()[::]
+        # Assume parameters are only corresponding to 'uv1' parameters
+        new_cpar[4:8] = params
+        self.pdf.setup(new_cpar)
+        self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
+
+    def sample(self, params, nevents=1):
+        self.init(params)  # Take in new parameters
+        # Initialize Monte Carlo Event Generator
+        mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
+        samples = torch.tensor(mceg.gen_events(nevents, verb=False)).to(self.device)
+        return samples
 
 def up(x, params):
     return (x ** params[0]) * ((1 - x) ** params[1])
