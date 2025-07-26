@@ -162,14 +162,14 @@ if __name__ == "__main__":
     ### 1. MCABC (L2) 
 
     print("Running MCABC (L2 Distance)...")
-    samples_mmd = MCABC(
+    mcabc = MCABC(
         prior=prior_dist,
-        simulator=simulator_batch_summary, # use histogram summary of cross-sections generated from simulator
-        distance=l2_distance_vectorized 
-    )(x_o_summary, num_simulations=10000, quantile=0.01) # x_o_summary is the summary vector of the observation cross-section
-    # Convert to numpy and save
+        simulator=simulator_batch_summary,
+        distance=l2_distance_vectorized  # L2 already passed here
+    )
+    samples_mmd = mcabc(x_o_summary, num_simulations=10000, quantile=0.01)
     np.savetxt("samples_mmd.txt", samples_mmd.cpu().numpy()) 
-    print("MMD Posterior median:", samples_mmd.median(0)) 
+    print("MMD Posterior median:", samples_mmd.median(0))
 
     ### 2. SNPE
     print("Running SNPE (histograms)...")

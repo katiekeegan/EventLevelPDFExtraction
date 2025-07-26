@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from scipy.integrate import quad,fixed_quad
+import os, sys
+sys.path.append(os.path.abspath("mceg4dis"))
 
 #--matplotlib
 import matplotlib
@@ -92,15 +94,16 @@ class MCEGSimulator:
         # Take in new parameters and update MCEG class
         new_cpar = self.pdf.get_current_par_array()[::]
         # Assume parameters are only corresponding to 'uv1' parameters
-        new_cpar[4:8] = params
+        new_cpar[4:8] = params.to(self.device).cpu().numpy()  # Update uv1 parameters
         self.pdf.setup(new_cpar)
         self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
     def sample(self, params, nevents=1):
+        assert nevents > 0, "Number of events must be positive"
         self.init(params)  # Take in new parameters
         # Initialize Monte Carlo Event Generator
         mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
-        samples = torch.tensor(mceg.gen_events(nevents, verb=False)).to(self.device)
+        samples = torch.tensor(mceg.gen_events(nevents, verb=True)).to(self.device)
         return samples
 
 def up(x, params):

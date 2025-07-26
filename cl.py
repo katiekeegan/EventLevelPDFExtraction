@@ -15,7 +15,7 @@ from utils import *
 
 from models import PointNetPMA
 
-from simulator import RealisticDIS, Gaussian2DSimulator
+from simulator import RealisticDIS, Gaussian2DSimulator, MCEGSimulator
 
 class SimplifiedDIS:
     def __init__(self, device=None, smear=False, smear_std=0.05):
@@ -47,37 +47,6 @@ class SimplifiedDIS:
         sigma_n = smear_noise(4 * self.down(xs_n) + self.up(xs_n))
         sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
         return torch.stack([sigma_p, sigma_n], dim=-1)
-
-def contrastive_loss_fn(z, theta, temperature=0.1, sim_threshold=0.15, dissim_threshold=0.35, margin=1.0, scale=2.0):
-    # Normalize latent set-level embeddings
-    z = F.normalize(z, dim=-1)  # [B, d]
-    
-    # Cosine similarity matrix
-    sim_matrix = torch.matmul(z, z.T)  # [B, B]
-    
-    # Compute parameter distances between theta vectors
-    theta_dists = torch.cdist(theta, theta, p=2)
-    theta_dists = theta_dists / (theta_dists.max() + 1e-8)
-
-    # Define positive/negative masks
-    pos_mask = (theta_dists < sim_threshold).float()
-    neg_mask = (theta_dists > dissim_threshold).float()
-
-    # Remove self-pairs
-    diag_mask = torch.eye(sim_matrix.size(0), device=sim_matrix.device)
-    pos_mask *= (1 - diag_mask)
-    neg_mask *= (1 - diag_mask)
-
-    # Compute distances for positive pairs (contrastive loss part 1)
-    pos_loss = (1 - sim_matrix) * pos_mask
-    pos_loss = pos_loss.sum() / (pos_mask.sum() + 1e-8)
-
-    # For negative pairs, use hinge loss with margin
-    neg_margin = F.relu(margin - (1 - sim_matrix)) * neg_mask
-    neg_loss = neg_margin.sum() / (neg_mask.sum() + 1e-8)
-
-    total = (pos_loss + scale * neg_loss) / (1 + scale)
-    return total
 
 def pairwise_cosine_similarity(x):
     x = F.normalize(x, p=2, dim=1)
@@ -216,6 +185,12 @@ def main_worker(rank, world_size, args):
         dataset = RealisticDISDataset(simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering)
         print("Dataset created!")
         input_dim = 6
+    elif args.problem == 'mceg':
+        simulator = MCEGSimulator(device=device)
+        print("Simulator constructed!")
+        dataset = RealisticDISDataset(simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering)
+        print("Dataset created!")
+        input_dim = 4
     elif args.problem == 'gaussian':
         simulator = Gaussian2DSimulator(device=device)
         dataset = Gaussian2DDataset(
@@ -232,7 +207,9 @@ def main_worker(rank, world_size, args):
         prefetch_factor=4,
     )
     if not (args.problem == 'gaussian'):
-        dummy_theta = torch.rand(input_dim, device=device)
+        dummy_theta = torch.zeros(input_dim, device=device)
+        if args.problem == 'mceg':
+            dummy_theta = torch.tensor([1.0, 1.0, -10.0, -10.0], device=device)
         dummy_x = simulator.sample(dummy_theta, args.num_events)
         input_dim = log_feature_engineering(dummy_x).shape[-1]
 
@@ -268,8 +245,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--num_samples', type=int, default=1000)
     parser.add_argument('--num_events', type=int, default=100000)
-    parser.add_argument('--num_epochs', type=int, default=200)
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--num_epochs', type=int, default=20)
+    parser.add_argument('--batch_size', type=int, default=8)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--latent_dim', type=int, default=1024)
     parser.add_argument('--problem', type=str, default='simplified_dis')

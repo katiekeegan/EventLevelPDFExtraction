@@ -212,12 +212,16 @@ def main():
     num_samples = 1000
     num_events = 100000
     thetas, xs = generate_data(args.num_samples, args.num_events, problem=args.problem, device=device)
-    input_dim = 6
+    input_dim = 12
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True)
     # pointnet_model.load_state_dict(torch.load('pointnet_embedding_latent_dim_1024.pth', map_location='cpu'))
-    state_dict = torch.load('experiments/simplified_dis_latent1024_ns_1000_ne_100000/model_epoch_200.pth', map_location='cpu')
+    state_dict = torch.load('experiments/realistic_dis_latent1024_ns_1000_ne_100000/final_model.pth', map_location='cpu')
     # Remove 'module.' prefix if present
     state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+    # Strip '_orig_mod.' prefix
+    state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+
+    # Load into your model
     pointnet_model.load_state_dict(state_dict)
     pointnet_model.eval()
 
@@ -263,7 +267,7 @@ def main():
             del xs_tensor_engineered
             del xs
 
-        dataset = H5Dataset(latent_path, thetas)
+        dataset = H5Dataset(latent_path)
 
         dataloader = DataLoader(dataset, batch_size=32, shuffle=True, 
                                 collate_fn=EventDataset.collate_fn, num_workers=0, pin_memory=True, persistent_workers=False)
@@ -287,8 +291,12 @@ def main():
                     
                     recon_theta = inference_net(latent_embeddings)
                     recon_loss = F.mse_loss(recon_theta, true_params)
-                    param_mins = torch.tensor([0.1, -1.0, 0.1, -1.0], device=device)
-                    param_maxs = torch.tensor([5.0, -0.5, 5.0, -0.5], device=device)
+                    if problem == 'simplified_dis':
+                        param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+                        param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
+                    elif problem == 'realistic_dis':
+                        param_mins = torch.tensor([-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device)
+                        param_maxs = torch.tensor([2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device)
                     normalized_pred = (recon_theta - param_mins) / (param_maxs - param_mins)
                     normalized_true = (true_params - param_mins) / (param_maxs - param_mins)
                     loss = F.mse_loss(normalized_pred, normalized_true)

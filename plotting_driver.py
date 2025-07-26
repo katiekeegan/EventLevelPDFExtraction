@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import numpy as np
 from torch.utils.data import DataLoader
 from PDF_learning import *
@@ -10,7 +11,21 @@ from torch.distributions import *
 import os
 from simulator import SimplifiedDIS, up, down, advanced_feature_engineering, RealisticDIS
 import scipy
-
+plt.style.use("seaborn-v0_8-muted")  # Or 'default', or 'seaborn-whitegrid'
+mpl.rcParams.update({
+    # "font.family": "serif",           # For LaTeX-like look
+    "font.size": 13,
+    "axes.labelsize": 15,
+    "axes.titlesize": 15,
+    "legend.fontsize": 11,
+    "xtick.labelsize": 11,
+    "ytick.labelsize": 11,
+    "figure.dpi": 300,
+    "savefig.bbox": "tight",
+    "text.usetex": False,             # Set to True if using full LaTeX (requires setup)
+    "grid.linestyle": ":",
+    "grid.linewidth": 0.5,
+})
 def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
     """
     Plots training loss components from .npy files in the given directory.
@@ -116,6 +131,9 @@ def evaluate_over_n_parameters(model, pointnet_model, n=100, num_events=100000, 
     if problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
         param_dim = 6
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
+        param_dim = 4
     elif problem == 'simplified_dis':
         simulator = SimplifiedDIS(torch.device('cpu'))
         param_dim = 4
@@ -206,7 +224,8 @@ def plot_event_histogram_simplified_DIS(model, pointnet_model, true_params, devi
 
     model.eval()
     pointnet_model.eval()
-
+    # Choose simulator
+    simulator = SimplifiedDIS(torch.device('cpu'))
     # Simulate true events
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.cpu(), num_events).to(device)
@@ -287,7 +306,7 @@ def plot_event_scatter_3d(model, pointnet_model, true_params, device, n_mc=100, 
 
     # Scatterplot helper
     def make_scatter(ax, x, Q2, F2, title):
-        sc = ax.scatter(x, Q2, c=F2, cmap='plasma', norm=plt.LogNorm(), s=2, alpha=0.7)
+        sc = ax.scatter(x, Q2, c=F2, cmap='viridis', norm=plt.LogNorm(), s=3, alpha=0.5, edgecolor='none')
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_xlabel("$x$")
@@ -345,7 +364,11 @@ def plot_params_distribution_single(
         axes = [axes]
 
     colors = ['skyblue', 'orange', 'green', 'purple', 'gray']
-    
+    if problem == 'simplified_dis':
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'realistic_dis':
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+
     for i in range(n_params):
         # Compute global min/max across all samples for this parameter
         param_vals = [s[:, i].numpy() for s in all_samples]
@@ -356,7 +379,7 @@ def plot_params_distribution_single(
         xmax += padding
 
         # MC Dropout
-        axes[i].hist(samples[:, i].cpu().numpy(), bins=20, alpha=0.6, density=True, color=colors[0], label='Ours')
+        axes[i].hist(samples[:, i].cpu().numpy(), bins=20, alpha=0.6, density=True, color=colors[0], label='MC Samples')
 
         # SBI posteriors
         if compare_with_sbi and sbi_posteriors is not None and sbi_labels is not None:
@@ -372,8 +395,9 @@ def plot_params_distribution_single(
         # True value
         axes[i].axvline(true_params[i].item(), color='red', linestyle='dashed', label='True Value')
         axes[i].set_xlim(xmin, xmax)
-        axes[i].set_title(f'Param {i+1}')
-        axes[i].legend()
+        axes[i].set_title(f'{param_names[i]}')
+        if i == 0: 
+            axes[i].legend()
 
     plt.tight_layout()
     plt.savefig(save_path)
@@ -424,24 +448,15 @@ def plot_sbi_posteriors_only(
     plt.savefig(save_path)
     plt.show()
 
-def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_mc=100, problem='simplified_dis', Q2_slices=None, save_dir=None, save_path="pdf_distribution.png"):
-    """
-    Plot the PDF distribution of the model's predictions compared to the true parameters.
-    Args:
-        model: The trained model to evaluate.
-        pointnet_model: The PointNet model for feature extraction (stage 2).
-        true_params: True parameters for the simulator.
-        device: Device to run the evaluation on (CPU or GPU).
-        n_mc (int): Number of Monte Carlo samples to draw.
-    """
+def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_mc=100,
+                                 problem='simplified_dis', Q2_slices=None,
+                                 save_dir=None, save_path="pdf_distribution.png"):
     model.eval()
     pointnet_model.eval()
-    if problem == 'realistic_dis':
-        simulator = RealisticDIS(torch.device('cpu'))
-    elif problem == 'simplified_dis':
-        simulator = SimplifiedDIS(torch.device('cpu'))
+    
+    simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
 
-    # Prepare input
+    # Feature extraction
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -453,102 +468,45 @@ def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_m
 
     if problem == 'simplified_dis':
         x_vals = torch.linspace(0, 1, 500).to(device)
-        # --- Compute up(x) stats ---
-        up_vals_all = []
-        for i in range(n_mc):
-            sample_params = samples[i]
-            simulator.init(sample_params)
-            up_vals = simulator.up(x_vals)
-            up_vals_all.append(up_vals.unsqueeze(0))
-        
-        # Assume up_vals_stack shape: [n_samples, num_points]
-        up_vals_stack = torch.cat(up_vals_all, dim=0)
 
-        # Compute median and quantiles
-        median_up_vals = up_vals_stack.median(dim=0).values
-        lower_up = torch.quantile(up_vals_stack, 0.25, dim=0)
-        upper_up = torch.quantile(up_vals_stack, 0.75, dim=0)
+        for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
+            fn_vals_all = []
+            for i in range(n_mc):
+                simulator.init(samples[i])
+                fn = getattr(simulator, fn_name)
+                fn_vals_all.append(fn(x_vals).unsqueeze(0))
 
-        simulator.init(true_params.squeeze())
-        true_up_vals = simulator.up(x_vals)
+            fn_stack = torch.cat(fn_vals_all, dim=0)
+            median_vals = fn_stack.median(dim=0).values
+            lower = torch.quantile(fn_stack, 0.25, dim=0)
+            upper = torch.quantile(fn_stack, 0.75, dim=0)
 
-        # Plot UP
-        fig_up, ax_up = plt.subplots(figsize=(8, 6))
-        ax_up.plot(x_vals.cpu(), true_up_vals.cpu(), label=r"$u(x|\theta^{*})$", color='blue')
-        ax_up.plot(x_vals.cpu(), median_up_vals.cpu(), label=r"Median $u(x|\hat{\theta})$", color='red', linestyle='--')
-        ax_up.fill_between(
-            x_vals.cpu(),
-            lower_up.cpu(),
-            upper_up.cpu(),
-            color='red',
-            alpha=0.3,
-            label="IQR"
-        )
-        ax_up.set_xlabel(r"$x$")
-        ax_up.set_xscale("log")
-        ax_up.set_ylabel(r"$u(x|\theta)$")
-        # ax_up.set_yscale("log")
-        ax_up.set_xlim(0, 1)
-        ax_up.legend()
-        plt.tight_layout()
-        plt.savefig(save_dir + "/up.png" if save_dir else "up.png")
-        plt.close(fig_up)
+            simulator.init(true_params.squeeze())
+            true_vals = getattr(simulator, fn_name)(x_vals)
 
-        # --- Compute down(x) stats ---
-        down_vals_all = []
-        for i in range(n_mc):
-            sample_params = samples[i]
-            simulator.init(sample_params)
-            down_vals = simulator.down(x_vals)
-            down_vals_all.append(down_vals.unsqueeze(0))
+            fig, ax = plt.subplots(figsize=(7, 5))
+            ax.plot(x_vals.cpu(), true_vals.cpu(), label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
+            ax.plot(x_vals.cpu(), median_vals.cpu(), linestyle='--', label=fr"Median ${fn_label}(x|\hat{{\theta}})$", color="crimson", linewidth=2)
+            ax.fill_between(x_vals.cpu(), lower.cpu(), upper.cpu(), color="crimson", alpha=0.3, label="IQR")
 
-        # Assume up_vals_stack shape: [n_samples, num_points]
-        down_vals_stack = torch.cat(down_vals_all, dim=0)
-        # breakpoint()
-        # # Remove bad rows (e.g. anything with near-zero values)
-        # valid_mask = (down_vals_stack > 1e-16).all(dim=1)
-        # if valid_mask.sum() == 0:
-        #     print("⚠️ No valid down(x) samples remained. Using all samples.")
-        #     valid_mask = torch.ones(down_vals_stack.shape[0], dtype=torch.bool)
-        # down_vals_stack = down_vals_stack[valid_mask]
+            ax.set_xlabel(r"$x$")
+            ax.set_ylabel(fr"${fn_label}(x|\theta)$")
+            ax.set_xlim(1e-3, 1)
+            ax.set_xscale("log")
+            ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+            ax.legend(frameon=False)
+            plt.tight_layout()
+            out_path = f"{save_dir}/{fn_name}.png" if save_dir else f"{fn_name}.png"
+            plt.savefig(out_path)
+            plt.close(fig)
 
-        # Compute median and quantiles
-        median_down_vals = down_vals_stack.median(dim=0).values
-        lower_down = torch.quantile(down_vals_stack, 0.25, dim=0)
-        upper_down = torch.quantile(down_vals_stack, 0.75, dim=0)
-
-        simulator.init(true_params.squeeze())
-        true_down_vals = simulator.down(x_vals)
-
-        # Plot DOWN
-        fig_down, ax_down = plt.subplots(figsize=(8, 6))
-        ax_down.plot(x_vals.cpu(), true_down_vals.cpu(), label=r"$d(x|\theta^{*})$", color='blue')
-        ax_down.plot(x_vals.cpu(), median_down_vals.cpu(), label=r"Median $d(x|\hat{\theta})$", color='red', linestyle='--')
-        ax_down.fill_between(
-            x_vals.cpu(),
-            lower_down.cpu(),
-            upper_down.cpu(),
-            color='red',
-            alpha=0.3,
-            label="IQR"
-        )
-        ax_down.set_xlabel("$x$")
-        ax_down.set_xscale("log")
-        ax_down.set_ylabel(r"$d(x|\theta)$")
-        # ax_down.set_yscale("log")
-        ax_down.set_xlim(0, 1)
-        ax_down.legend()
-        plt.tight_layout()
-        plt.savefig(save_dir + "/down.png" if save_dir else "down.png")
-        plt.close(fig_down)
-    if problem == 'realistic_dis':
+    elif problem == 'realistic_dis':
         x_range = (1e-3, 0.9)
-        num_points = 500
-        x_vals = torch.linspace(x_range[0], x_range[1], num_points).to(device)
-
+        x_vals = torch.linspace(x_range[0], x_range[1], 500).to(device)
         Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
 
-        for Q2_fixed in Q2_slices:
+        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
+        for i, Q2_fixed in enumerate(Q2_slices):
             Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
             q_vals_all = []
 
@@ -557,27 +515,31 @@ def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_m
                 q_vals = simulator.q(x_vals, Q2_vals)
                 q_vals_all.append(q_vals.unsqueeze(0))
 
-            q_vals_stack = torch.cat(q_vals_all, dim=0)
-            median_q_vals = torch.median(q_vals_stack, dim=0).values
-            lower_q = torch.quantile(q_vals_stack, 0.25, dim=0)
-            upper_q = torch.quantile(q_vals_stack, 0.75, dim=0)
+            q_stack = torch.cat(q_vals_all, dim=0)
+            median_q = torch.median(q_stack, dim=0).values
+            lower_q = torch.quantile(q_stack, 0.25, dim=0)
+            upper_q = torch.quantile(q_stack, 0.75, dim=0)
 
             simulator.init(true_params.squeeze())
-            true_q_vals = simulator.q(x_vals, Q2_vals)
+            true_q = simulator.q(x_vals, Q2_vals)
 
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.plot(x_vals.cpu(), true_q_vals.cpu(), color='blue', label=fr"True $q(x,\ Q^2={Q2_fixed})$")
-            ax.plot(x_vals.cpu(), median_q_vals.cpu(), color='red', linestyle='--', label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$")
-            ax.fill_between(x_vals.cpu(), lower_q.cpu(), upper_q.cpu(), color='red', alpha=0.2, label="IQR")
+            fig, ax = plt.subplots(figsize=(7, 5))
+            ax.plot(x_vals.cpu(), true_q.cpu(), color=color_palette[i], linewidth=2.5,
+                    label=fr"True $q(x,\ Q^2={Q2_fixed})$")
+            ax.plot(x_vals.cpu(), median_q.cpu(), linestyle='--', color="crimson", linewidth=2,
+                    label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$")
+            ax.fill_between(x_vals.cpu(), lower_q.cpu(), upper_q.cpu(), color="crimson", alpha=0.2)
 
             ax.set_xlabel(r"$x$")
-            ax.set_ylabel(r"$q(x, Q^2)$")
-            ax.set_xscale("log")
+            ax.set_ylabel(r"$q(x,\ Q^2)$")
             ax.set_xlim(x_range)
+            ax.set_xscale("log")
             ax.set_title(fr"$q(x)$ at $Q^2 = {Q2_fixed}\ \mathrm{{GeV}}^2$")
-            ax.legend()
+            ax.legend(frameon=False)
+            ax.grid(True, which="both", linestyle=":", linewidth=0.5)
             plt.tight_layout()
-            plt.savefig(save_path)
+            path = f"{save_dir}/q_Q2_{int(Q2_fixed)}.png" if save_dir else f"q_Q2_{int(Q2_fixed)}.png"
+            plt.savefig(path)
             plt.close(fig)
 
 def plot_PDF_distribution_single_same_plot(
@@ -588,21 +550,15 @@ def plot_PDF_distribution_single_same_plot(
     n_mc=100,
     problem='simplified_dis',
     Q2_slices=None,
-    plot_IQR=False,  # Whether to plot the interquartile range
+    plot_IQR=False,
     save_path="pdf_overlay.png"
 ):
-    """
-    Plot the PDF distribution of the model's predictions compared to true parameters.
-    Now supports multiple Q^2 slices for 'realistic_dis'.
-    """
     model.eval()
     pointnet_model.eval()
 
-    if problem == 'realistic_dis':
-        simulator = RealisticDIS(torch.device('cpu'))
-    elif problem == 'simplified_dis':
-        simulator = SimplifiedDIS(torch.device('cpu'))
+    simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
 
+    # Feature extraction
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -613,14 +569,11 @@ def plot_PDF_distribution_single_same_plot(
 
     if problem == 'realistic_dis':
         x_range = (1e-3, 0.9)
-        num_points = 500
-        x_vals = torch.linspace(x_range[0], x_range[1], num_points).to(device)
+        x_vals = torch.linspace(*x_range, 500).to(device)
 
-        # Allow user to pass custom Q² slices
-        Q2_slices = Q2_slices or [1.0, 1.5, 2.0, 10.0, 50.0]  # Default GeV² values
-
-        fig, ax = plt.subplots(figsize=(10, 7))
-        colors = plt.cm.viridis(np.linspace(0, 1, len(Q2_slices)))
+        Q2_slices = Q2_slices or [1.0, 1.5, 2.0, 10.0, 50.0]
+        fig, ax = plt.subplots(figsize=(8, 6))
+        color_palette = plt.cm.plasma(np.linspace(0.1, 0.9, len(Q2_slices)))
 
         for i, Q2_fixed in enumerate(Q2_slices):
             Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
@@ -631,29 +584,31 @@ def plot_PDF_distribution_single_same_plot(
                 q_vals = simulator.q(x_vals, Q2_vals)
                 q_vals_all.append(q_vals.unsqueeze(0))
 
-            q_vals_stack = torch.cat(q_vals_all, dim=0)  # shape: [n_mc, num_points]
-            median_q_vals = torch.median(q_vals_stack, dim=0).values
-            lower_q = torch.quantile(q_vals_stack, 0.25, dim=0)
-            upper_q = torch.quantile(q_vals_stack, 0.75, dim=0)
+            q_stack = torch.cat(q_vals_all, dim=0)
+            median_q = q_stack.median(dim=0).values
+            lower_q = torch.quantile(q_stack, 0.25, dim=0)
+            upper_q = torch.quantile(q_stack, 0.75, dim=0)
 
             simulator.init(true_params.squeeze())
-            true_q_vals = simulator.q(x_vals, Q2_vals)
+            true_q = simulator.q(x_vals, Q2_vals)
 
-            ax.plot(x_vals.cpu(), true_q_vals.cpu(), color=colors[i], linewidth=2,
-                    label=fr"True $q(x,\ Q^2={Q2_fixed})$ GeV$^{2}$")
-            ax.plot(x_vals.cpu(), median_q_vals.cpu(), linestyle='--', color=colors[i],
-                    label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$ GeV$^{2}$")
-            if plot_IQR == True:
+            # Plotting curves
+            ax.plot(x_vals.cpu(), true_q.cpu(), color=color_palette[i], linewidth=2,
+                    label=fr"True $q(x,\ Q^2={Q2_fixed})$")
+            ax.plot(x_vals.cpu(), median_q.cpu(), linestyle='--', color=color_palette[i], linewidth=1.8,
+                    label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$")
+
+            if plot_IQR:
                 ax.fill_between(x_vals.cpu(), lower_q.cpu(), upper_q.cpu(),
-                            color=colors[i], alpha=0.2)
+                                color=color_palette[i], alpha=0.2)
 
         ax.set_xlabel(r"$x$")
-        ax.set_ylabel(r"$q(x, Q^2)$")
+        ax.set_ylabel(r"$q(x,\ Q^2)$")
+        ax.set_title(r"Posterior over $q(x, Q^2)$ at Multiple $Q^2$ Slices")
         ax.set_xscale("log")
-        # ax.set_yscale("log")
         ax.set_xlim(x_range)
-        ax.set_title("Posterior over $q(x, Q^2)$ at Multiple $Q^2$ Slices")
-        ax.legend(fontsize=9)
+        ax.grid(True, which='both', linestyle=':', linewidth=0.6)
+        ax.legend(loc="best", frameon=False, ncol=2)
         plt.tight_layout()
         plt.savefig(save_path, dpi=300)
         plt.close(fig)
@@ -663,7 +618,7 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_path = os.path.join(model_dir + '_inference', 'final_inference_net.pth')
-    pointnet_model_path = os.path.join(model_dir, 'most_recent_model.pth')
+    pointnet_model_path = os.path.join(model_dir, 'final_model.pth')
     latent_path = os.path.join(model_dir, 'latent_features.h5')
 
     thetas, xs = generate_data(num_samples, num_events, device=torch.device('cpu'), problem=problem)
@@ -677,6 +632,7 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
 
     # Load PointNet model
     state_dict = torch.load(pointnet_model_path)
+    state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
     pointnet_model.eval().to(device)
 
@@ -684,10 +640,9 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
     state_dict = torch.load(model_path)
     model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
     model.eval().to(device)
-
     # Precompute latents if necessary
     if not os.path.exists(latent_path):
-        precompute_latents_to_disk(pointnet_model, xs_tensor_engineered, latent_path, chunk_size=64)
+        precompute_latents_to_disk(pointnet_model, xs_tensor_engineered, thetas, latent_path, chunk_size=64)
 
     dataset = H5Dataset(latent_path)
     dataloader = DataLoader(dataset, batch_size=16, shuffle=True,
@@ -697,41 +652,47 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
 
 
 def main():
-    problem = 'simplified_dis'  # 'simplified_dis' or 'realistic_dis'
+    problem = 'realistic_dis'  # 'simplified_dis' or 'realistic_dis'
     latent_dim = 1024
-    num_samples = 100000
-    num_events = 1000000
+    num_samples = 1000
+    num_events = 100000
     model_dir = f"experiments/{problem}_latent{latent_dim}_ns_{num_samples}_ne_{num_events}"  # CHANGE per ablation
     plot_dir = os.path.join(model_dir, "plots")
     os.makedirs(plot_dir, exist_ok=True)
     n_mc = 100
 
+    model, pointnet_model, dataloader, device = load_model_and_data(model_dir, problem=problem)
+    true_params = torch.tensor([0.5, 0.5, 0.5, 0.5])
+    if problem == 'realistic_dis':
+        true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0])
+        simulator = RealisticDIS(torch.device('cpu'))
+    elif problem == 'simplified_dis':
+        true_params = torch.tensor([0.5, 0.5, 0.5, 0.5])
+        simulator = SimplifiedDIS(torch.device('cpu'))
+    # true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0])
     """
     IF YOU ONLY CARE ABOUT THE SBI TOOLBOX POSTERIOR PLOTS, YOU JUST NEED THE FOLLOWING LINES AND CAN
     COMMENT OUT EVERYTHING AFTERWARDS.
 
     STARTING HERE:
     """
-    true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0])
     samples_snpe = torch.tensor(np.loadtxt("samples_snpe.txt"), dtype=torch.float32)
     samples_wass = torch.tensor(np.loadtxt("samples_wasserstein.txt"), dtype=torch.float32)
     samples_mmd = torch.tensor(np.loadtxt("samples_mmd.txt"), dtype=torch.float32)
 
-    model, pointnet_model, dataloader, device = load_model_and_data(model_dir, problem=problem)
-
-    plot_params_distribution_single(
-        model=model,
-        pointnet_model=pointnet_model,
-        true_params=true_params,
-        device=device,
-        n_mc=n_mc,
-        compare_with_sbi=False,
-        sbi_posteriors=[samples_snpe, samples_mmd, samples_wass],
-        sbi_labels=["SNPE", "MCABC", "Wasserstein MCABC"],
-        problem=problem,
-        save_dir=plot_dir if problem == 'simplified_dis' else None,
-        save_path=os.path.join(plot_dir, "params_distribution.png")
-    )
+    # plot_params_distribution_single(
+    #     model=model,
+    #     pointnet_model=pointnet_model,
+    #     true_params=true_params,
+    #     device=device,
+    #     n_mc=n_mc,
+    #     compare_with_sbi=True,
+    #     sbi_posteriors=[samples_snpe, samples_mmd, samples_wass],
+    #     sbi_labels=["SNPE", "MCABC", "Wasserstein MCABC"],
+    #     problem=problem,
+    #     # save_dir=plot_dir if problem == 'simplified_dis' else None,
+    #     save_path=os.path.join(plot_dir, "sbi_params_distribution.png")
+    # )
     """
     ENDING HERE!
     """
@@ -750,12 +711,23 @@ def main():
         save_path=os.path.join(plot_dir, "pdf_overlay.png")
     )
 
+    plot_params_distribution_single(
+        model=model,
+        pointnet_model=pointnet_model,
+        true_params=true_params,
+        device=device,
+        n_mc=n_mc,
+        compare_with_sbi=False,
+        problem=problem,
+        # save_dir=plot_dir if problem == 'simplified_dis' else None,
+        save_path=os.path.join(plot_dir, "params_distribution.png")
+    )
     plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_mc=n_mc, problem=problem, Q2_slices=[0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0], save_dir=plot_dir)
 
     if problem == 'simplified_dis':
         plot_event_histogram_simplified_DIS(model, pointnet_model, true_params, device, n_mc=n_mc, num_events=num_events, save_path=os.path.join(plot_dir, "event_histogram_simplified.png"))
-    if problem == 'realistic_dis':
-        plot_event_histogram_3d(model, pointnet_model, true_params, device, n_mc=n_mc, num_events=num_events, save_path=os.path.join(plot_dir, "event_histogram_3d.png"))
+    # if problem == 'realistic_dis':
+    #     plot_event_histogram_3d(model, pointnet_model, true_params, device, n_mc=n_mc, num_events=num_events, save_path=os.path.join(plot_dir, "event_histogram_3d.png"))
 
     plot_loss_curves(save_path=os.path.join(plot_dir, "loss_curve.png"))
 

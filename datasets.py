@@ -158,7 +158,7 @@ def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=2, device
         ]
     # thetas = np.column_stack([np.random.uniform(low, high, size=num_samples) for low, high in ranges])
     thetas = np.column_stack([
-    sample_skewed_uniform(low, high, num_samples, alpha=0.5, beta_param=1.0)
+    sample_skewed_uniform(low, high, num_samples, alpha=1.0, beta_param=2.0)
     for low, high in ranges
     ])
     xs = np.array([simulator.sample(theta, num_events).cpu().numpy() for theta in thetas]) + 1e-8
@@ -245,6 +245,60 @@ class RealisticDISDataset(IterableDataset):
             ])
         else:
             self.theta_bounds = torch.tensor(theta_bounds)
+
+        self.feature_engineering = feature_engineering
+
+    def __iter__(self):
+        device = torch.device(f"cuda:{self.rank}" if torch.cuda.is_available() else "cpu")
+        torch.cuda.set_device(device)
+        self.simulator.device = device
+
+        worker_info = torch.utils.data.get_worker_info()
+        worker_id = worker_info.id if worker_info else 0
+        seed = self.rank * 10000 + worker_id
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+
+        theta_bounds = self.theta_bounds.to(device)
+
+        for _ in range(self.samples_per_rank):
+            theta = torch.rand(self.theta_dim, device=device)
+            theta = theta * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0]
+
+            xs = []
+            for _ in range(self.n_repeat):
+                x = self.simulator.sample(theta, self.num_events)
+                xs.append(self.feature_engineering(x).cpu())
+
+            yield theta.cpu(), torch.stack(xs).cpu()
+
+class RealisticDISDataset(IterableDataset):
+    def __init__(
+        self,
+        simulator,
+        num_samples,
+        num_events,
+        rank,
+        world_size,
+        theta_dim=6,
+        n_repeat=2,
+        feature_engineering=None,
+    ):
+        self.simulator = simulator
+        self.total_samples = num_samples
+        self.samples_per_rank = num_samples // world_size
+        self.num_events = num_events
+        self.rank = rank
+        self.world_size = world_size
+        self.theta_dim = theta_dim
+        self.n_repeat = n_repeat
+
+        self.theta_bounds = torch.tensor([
+                [-1.0, 10.0],
+                [0.0, 10.0],
+                [-10.0, -10.0],
+                [-10.0, -10.0],
+            ])
 
         self.feature_engineering = feature_engineering
 

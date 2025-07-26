@@ -78,3 +78,5 @@ sbi-logs/
 *.png
 *.sh
 *.out
+simformer/
+mceg4dis/
