@@ -78,7 +78,7 @@ def train(
     # All ranks wait until the file is ready
     dist.barrier()
     inference_net = InferenceNet(
-        embedding_dim=args.latent_dim, output_dim=thetas.size(-1)
+        embedding_dim=args.latent_dim, output_dim=thetas.size(-1), nll_mode=args.nll_loss
     ).to(device)
     inference_net = DDP(inference_net, device_ids=[rank])
     dataset = H5Dataset(latent_path)
@@ -117,20 +117,44 @@ def train(
             true_params = true_params.to(device, non_blocking=True)
             with amp.autocast(dtype=torch.float16):
                 # Forward pass
-                recon_theta = inference_net(latent_embeddings)
-                if problem == "simplified_dis":
-                    param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
-                    param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
-                elif problem == "realistic_dis":
-                    param_mins = torch.tensor(
-                        [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
-                    )
-                    param_maxs = torch.tensor(
-                        [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
-                    )
-                normalized_pred = (recon_theta - param_mins) / (param_maxs - param_mins)
-                normalized_true = (true_params - param_mins) / (param_maxs - param_mins)
-                loss = F.mse_loss(normalized_pred, normalized_true)
+                if args.nll_loss:
+                    # NLL mode: get means and log-variances
+                    means, log_vars = inference_net(latent_embeddings)
+                    
+                    # Normalize for consistent comparison
+                    if problem == "simplified_dis":
+                        param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+                        param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
+                    elif problem == "realistic_dis":
+                        param_mins = torch.tensor(
+                            [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
+                        )
+                        param_maxs = torch.tensor(
+                            [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
+                        )
+                    
+                    # Normalize means and true parameters
+                    normalized_means = (means - param_mins) / (param_maxs - param_mins)
+                    normalized_true = (true_params - param_mins) / (param_maxs - param_mins)
+                    
+                    # Use Gaussian NLL loss
+                    loss = gaussian_nll_loss(normalized_means, log_vars, normalized_true)
+                else:
+                    # Original MSE mode
+                    recon_theta = inference_net(latent_embeddings)
+                    if problem == "simplified_dis":
+                        param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+                        param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
+                    elif problem == "realistic_dis":
+                        param_mins = torch.tensor(
+                            [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
+                        )
+                        param_maxs = torch.tensor(
+                            [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
+                        )
+                    normalized_pred = (recon_theta - param_mins) / (param_maxs - param_mins)
+                    normalized_true = (true_params - param_mins) / (param_maxs - param_mins)
+                    loss = F.mse_loss(normalized_pred, normalized_true)
 
             # Backward pass with gradient scaling
             optimizer.zero_grad(set_to_none=True)
@@ -183,6 +207,8 @@ def main():
     parser.add_argument("--latent_dim", type=int, default=1024)
     parser.add_argument("--num_samples", type=int, default=1000)
     parser.add_argument("--num_events", type=int, default=100000)
+    parser.add_argument("--nll-loss", action="store_true", 
+                       help="Use Gaussian negative log-likelihood loss with mean and variance prediction")
     args = parser.parse_args()
 
     # Generate experiment name if not provided
@@ -281,7 +307,7 @@ def main():
         )
 
         inference_net = InferenceNet(
-            embedding_dim=args.latent_dim, output_dim=thetas.size(-1)
+            embedding_dim=args.latent_dim, output_dim=thetas.size(-1), nll_mode=args.nll_loss
         ).to(device)
         optimizer = get_optimizer(inference_net, lr=1e-4)
         # scheduler = get_scheduler(optimizer, epochs=args.epochs)
@@ -296,28 +322,49 @@ def main():
                 true_params = true_params.to(device, non_blocking=True)
 
                 with amp.autocast(dtype=torch.float16):
-                    pred_params = inference_net(latent_embeddings)
-                    xs = torch.rand(1000, device=device)
-
-                    recon_theta = inference_net(latent_embeddings)
-                    recon_loss = F.mse_loss(recon_theta, true_params)
-                    if problem == "simplified_dis":
-                        param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
-                        param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
-                    elif problem == "realistic_dis":
-                        param_mins = torch.tensor(
-                            [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
+                    # Forward pass
+                    if args.nll_loss:
+                        # NLL mode: get means and log-variances
+                        means, log_vars = inference_net(latent_embeddings)
+                        
+                        # Get parameter bounds for normalization
+                        if args.problem == "simplified_dis":
+                            param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+                            param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
+                        elif args.problem == "realistic_dis":
+                            param_mins = torch.tensor(
+                                [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
+                            )
+                            param_maxs = torch.tensor(
+                                [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
+                            )
+                        
+                        # Normalize means and true parameters  
+                        normalized_means = (means - param_mins) / (param_maxs - param_mins)
+                        normalized_true = (true_params - param_mins) / (param_maxs - param_mins)
+                        
+                        # Use Gaussian NLL loss
+                        loss = gaussian_nll_loss(normalized_means, log_vars, normalized_true)
+                    else:
+                        # Original MSE mode
+                        recon_theta = inference_net(latent_embeddings)
+                        if args.problem == "simplified_dis":
+                            param_mins = torch.tensor([0.0, 0.0, 0.0, 0.0], device=device)
+                            param_maxs = torch.tensor([5.0, 5.0, 5.0, 5.0], device=device)
+                        elif args.problem == "realistic_dis":
+                            param_mins = torch.tensor(
+                                [-2.0, -1.0, 0.0, 0.0, -5.0, -5.0], device=device
+                            )
+                            param_maxs = torch.tensor(
+                                [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
+                            )
+                        normalized_pred = (recon_theta - param_mins) / (
+                            param_maxs - param_mins
                         )
-                        param_maxs = torch.tensor(
-                            [2.0, 1.0, 5.0, 10.0, 5.0, 5.0], device=device
+                        normalized_true = (true_params - param_mins) / (
+                            param_maxs - param_mins
                         )
-                    normalized_pred = (recon_theta - param_mins) / (
-                        param_maxs - param_mins
-                    )
-                    normalized_true = (true_params - param_mins) / (
-                        param_maxs - param_mins
-                    )
-                    loss = F.mse_loss(normalized_pred, normalized_true)
+                        loss = F.mse_loss(normalized_pred, normalized_true)
 
                 optimizer.zero_grad(set_to_none=True)
                 scaler.scale(loss).backward()

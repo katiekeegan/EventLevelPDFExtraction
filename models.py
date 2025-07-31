@@ -14,9 +14,13 @@ from torch.nn import MultiheadAttention
 # from nflows.distributions import StandardNormal
 # from nflows.flows import Flow
 class InferenceNet(nn.Module):
-    def __init__(self, embedding_dim, output_dim = 6, hidden_dim=512):
+    def __init__(self, embedding_dim, output_dim = 6, hidden_dim=512, nll_mode=False):
         super().__init__()
-        self.net = nn.Sequential(
+        self.nll_mode = nll_mode
+        self.output_dim = output_dim
+        
+        # Shared network layers
+        self.shared_net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.5),
@@ -28,8 +32,16 @@ class InferenceNet(nn.Module):
             nn.Dropout(0.5),
             nn.Linear(hidden_dim, hidden_dim//2),
             nn.ReLU(),
-            nn.Linear(hidden_dim//2, output_dim)  # Output raw (unconstrained) parameters
         )
+        
+        if nll_mode:
+            # Separate heads for mean and log-variance
+            self.mean_head = nn.Linear(hidden_dim//2, output_dim)
+            self.log_var_head = nn.Linear(hidden_dim//2, output_dim)
+        else:
+            # Original single output head
+            self.output_head = nn.Linear(hidden_dim//2, output_dim)
+            
         self._init_weights()
         
     def _init_weights(self):
@@ -39,10 +51,20 @@ class InferenceNet(nn.Module):
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, z):
-        # Get raw network output
-        params = self.net(z)
+        # Get shared features
+        features = self.shared_net(z)
         
-        return params
+        if self.nll_mode:
+            # Return both means and log-variances
+            means = self.mean_head(features)
+            log_vars = self.log_var_head(features)
+            # Clamp log-variances for numerical stability
+            log_vars = torch.clamp(log_vars, min=-10, max=10)
+            return means, log_vars
+        else:
+            # Original behavior - return raw parameters
+            params = self.output_head(features)
+            return params
 
 # class ConditionalRealNVP(nn.Module):
 #     def __init__(self, latent_dim, param_dim, hidden_dim=256, num_flows=5):
