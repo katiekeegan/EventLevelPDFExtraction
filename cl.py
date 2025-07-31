@@ -15,71 +15,7 @@ from utils import *
 
 from models import PointNetPMA
 
-from simulator import RealisticDIS, Gaussian2DSimulator, MCEGSimulator
-
-class SimplifiedDIS:
-    def __init__(self, device=None, smear=False, smear_std=0.05):
-        self.device = device
-        self.smear = smear
-        self.smear_std = smear_std
-        self.Nu = 1
-        self.Nd = 2
-        self.au, self.bu, self.ad, self.bd = None, None, None, None
-
-    def init(self, params):
-        self.au, self.bu, self.ad, self.bd = [p.to(self.device) for p in params]
-
-    def up(self, x):
-        return self.Nu * (x ** self.au) * ((1 - x) ** self.bu)
-
-    def down(self, x):
-        return self.Nd * (x ** self.ad) * ((1 - x) ** self.bd)
-
-    def sample(self, params, nevents=1):
-        self.init(params)
-        eps = 1e-6
-        rand = lambda: torch.clamp(torch.rand(nevents, device=self.device), min=eps, max=1 - eps)
-        smear_noise = lambda s: s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
-
-        xs_p, xs_n = rand(), rand()
-        sigma_p = smear_noise(4 * self.up(xs_p) + self.down(xs_p))
-        sigma_p = torch.nan_to_num(sigma_p, nan=0.0, posinf=1e8, neginf=0.0)
-        sigma_n = smear_noise(4 * self.down(xs_n) + self.up(xs_n))
-        sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
-        return torch.stack([sigma_p, sigma_n], dim=-1)
-
-def pairwise_cosine_similarity(x):
-    x = F.normalize(x, p=2, dim=1)
-    return x @ x.T  # [B, B]
-
-
-def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, dissim_threshold=0.3):
-    # Normalize embeddings
-    z = F.normalize(z, p=2, dim=1)  # [B, D]
-
-    # Pairwise distances in parameter space (faster than cdist)
-    theta_diff = theta[:, None, :] - theta[None, :, :]  # [B, B, D_theta]
-    theta_d = theta_diff.norm(dim=-1)  # [B, B]
-
-    # Positive and negative masks (excluding diagonal)
-    eye = torch.eye(theta_d.size(0), device=theta.device).bool()
-    sim = (theta_d < sim_threshold) & (~eye)
-    dissim = (theta_d > dissim_threshold) & (~eye)
-
-    dist = 1 - z @ z.T  # [B, B], cosine distances
-
-    # Safe fill values depending on AMP dtype
-    fill_neg = torch.tensor(-1e3, dtype=z.dtype, device=z.device)
-    fill_pos = torch.tensor(1e3, dtype=z.dtype, device=z.device)
-
-    hardest_pos = dist.masked_fill(~sim, fill_neg)
-    easiest_neg = dist.masked_fill(~dissim, fill_pos)
-
-    hardest_pos_val, _ = hardest_pos.max(dim=1)
-    easiest_neg_val, _ = easiest_neg.min(dim=1)
-
-    triplet_loss = F.relu(hardest_pos_val - easiest_neg_val + margin)
-    return triplet_loss.mean()
+from simulator import RealisticDIS, Gaussian2DSimulator, MCEGSimulator, SimplifiedDIS
 
 def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10):
     device = next(model.parameters()).device
@@ -209,6 +145,7 @@ def main_worker(rank, world_size, args):
     if not (args.problem == 'gaussian'):
         dummy_theta = torch.zeros(input_dim, device=device)
         if args.problem == 'mceg':
+            # Just generating a test parameter to get the right input dimension
             dummy_theta = torch.tensor([1.0, 1.0, -10.0, -10.0], device=device)
         dummy_x = simulator.sample(dummy_theta, args.num_events)
         input_dim = log_feature_engineering(dummy_x).shape[-1]

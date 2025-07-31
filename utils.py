@@ -121,3 +121,36 @@ def precompute_latents_chunked(pointnet_model, xs_tensor, chunk_size=32, device=
     latents_normalized = (latents - z_mean) / z_std
 
     return latents_normalized, z_mean.squeeze(), z_std.squeeze()
+
+def pairwise_cosine_similarity(x):
+    x = F.normalize(x, p=2, dim=1)
+    return x @ x.T  # [B, B]
+
+
+def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, dissim_threshold=0.3):
+    # Normalize embeddings
+    z = F.normalize(z, p=2, dim=1)  # [B, D]
+
+    # Pairwise distances in parameter space (faster than cdist)
+    theta_diff = theta[:, None, :] - theta[None, :, :]  # [B, B, D_theta]
+    theta_d = theta_diff.norm(dim=-1)  # [B, B]
+
+    # Positive and negative masks (excluding diagonal)
+    eye = torch.eye(theta_d.size(0), device=theta.device).bool()
+    sim = (theta_d < sim_threshold) & (~eye)
+    dissim = (theta_d > dissim_threshold) & (~eye)
+
+    dist = 1 - z @ z.T  # [B, B], cosine distances
+
+    # Safe fill values depending on AMP dtype
+    fill_neg = torch.tensor(-1e3, dtype=z.dtype, device=z.device)
+    fill_pos = torch.tensor(1e3, dtype=z.dtype, device=z.device)
+
+    hardest_pos = dist.masked_fill(~sim, fill_neg)
+    easiest_neg = dist.masked_fill(~dissim, fill_pos)
+
+    hardest_pos_val, _ = hardest_pos.max(dim=1)
+    easiest_neg_val, _ = easiest_neg.min(dim=1)
+
+    triplet_loss = F.relu(hardest_pos_val - easiest_neg_val + margin)
+    return triplet_loss.mean()

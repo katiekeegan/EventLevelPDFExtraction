@@ -50,16 +50,16 @@ class Gaussian2DSimulator:
         return samples
 
 class SimplifiedDIS:
-    def __init__(self, device=None):
+    def __init__(self, device=None, smear=False, smear_std=0.05):
         self.device = device
+        self.smear = smear
+        self.smear_std = smear_std
+        self.Nu = 1
+        self.Nd = 2
+        self.au, self.bu, self.ad, self.bd = None, None, None, None
 
     def init(self, params):
-        self.Nu = 1
-        self.au = params[0]
-        self.bu = params[1]
-        self.Nd = 2
-        self.ad = params[2]
-        self.bd = params[3]
+        self.au, self.bu, self.ad, self.bd = [p.to(self.device) for p in params]
 
     def up(self, x):
         return self.Nu * (x ** self.au) * ((1 - x) ** self.bu)
@@ -68,17 +68,17 @@ class SimplifiedDIS:
         return self.Nd * (x ** self.ad) * ((1 - x) ** self.bd)
 
     def sample(self, params, nevents=1):
-        self.init(torch.tensor(params, device=self.device))
+        self.init(params)
+        eps = 1e-6
+        rand = lambda: torch.clamp(torch.rand(nevents, device=self.device), min=eps, max=1 - eps)
+        smear_noise = lambda s: s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
 
-        xs_p = torch.rand(nevents, device=self.device)
-        sigma_p = 4 * self.up(xs_p) + self.down(xs_p)
-        sigma_p = torch.nan_to_num(sigma_p, nan=0.0)
-
-        xs_n = torch.rand(nevents, device=self.device)
-        sigma_n = 4 * self.down(xs_n) + self.up(xs_n)
-        sigma_n = torch.nan_to_num(sigma_n, nan=0.0)
-
-        return torch.cat([sigma_p.unsqueeze(0), sigma_n.unsqueeze(0)], dim=0).t()
+        xs_p, xs_n = rand(), rand()
+        sigma_p = smear_noise(4 * self.up(xs_p) + self.down(xs_p))
+        sigma_p = torch.nan_to_num(sigma_p, nan=0.0, posinf=1e8, neginf=0.0)
+        sigma_n = smear_noise(4 * self.down(xs_n) + self.up(xs_n))
+        sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
+        return torch.stack([sigma_p, sigma_n], dim=-1)
 
 class MCEGSimulator:
     def __init__(self, device=None):
