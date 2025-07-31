@@ -7,8 +7,8 @@ Training takes place in two stages. First, a PointNet-style embedding of simulat
 How to train:
 
 1. Run ```python cl.py```. This will automatically save the PointNet embedding model.
-2. Run ```python params_learning.py.``` This will automatically save the embedding-to-parameters model.
+2. Run ```python PDF_learning.py.``` This will automatically save the embedding-to-parameters model.
 
-To plot parameters and their relative errors, run ```python params_plotting.py```.
+To plot parameters and their relative errors, run ```python plotting_driver.py```.
 
-This repository should require relatively few dependencies. Up-to-date PyTorch,  Numpy, and Matplotlib should suffice.
+This repository should require relatively few dependencies. Up-to-date PyTorch,  Numpy, and Matplotlib should suffice. MCEG simulator usage is limited to those who have permission to access the relevant repository.
