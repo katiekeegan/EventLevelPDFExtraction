@@ -1,3 +1,24 @@
+"""
+PDF Parameter Inference Plotting Driver
+
+This script generates plots for training results and model predictions with support
+for both MSE and NLL loss modes. 
+
+Key Features:
+- CLI support with --nll-loss flag for appropriate labeling
+- Dynamic plot labels that reflect the loss type (MSE vs NLL)
+- Model architecture mismatch detection and warnings
+- Backward compatibility (defaults to MSE mode)
+
+Usage:
+    python plotting_driver.py                # MSE mode (default)
+    python plotting_driver.py --nll-loss     # NLL mode
+    python plotting_driver.py --help         # Show help
+
+The script automatically detects if a model was trained with a different loss mode
+than the one specified for plotting and issues warnings to ensure accurate labeling.
+"""
+
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
@@ -26,7 +47,7 @@ mpl.rcParams.update({
     "grid.linestyle": ":",
     "grid.linewidth": 0.5,
 })
-def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
+def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True, nll_loss=False):
     """
     Plots training loss components from .npy files in the given directory.
 
@@ -34,6 +55,8 @@ def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
         loss_dir (str): Path to the directory containing the loss .npy files.
         save_path (str): Path to save the output plot image.
         show_plot (bool): Whether to display the plot interactively.
+        nll_loss (bool): Whether the regression loss is NLL (True) or MSE (False).
+                        Affects plot labels and titles.
     """
     # Build full paths
     # total_path = os.path.join(loss_dir, 'loss_total.npy')
@@ -49,13 +72,18 @@ def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
     plt.figure(figsize=(8, 6))
     epochs = np.arange(1, len(contrastive_loss) + 1)
 
+    # Determine loss type labels
+    loss_type = "NLL" if nll_loss else "MSE"
+    regression_label = f'Regression Loss ({loss_type}, scaled)'
+    title = f'Training Loss Components Over Epochs ({loss_type} Regression)'
+    
     # plt.plot(epochs, total_loss, label='Total Loss', linewidth=2)
     plt.plot(epochs, contrastive_loss, label='Contrastive Loss', linewidth=2)
-    plt.plot(epochs, regression_loss, label='Regression Loss (scaled)', linewidth=2)
+    plt.plot(epochs, regression_loss, label=regression_label, linewidth=2)
 
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss Components Over Epochs')
+    plt.title(title)
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -71,10 +99,12 @@ def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
     plt.figure(figsize=(8, 6))
     epochs = np.arange(1, len(total_loss) + 1)
 
+    total_title = f'Training Loss Over Epochs ({loss_type} Regression)'
+    
     plt.plot(epochs, total_loss, label='Loss', linewidth=2)
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('Training Loss Components Over Epochs')
+    plt.title(total_title)
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -92,7 +122,7 @@ def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=True):
     plt.ylabel('Loss')
     plt.xscale('log')
     plt.yscale('log')
-    plt.title('Training Loss Components Over Epochs')
+    plt.title(f'Training Loss Over Epochs (Log Scale, {loss_type} Regression)')
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
@@ -614,7 +644,7 @@ def plot_PDF_distribution_single_same_plot(
         plt.close(fig)
 
 # Load the model and data
-def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='simplified_dis', device=None):
+def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='simplified_dis', device=None, nll_mode=False):
     device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     model_path = os.path.join(model_dir + '_inference', 'final_inference_net.pth')
@@ -627,7 +657,7 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
     input_dim = xs_tensor_engineered.shape[-1]
 
     latent_dim = 1024
-    model = InferenceNet(embedding_dim=latent_dim, output_dim=thetas.size(-1)).to(device)
+    model = InferenceNet(embedding_dim=latent_dim, output_dim=thetas.size(-1), nll_mode=nll_mode).to(device)
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim)
 
     # Load PointNet model
@@ -651,7 +681,71 @@ def load_model_and_data(model_dir, num_samples=100, num_events=10000, problem='s
     return model, pointnet_model, dataloader, device
 
 
+def detect_model_mode_mismatch(model, expected_nll_mode):
+    """
+    Detect if the loaded model was trained with a different loss mode than expected.
+    
+    Args:
+        model: The loaded InferenceNet model
+        expected_nll_mode (bool): The expected mode (True for NLL, False for MSE)
+        
+    Returns:
+        tuple: (is_mismatch, detected_mode_str, expected_mode_str)
+    """
+    # Check if model has the NLL-specific heads
+    has_mean_head = hasattr(model, 'mean_head')
+    has_log_var_head = hasattr(model, 'log_var_head')
+    has_output_head = hasattr(model, 'output_head')
+    
+    # Determine the model's actual mode
+    model_is_nll = has_mean_head and has_log_var_head and not has_output_head
+    model_is_mse = has_output_head and not has_mean_head and not has_log_var_head
+    
+    if not (model_is_nll or model_is_mse):
+        # Unclear architecture, assume no mismatch to be safe
+        return False, "Unknown", "Unknown"
+    
+    detected_mode_str = "NLL" if model_is_nll else "MSE"
+    expected_mode_str = "NLL" if expected_nll_mode else "MSE"
+    
+    is_mismatch = model_is_nll != expected_nll_mode
+    
+    return is_mismatch, detected_mode_str, expected_mode_str
+
+
 def main():
+    """
+    Main function for plotting driver with support for both MSE and NLL loss modes.
+    
+    Usage:
+        python plotting_driver.py                    # Default MSE mode
+        python plotting_driver.py --nll-loss        # NLL mode
+        python plotting_driver.py --help            # Show help
+    """
+    import argparse
+    
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description='Plot training results and model predictions. '
+                   'Supports both MSE and NLL loss modes with appropriate labeling.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python plotting_driver.py                    # Plot with MSE loss labels (default)
+  python plotting_driver.py --nll-loss        # Plot with NLL loss labels
+        """
+    )
+    parser.add_argument('--nll-loss', action='store_true',
+                       help='Use NLL loss mode for plot labels and model loading. '
+                            'Should match the mode used during training.')
+    
+    args = parser.parse_args()
+    
+    # Log which mode is being used
+    loss_mode = "NLL" if args.nll_loss else "MSE"
+    print(f"Plotting mode: {loss_mode} loss")
+    print(f"Using {'NLL (Gaussian negative log-likelihood)' if args.nll_loss else 'MSE (Mean Squared Error)'} loss labels")
+    
     problem = 'realistic_dis'  # 'simplified_dis' or 'realistic_dis'
     latent_dim = 1024
     num_samples = 1000
@@ -661,7 +755,16 @@ def main():
     os.makedirs(plot_dir, exist_ok=True)
     n_mc = 100
 
-    model, pointnet_model, dataloader, device = load_model_and_data(model_dir, problem=problem)
+    model, pointnet_model, dataloader, device = load_model_and_data(model_dir, problem=problem, nll_mode=args.nll_loss)
+    
+    # Check for model architecture mismatch
+    is_mismatch, detected_mode, expected_mode = detect_model_mode_mismatch(model, args.nll_loss)
+    if is_mismatch:
+        print(f"⚠️  WARNING: Model architecture mismatch detected!")
+        print(f"   Model was likely trained with {detected_mode} loss, but plotting in {expected_mode} mode.")
+        print(f"   Plot labels may not accurately reflect the actual loss type used during training.")
+        print(f"   Consider using {'--nll-loss' if detected_mode == 'NLL' else 'no --nll-loss flag'} instead.")
+        print()
     true_params = torch.tensor([0.5, 0.5, 0.5, 0.5])
     if problem == 'realistic_dis':
         true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0])
@@ -729,7 +832,7 @@ def main():
     # if problem == 'realistic_dis':
     #     plot_event_histogram_3d(model, pointnet_model, true_params, device, n_mc=n_mc, num_events=num_events, save_path=os.path.join(plot_dir, "event_histogram_3d.png"))
 
-    plot_loss_curves(save_path=os.path.join(plot_dir, "loss_curve.png"))
+    plot_loss_curves(save_path=os.path.join(plot_dir, "loss_curve.png"), nll_loss=args.nll_loss)
 
 if __name__ == "__main__":
     main()
