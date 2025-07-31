@@ -16,6 +16,8 @@ import torch.nn.functional as F
 import torch.multiprocessing as mp
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import IterableDataset
+from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import TensorDataset
 # Ensure reproducibility
 torch.manual_seed(42)
 # Set default device
@@ -170,3 +172,13 @@ def get_scheduler(optimizer, epochs):
     return optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, 
                                        total_steps=epochs, 
                                        pct_start=0.3)
+
+
+def cleanup():
+    dist.destroy_process_group()
+
+def setup(rank, world_size):
+    import os
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    dist.init_process_group("nccl", rank=rank, world_size=world_size)
