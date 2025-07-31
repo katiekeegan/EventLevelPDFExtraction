@@ -12,6 +12,14 @@ import h5py
 import numpy as np
 from tqdm import tqdm
 import os
+import torch.nn.functional as F
+import torch.multiprocessing as mp
+from torch.cuda.amp import autocast, GradScaler
+from torch.utils.data import IterableDataset
+# Ensure reproducibility
+torch.manual_seed(42)
+# Set default device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Feature Engineering with improved stability
 def log_feature_engineering(xs_tensor):
@@ -154,3 +162,11 @@ def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, diss
 
     triplet_loss = F.relu(hardest_pos_val - easiest_neg_val + margin)
     return triplet_loss.mean()
+
+def get_optimizer(model, lr):
+    return optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+def get_scheduler(optimizer, epochs):
+    return optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, 
+                                       total_steps=epochs, 
+                                       pct_start=0.3)

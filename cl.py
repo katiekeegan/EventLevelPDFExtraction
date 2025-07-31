@@ -1,23 +1,27 @@
-import os
 import argparse
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.nn.functional as F
+import os
+
 import numpy as np
-from torch.utils.data import DataLoader, IterableDataset
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import DataLoader, IterableDataset
+
 import wandb
 from datasets import *
+from models import PointNetPMA
+from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
+                       SimplifiedDIS)
 from utils import *
 
-from models import PointNetPMA
 
-from simulator import RealisticDIS, Gaussian2DSimulator, MCEGSimulator, SimplifiedDIS
-
-def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10):
+def train(
+    model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10
+):
     device = next(model.parameters()).device
     opt = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
@@ -38,7 +42,9 @@ def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_e
 
             opt.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(dtype=torch.float16):  # try float16 for better perf on A100s
+            with torch.cuda.amp.autocast(
+                dtype=torch.float16
+            ):  # try float16 for better perf on A100s
                 latent = model(x_sets)  # [B * n_repeat, D]
                 contrastive = triplet_theta_contrastive_loss(latent, theta)
 
@@ -49,7 +55,7 @@ def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_e
                 z = latent - latent.mean(dim=0, keepdim=True)
                 cov = z.T @ z / (z.size(0) - 1)
                 off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
-                decorrelation = (off_diag ** 2).sum()
+                decorrelation = (off_diag**2).sum()
 
                 loss = contrastive + alpha1 * l2_reg + alpha2 * decorrelation
 
@@ -61,14 +67,16 @@ def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_e
         # Logging and checkpointing (only on rank 0)
         if rank == 0:
             if wandb_enabled:
-                wandb.log({
-                    "epoch": epoch + 1,
-                    "loss": loss.item(),
-                    "contrastive": contrastive.item(),
-                    "l2_reg": l2_reg.item(),
-                    "decorrelation": decorrelation.item(),
-                    "param_mse": param_accuracy,
-                })
+                wandb.log(
+                    {
+                        "epoch": epoch + 1,
+                        "loss": loss.item(),
+                        "contrastive": contrastive.item(),
+                        "l2_reg": l2_reg.item(),
+                        "decorrelation": decorrelation.item(),
+                        "param_mse": param_accuracy,
+                    }
+                )
             print(
                 f"Epoch {epoch + 1}, "
                 f"Loss: {loss.item():.4f}, "
@@ -77,17 +85,18 @@ def train(model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_e
                 f"Decorrelation: {decorrelation.item():.4f}"
             )
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
-                torch.save(model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"))
+                torch.save(
+                    model.state_dict(),
+                    os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"),
+                )
 
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
 
 
-
-
 def setup(rank, world_size):
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
     torch.cuda.set_device(rank)
     torch.set_num_threads(1)
@@ -111,26 +120,42 @@ def main_worker(rank, world_size, args):
     output_dir = os.path.join("experiments", args.experiment_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.problem == 'simplified_dis':
+    if args.problem == "simplified_dis":
         simulator = SimplifiedDIS(device=device)
-        dataset = DISDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+        dataset = DISDataset(
+            simulator, args.num_samples, args.num_events, rank, world_size
+        )
         input_dim = 4
-    elif args.problem == 'realistic_dis':
+    elif args.problem == "realistic_dis":
         simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
         print("Simulator constructed!")
-        dataset = RealisticDISDataset(simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering)
+        dataset = RealisticDISDataset(
+            simulator,
+            args.num_samples,
+            args.num_events,
+            rank,
+            world_size,
+            feature_engineering=log_feature_engineering,
+        )
         print("Dataset created!")
         input_dim = 6
-    elif args.problem == 'mceg':
+    elif args.problem == "mceg":
         simulator = MCEGSimulator(device=device)
         print("Simulator constructed!")
-        dataset = RealisticDISDataset(simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering)
+        dataset = RealisticDISDataset(
+            simulator,
+            args.num_samples,
+            args.num_events,
+            rank,
+            world_size,
+            feature_engineering=log_feature_engineering,
+        )
         print("Dataset created!")
         input_dim = 4
-    elif args.problem == 'gaussian':
+    elif args.problem == "gaussian":
         simulator = Gaussian2DSimulator(device=device)
         dataset = Gaussian2DDataset(
-        simulator, args.num_samples, args.num_events, rank, world_size
+            simulator, args.num_samples, args.num_events, rank, world_size
         )
         input_dim = 2
 
@@ -142,23 +167,23 @@ def main_worker(rank, world_size, args):
         persistent_workers=True,
         prefetch_factor=4,
     )
-    if not (args.problem == 'gaussian'):
+    if not (args.problem == "gaussian"):
         dummy_theta = torch.zeros(input_dim, device=device)
-        if args.problem == 'mceg':
+        if args.problem == "mceg":
             # Just generating a test parameter to get the right input dimension
             dummy_theta = torch.tensor([1.0, 1.0, -10.0, -10.0], device=device)
         dummy_x = simulator.sample(dummy_theta, args.num_events)
         input_dim = log_feature_engineering(dummy_x).shape[-1]
 
         model = PointNetPMA(
-            input_dim=input_dim,
-            latent_dim=args.latent_dim,
-            predict_theta=True
+            input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
         ).to(device)
 
         if torch.__version__ >= "2.0":
             os.environ["TRITON_CACHE_DIR"] = "/pscratch/sd/k/katiekee/triton_cache"
-            os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/pscratch/sd/k/katiekee/inductor_cache"
+            os.environ["TORCHINDUCTOR_CACHE_DIR"] = (
+                "/pscratch/sd/k/katiekee/inductor_cache"
+            )
             try:
                 model = torch.compile(model, mode="default", dynamic=True)
             except Exception as e:
@@ -180,15 +205,20 @@ def main_worker(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--num_samples', type=int, default=1000)
-    parser.add_argument('--num_events', type=int, default=100000)
-    parser.add_argument('--num_epochs', type=int, default=20)
-    parser.add_argument('--batch_size', type=int, default=8)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--latent_dim', type=int, default=1024)
-    parser.add_argument('--problem', type=str, default='simplified_dis')
-    parser.add_argument('--wandb', action='store_true')
-    parser.add_argument('--experiment_name', type=str, default=None, help='Unique name for this ablation run')
+    parser.add_argument("--num_samples", type=int, default=1000)
+    parser.add_argument("--num_events", type=int, default=100000)
+    parser.add_argument("--num_epochs", type=int, default=20)
+    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--latent_dim", type=int, default=1024)
+    parser.add_argument("--problem", type=str, default="simplified_dis")
+    parser.add_argument("--wandb", action="store_true")
+    parser.add_argument(
+        "--experiment_name",
+        type=str,
+        default=None,
+        help="Unique name for this ablation run",
+    )
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
