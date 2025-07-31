@@ -23,6 +23,31 @@ torch.manual_seed(42)
 # Set default device
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+def gaussian_nll_loss(means, log_vars, targets):
+    """
+    Compute Gaussian negative log-likelihood loss.
+    
+    Args:
+        means: Predicted means, shape (batch_size, output_dim)
+        log_vars: Predicted log-variances, shape (batch_size, output_dim)  
+        targets: True parameter values, shape (batch_size, output_dim)
+        
+    Returns:
+        Scalar loss value
+    """
+    # Convert log-variances to variances
+    variances = torch.exp(log_vars)
+    
+    # Compute squared differences
+    squared_diffs = (targets - means) ** 2
+    
+    # Gaussian NLL = 0.5 * (log(2π) + log(σ²) + (x-μ)²/σ²)
+    # We can ignore the constant log(2π) term for optimization
+    nll = 0.5 * (log_vars + squared_diffs / variances)
+    
+    # Return mean over batch and dimensions
+    return torch.mean(nll)
+
 # Feature Engineering with improved stability
 def log_feature_engineering(xs_tensor):
     # Basic features with clamping for numerical stability
