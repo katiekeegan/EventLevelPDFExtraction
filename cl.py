@@ -34,6 +34,7 @@ def train(
         total_loss = 0.0
 
         for theta, x_sets in dataloader:
+            x_sets = x_sets.to(torch.float32)  # or .float()
             B, n_repeat, num_points, feat_dim = x_sets.shape
 
             # Efficient reshape and repeat
@@ -162,7 +163,7 @@ def main_worker(rank, world_size, args):
     dataloader = DataLoader(
         dataset,
         batch_size=args.batch_size,
-        num_workers=4,
+        num_workers=1,
         pin_memory=True,
         persistent_workers=True,
         prefetch_factor=4,
@@ -222,4 +223,21 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
+
+    # DDP setup: get rank from environment or torch.distributed
+    rank = int(os.environ.get("RANK", 0))
+
+    # Only initialize wandb in main process
+    if args.wandb and rank == 0:
+        wandb.init(
+            project="PDFParameterInference",
+            config={
+                # add your config here, e.g.
+                "learning_rate": 1e-3,
+                "epochs": 10,
+            }
+        )
     mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+    # Optionally finish wandb run
+    if args.wandb and rank == 0:
+        wandb.finish()

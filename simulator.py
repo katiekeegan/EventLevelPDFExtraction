@@ -108,7 +108,7 @@ class MCEGSimulator:
         mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
         # TODO: negative probabilities may arise with certain parameters.
         # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
-        samples = torch.tensor(mceg.gen_events(nevents, verb=True)).to(self.device)
+        samples = torch.tensor(mceg.gen_events(nevents, verb=False)).to(self.device)
         return samples
 
 def up(x, params):

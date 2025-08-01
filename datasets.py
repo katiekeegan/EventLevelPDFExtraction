@@ -321,7 +321,8 @@ class MCEGDISDataset(IterableDataset):
 
             xs = []
             for _ in range(self.n_repeat):
-                x = self.simulator.sample(theta, self.num_events)
+                x = self.simulator.sample(theta, self.num_events+1000)
+                x = x[:self.num_events, ...]
                 xs.append(self.feature_engineering(x).cpu())
 
-            yield theta.cpu(), torch.stack(xs).cpu()
+            yield theta.cpu().contiguous(), torch.stack(xs).cpu().contiguous()
