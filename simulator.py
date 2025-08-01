@@ -59,7 +59,10 @@ class SimplifiedDIS:
         self.au, self.bu, self.ad, self.bd = None, None, None, None
 
     def init(self, params):
-        self.au, self.bu, self.ad, self.bd = [p.to(self.device) for p in params]
+        self.au, self.bu, self.ad, self.bd = [
+            torch.tensor(p, device=self.device) if not torch.is_tensor(p) else p.to(self.device)
+            for p in params
+        ]
 
     def up(self, x):
         return self.Nu * (x ** self.au) * ((1 - x) ** self.bu)
@@ -103,6 +106,8 @@ class MCEGSimulator:
         self.init(params)  # Take in new parameters
         # Initialize Monte Carlo Event Generator
         mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
+        # TODO: negative probabilities may arise with certain parameters.
+        # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
         samples = torch.tensor(mceg.gen_events(nevents, verb=True)).to(self.device)
         return samples
 

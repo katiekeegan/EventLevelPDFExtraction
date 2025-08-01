@@ -177,7 +177,7 @@ def evaluate_over_n_parameters(model, pointnet_model, n=100, num_events=100000, 
         true_params = torch.FloatTensor(param_dim).uniform_(0.0, 5.0).to(device)
 
         # === 2. Generate data from simulator ===
-        xs = simulator.sample(true_params.cpu(), num_events).to(device)
+        xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
         xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
         xs_feat = advanced_feature_engineering(xs_tensor)
         latent = pointnet_model(xs_feat.unsqueeze(0))
@@ -189,17 +189,17 @@ def evaluate_over_n_parameters(model, pointnet_model, n=100, num_events=100000, 
 
         # === 4. Compute relative error ===
         error = torch.abs(predicted - true_params) / (true_params + 1e-8)
-        all_errors.append(error.cpu())
+        all_errors.append(error.detach().cpu())
 
         # === 5. Evaluate Chi-squared statistics ===
         x_grid = torch.linspace(0.01, 0.99, 1000).to(device)  # Avoid 0/1
-        pred_up = torch.mean(torch.stack([up(x_grid.cpu(), p.cpu()) for p in samples]), dim=0)
-        pred_down = torch.mean(torch.stack([down(x_grid.cpu(), p.cpu()) for p in samples]), dim=0)
+        pred_up = torch.mean(torch.stack([up(x_grid.detach().cpu(), p.detach().cpu()) for p in samples]), dim=0)
+        pred_down = torch.mean(torch.stack([down(x_grid.detach().cpu(), p.detach().cpu()) for p in samples]), dim=0)
         true_up = up(x_grid, true_params)
         true_down = down(x_grid, true_params)
 
-        chi2_up.append(compute_chisq_statistic(true_up.cpu().numpy(), pred_up.cpu().numpy()))
-        chi2_down.append(compute_chisq_statistic(true_down.cpu().numpy(), pred_down.cpu().numpy()))
+        chi2_up.append(compute_chisq_statistic(true_up.detach().cpu().numpy(), pred_up.detach().cpu().numpy()))
+        chi2_down.append(compute_chisq_statistic(true_down.detach().cpu().numpy(), pred_down.detach().cpu().numpy()))
 
     all_errors = torch.stack(all_errors).numpy()
 
@@ -241,12 +241,15 @@ def enable_dropout(model):
             m.train()
 
 def sample_with_mc_dropout(model, latent_embedding, n_samples=100):
-    """Draw samples with Monte Carlo dropout"""
-    enable_dropout(model)
+    model.train()  # Enable dropout
     samples = []
-    with torch.no_grad():
-        for _ in range(n_samples):
-            output = model(latent_embedding)
+    for _ in range(n_samples):
+        output = model(latent_embedding)
+        # Handle NLL mode (output is a tuple: (means, log_vars))
+        if isinstance(output, tuple):
+            means, log_vars = output
+            samples.append(means)  # Only append means for parameter sampling
+        else:
             samples.append(output)
     return torch.stack(samples)
 
@@ -258,7 +261,7 @@ def plot_event_histogram_simplified_DIS(model, pointnet_model, true_params, devi
     simulator = SimplifiedDIS(torch.device('cpu'))
     # Simulate true events
     true_params = true_params.to(device)
-    xs = simulator.sample(true_params.cpu(), num_events).to(device)
+    xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     xs_tensor = advanced_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -276,9 +279,9 @@ def plot_event_histogram_simplified_DIS(model, pointnet_model, true_params, devi
         print("NaNs detected in mode parameters!")
         return
 
-    generated_events = simulator.sample(mode_params.cpu(), num_events).to(device)
-    true_events_np = xs.cpu().numpy()
-    generated_events_np = generated_events.cpu().numpy()
+    generated_events = simulator.sample(mode_params.detach().cpu(), num_events).to(device)
+    true_events_np = xs.detach().cpu().numpy()
+    generated_events_np = generated_events.detach().cpu().numpy()
 
     if np.any(np.isnan(generated_events_np)) or np.any(np.isnan(true_events_np)):
         print("NaNs detected in the events!")
@@ -318,7 +321,7 @@ def plot_event_scatter_3d(model, pointnet_model, true_params, device, n_mc=100, 
 
     # Simulate true events
     true_params = true_params.to(device)
-    xs = simulator.sample(true_params.cpu(), num_events).to(device)
+    xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = advanced_feature_engineering(xs.clone()).to(device)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
@@ -328,11 +331,11 @@ def plot_event_scatter_3d(model, pointnet_model, true_params, device, n_mc=100, 
         print("NaNs detected in samples!")
         return
     mode_params = torch.median(samples, dim=0).values
-    generated_events = simulator.sample(mode_params.cpu(), num_events).to(device)
+    generated_events = simulator.sample(mode_params.detach().cpu(), num_events).to(device)
 
     # Unpack and convert to NumPy
-    x_true, Q2_true, F2_true = xs[:, 0].cpu().numpy(), xs[:, 1].cpu().numpy(), xs[:, 2].cpu().numpy()
-    x_gen, Q2_gen, F2_gen = generated_events[:, 0].cpu().numpy(), generated_events[:, 1].cpu().numpy(), generated_events[:, 2].cpu().numpy()
+    x_true, Q2_true, F2_true = xs[:, 0].detach().cpu().numpy(), xs[:, 1].detach().cpu().numpy(), xs[:, 2].detach().cpu().numpy()
+    x_gen, Q2_gen, F2_gen = generated_events[:, 0].detach().cpu().numpy(), generated_events[:, 1].detach().cpu().numpy(), generated_events[:, 2].detach().cpu().numpy()
 
     # Scatterplot helper
     def make_scatter(ax, x, Q2, F2, title):
@@ -374,7 +377,7 @@ def plot_params_distribution_single(
     true_params = true_params.to(device)
 
     # Simulate data + feature engineering
-    xs = simulator.sample(true_params.cpu(), 100000).to(device)
+    xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     xs_tensor = advanced_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -383,9 +386,9 @@ def plot_params_distribution_single(
     samples = sample_with_mc_dropout(model, latent_embedding, n_samples=n_mc).squeeze()
 
     # Combine all posterior samples for consistent x-limits
-    all_samples = [samples.cpu()]
+    all_samples = [samples.detach().cpu()]
     if compare_with_sbi and sbi_posteriors is not None:
-        all_samples.extend([s.cpu() for s in sbi_posteriors])
+        all_samples.extend([s.detach().cpu() for s in sbi_posteriors])
     
     n_params = true_params.size(0)
     fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
@@ -401,7 +404,7 @@ def plot_params_distribution_single(
 
     for i in range(n_params):
         # Compute global min/max across all samples for this parameter
-        param_vals = [s[:, i].numpy() for s in all_samples]
+        param_vals = [s[:, i].detach().numpy() for s in all_samples]
         xmin = min([v.min() for v in param_vals])
         xmax = max([v.max() for v in param_vals])
         padding = 0.05 * (xmax - xmin)
@@ -409,14 +412,14 @@ def plot_params_distribution_single(
         xmax += padding
 
         # MC Dropout
-        axes[i].hist(samples[:, i].cpu().numpy(), bins=20, alpha=0.6, density=True, color=colors[0], label='MC Samples')
+        axes[i].hist(samples[:, i].detach().cpu().numpy(), bins=20, alpha=0.6, density=True, color=colors[0], label='MC Samples')
 
         # SBI posteriors
         if compare_with_sbi and sbi_posteriors is not None and sbi_labels is not None:
             for j, sbi_samples in enumerate(sbi_posteriors):
                 label = sbi_labels[j] if j < len(sbi_labels) else f"SBI {j}"
                 axes[i].hist(
-                    sbi_samples[:, i].cpu().numpy(),
+                    sbi_samples[:, i].detach().cpu().numpy(),
                     bins=20, alpha=0.4, density=True,
                     color=colors[(j + 1) % len(colors)],
                     label=label
@@ -448,7 +451,7 @@ def plot_sbi_posteriors_only(
     colors = ['orange', 'green', 'purple', 'gray', 'cyan']
 
     # Compute global x-limits across all posteriors
-    all_samples = [s.cpu() for s in sbi_posteriors]
+    all_samples = [s.detach().cpu() for s in sbi_posteriors]
     
     for i in range(n_params):
         param_vals = [s[:, i].numpy() for s in all_samples]
@@ -488,7 +491,7 @@ def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_m
 
     # Feature extraction
     true_params = true_params.to(device)
-    xs = simulator.sample(true_params.cpu(), 100000).to(device)
+    xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     xs_tensor = advanced_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -515,9 +518,9 @@ def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_m
             true_vals = getattr(simulator, fn_name)(x_vals)
 
             fig, ax = plt.subplots(figsize=(7, 5))
-            ax.plot(x_vals.cpu(), true_vals.cpu(), label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
-            ax.plot(x_vals.cpu(), median_vals.cpu(), linestyle='--', label=fr"Median ${fn_label}(x|\hat{{\theta}})$", color="crimson", linewidth=2)
-            ax.fill_between(x_vals.cpu(), lower.cpu(), upper.cpu(), color="crimson", alpha=0.3, label="IQR")
+            ax.plot(x_vals.detach().cpu(), true_vals.detach().cpu(), label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
+            ax.plot(x_vals.detach().cpu(), median_vals.detach().cpu(), linestyle='--', label=fr"Median ${fn_label}(x|\hat{{\theta}})$", color="crimson", linewidth=2)
+            ax.fill_between(x_vals.detach().cpu(), lower.detach().cpu(), upper.detach().cpu(), color="crimson", alpha=0.3, label="IQR")
 
             ax.set_xlabel(r"$x$")
             ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -554,11 +557,11 @@ def plot_PDF_distribution_single(model, pointnet_model, true_params, device, n_m
             true_q = simulator.q(x_vals, Q2_vals)
 
             fig, ax = plt.subplots(figsize=(7, 5))
-            ax.plot(x_vals.cpu(), true_q.cpu(), color=color_palette[i], linewidth=2.5,
+            ax.plot(x_vals.detach().cpu(), true_q.detach().cpu(), color=color_palette[i], linewidth=2.5,
                     label=fr"True $q(x,\ Q^2={Q2_fixed})$")
-            ax.plot(x_vals.cpu(), median_q.cpu(), linestyle='--', color="crimson", linewidth=2,
+            ax.plot(x_vals.detach().cpu(), median_q.detach().cpu(), linestyle='--', color="crimson", linewidth=2,
                     label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$")
-            ax.fill_between(x_vals.cpu(), lower_q.cpu(), upper_q.cpu(), color="crimson", alpha=0.2)
+            ax.fill_between(x_vals.detach().cpu(), lower_q.detach().cpu(), upper_q.detach().cpu(), color="crimson", alpha=0.2)
 
             ax.set_xlabel(r"$x$")
             ax.set_ylabel(r"$q(x,\ Q^2)$")
@@ -590,7 +593,7 @@ def plot_PDF_distribution_single_same_plot(
 
     # Feature extraction
     true_params = true_params.to(device)
-    xs = simulator.sample(true_params.cpu(), 100000).to(device)
+    xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     xs_tensor = advanced_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -623,13 +626,13 @@ def plot_PDF_distribution_single_same_plot(
             true_q = simulator.q(x_vals, Q2_vals)
 
             # Plotting curves
-            ax.plot(x_vals.cpu(), true_q.cpu(), color=color_palette[i], linewidth=2,
+            ax.plot(x_vals.detach().cpu(), true_q.detach().cpu(), color=color_palette[i], linewidth=2,
                     label=fr"True $q(x,\ Q^2={Q2_fixed})$")
-            ax.plot(x_vals.cpu(), median_q.cpu(), linestyle='--', color=color_palette[i], linewidth=1.8,
+            ax.plot(x_vals.detach().cpu(), median_q.detach().cpu(), linestyle='--', color=color_palette[i], linewidth=1.8,
                     label=fr"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$")
 
             if plot_IQR:
-                ax.fill_between(x_vals.cpu(), lower_q.cpu(), upper_q.cpu(),
+                ax.fill_between(x_vals.detach().cpu(), lower_q.detach().cpu(), upper_q.detach().cpu(),
                                 color=color_palette[i], alpha=0.2)
 
         ax.set_xlabel(r"$x$")
@@ -746,7 +749,7 @@ Examples:
     print(f"Plotting mode: {loss_mode} loss")
     print(f"Using {'NLL (Gaussian negative log-likelihood)' if args.nll_loss else 'MSE (Mean Squared Error)'} loss labels")
     
-    problem = 'realistic_dis'  # 'simplified_dis' or 'realistic_dis'
+    problem = 'simplified_dis'  # 'simplified_dis' or 'realistic_dis'
     latent_dim = 1024
     num_samples = 1000
     num_events = 100000
@@ -832,7 +835,7 @@ Examples:
     # if problem == 'realistic_dis':
     #     plot_event_histogram_3d(model, pointnet_model, true_params, device, n_mc=n_mc, num_events=num_events, save_path=os.path.join(plot_dir, "event_histogram_3d.png"))
 
-    plot_loss_curves(save_path=os.path.join(plot_dir, "loss_curve.png"), nll_loss=args.nll_loss)
+    # plot_loss_curves(save_path=os.path.join(plot_dir, "loss_curve.png"), nll_loss=args.nll_loss)
 
 if __name__ == "__main__":
     main()

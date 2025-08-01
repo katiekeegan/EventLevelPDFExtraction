@@ -14,7 +14,6 @@ from torch.utils.data import DataLoader, Dataset, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
 
 from datasets import *
-from ddp_utils import *
 from models import *
 from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
                        SimplifiedDIS)
@@ -227,13 +226,16 @@ def main():
     thetas, xs = generate_data(
         args.num_samples, args.num_events, problem=args.problem, device=device
     )
-    input_dim = 12
+    if args.problem == "simplified_dis":
+        input_dim = 6
+    elif args.problem == "realistic_dis":
+        input_dim = 12
     pointnet_model = PointNetPMA(
         input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
     )
     # pointnet_model.load_state_dict(torch.load('pointnet_embedding_latent_dim_1024.pth', map_location='cpu'))
     state_dict = torch.load(
-        "experiments/realistic_dis_latent1024_ns_1000_ne_100000/final_model.pth",
+        "experiments/simplified_dis_latent1024_ns_1000_ne_100000/final_model.pth",
         map_location="cpu",
     )
     # Remove 'module.' prefix if present

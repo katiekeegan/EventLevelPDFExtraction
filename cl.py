@@ -142,7 +142,7 @@ def main_worker(rank, world_size, args):
     elif args.problem == "mceg":
         simulator = MCEGSimulator(device=device)
         print("Simulator constructed!")
-        dataset = RealisticDISDataset(
+        dataset = MCEGDISDataset(
             simulator,
             args.num_samples,
             args.num_events,
@@ -171,10 +171,10 @@ def main_worker(rank, world_size, args):
         dummy_theta = torch.zeros(input_dim, device=device)
         if args.problem == "mceg":
             # Just generating a test parameter to get the right input dimension
-            dummy_theta = torch.tensor([1.0, 1.0, -10.0, -10.0], device=device)
+            dummy_theta = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00,2.33000000e+01], device=device)
         dummy_x = simulator.sample(dummy_theta, args.num_events)
         input_dim = log_feature_engineering(dummy_x).shape[-1]
-
+        print("Sampled successfully from MCEG simulator!")
         model = PointNetPMA(
             input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
         ).to(device)

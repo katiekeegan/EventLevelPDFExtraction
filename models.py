@@ -340,31 +340,6 @@ class DISPointCloudRegressor(nn.Module):
         #     return z, theta_hat
         return z
 
-
-class DiffusionModel(nn.Module):
-    def __init__(self, sample_dim, param_dim, hidden_dim=128, time_embedding_dim=32, sample_encode_dim=32, timesteps=1000, n_events=1000):
-        super(DiffusionModel, self).__init__()
-        self.timesteps = timesteps
-        
-        self.sample_encoder = PointNetCompressor(input_dim=sample_dim, latent_dim=sample_encode_dim)
-        
-        self.time_embedding = nn.Linear(1, time_embedding_dim)
-        
-        self.diffusion_process = nn.Sequential(
-            nn.Linear(sample_encode_dim + param_dim + time_embedding_dim, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_dim, param_dim)
-        )
-    
-    def forward(self, samples, t, params):
-        t_embedding = self.time_embedding(t.squeeze().unsqueeze(-1).float())  # Simple sinusoidal encoding
-        samples_emb = self.sample_encoder(samples).squeeze()
-        combined_input = torch.cat([samples_emb, t_embedding, params], dim=-1)
-        pred_noise = self.diffusion_process(combined_input)
-        return pred_noise
-
 class PointNetPDFRegressor(nn.Module):
     def __init__(self, input_dim=6, latent_dim=64, hidden_dim=256, num_heads=4, num_seeds=1, num_points_sampled=4096):
         super().__init__()

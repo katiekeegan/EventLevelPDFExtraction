@@ -272,7 +272,7 @@ class RealisticDISDataset(IterableDataset):
 
             yield theta.cpu(), torch.stack(xs).cpu()
 
-class RealisticDISDataset(IterableDataset):
+class MCEGDISDataset(IterableDataset):
     def __init__(
         self,
         simulator,
@@ -280,7 +280,7 @@ class RealisticDISDataset(IterableDataset):
         num_events,
         rank,
         world_size,
-        theta_dim=6,
+        theta_dim=4,
         n_repeat=2,
         feature_engineering=None,
     ):
