@@ -197,20 +197,26 @@ class DISDataset(IterableDataset):
         n_feat = None
 
         for _ in range(self.samples_per_rank):
-            # 1. Sample θ
-            theta = torch.rand(theta_bounds.size(0), device=device)
-            theta = theta * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0]
+            tries = 0
+            while tries < 20:
+                theta = torch.rand(self.theta_dim, device=device)
+                theta = theta * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0]
 
-            # 2. Generate repeated feature sets
-            features = []
-            for _ in range(self.n_repeat):
-                x = self.simulator.sample(theta, self.num_events)
-                f = log_feature_engineering(x)
-                features.append(f)
+                xs = []
+                bad_sample = False
+                for _ in range(self.n_repeat):
+                    x = self.simulator.sample(theta, self.num_events + 1000)
+                    if self.simulator.clip_alert:  # check after sample
+                        bad_sample = True
+                        break
+                    x = x[:self.num_events, ...]
+                    xs.append(self.feature_engineering(x).cpu())
 
-            # 3. Stack on CPU to save GPU mem
-            x_stack = torch.stack(features).cpu()
-            yield theta.cpu(), x_stack
+                if not bad_sample:
+                    yield theta.cpu().contiguous(), torch.stack(xs).cpu().contiguous()
+                    break  # accepted
+                else:
+                    tries += 1
 
 class RealisticDISDataset(IterableDataset):
     def __init__(
@@ -296,8 +302,8 @@ class MCEGDISDataset(IterableDataset):
         self.theta_bounds = torch.tensor([
                 [-1.0, 10.0],
                 [0.0, 10.0],
-                [-10.0, -10.0],
-                [-10.0, -10.0],
+                [-10.0, 10.0],
+                [-10.0, 10.0],
             ])
 
         self.feature_engineering = feature_engineering

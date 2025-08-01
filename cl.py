@@ -50,13 +50,15 @@ def train(
                 contrastive = triplet_theta_contrastive_loss(latent, theta)
 
                 # Regularization: L2 norm of embeddings
-                l2_reg = latent.norm(p=2, dim=1).mean()
+                # l2_reg = latent.norm(p=2, dim=1).mean()
+                l2_reg = torch.tensor([0.0]).to(device)
 
                 # Covariance decorrelation (fast)
-                z = latent - latent.mean(dim=0, keepdim=True)
-                cov = z.T @ z / (z.size(0) - 1)
-                off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
-                decorrelation = (off_diag**2).sum()
+                # z = latent - latent.mean(dim=0, keepdim=True)
+                # cov = z.T @ z / (z.size(0) - 1)
+                # off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
+                # decorrelation = (off_diag**2).sum()
+                decorrelation = torch.tensor([0.0]).to(device)
 
                 loss = contrastive + alpha1 * l2_reg + alpha2 * decorrelation
 
@@ -75,7 +77,6 @@ def train(
                         "contrastive": contrastive.item(),
                         "l2_reg": l2_reg.item(),
                         "decorrelation": decorrelation.item(),
-                        "param_mse": param_accuracy,
                     }
                 )
             print(
@@ -197,6 +198,7 @@ def main_worker(rank, world_size, args):
     if rank != 0:
         os.environ["WANDB_MODE"] = "disabled"
 
+    print("WANDB WAS ENABLED: ", args.wandb)
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_cl", name=args.experiment_name, config=vars(args))
 
@@ -206,10 +208,10 @@ def main_worker(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_samples", type=int, default=1000)
-    parser.add_argument("--num_events", type=int, default=100000)
-    parser.add_argument("--num_epochs", type=int, default=20)
-    parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--num_samples", type=int, default=2000)
+    parser.add_argument("--num_events", type=int, default=10000)
+    parser.add_argument("--num_epochs", type=int, default=200)
+    parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=1024)
     parser.add_argument("--problem", type=str, default="simplified_dis")
@@ -227,16 +229,6 @@ if __name__ == "__main__":
     # DDP setup: get rank from environment or torch.distributed
     rank = int(os.environ.get("RANK", 0))
 
-    # Only initialize wandb in main process
-    if args.wandb and rank == 0:
-        wandb.init(
-            project="PDFParameterInference",
-            config={
-                # add your config here, e.g.
-                "learning_rate": 1e-3,
-                "epochs": 10,
-            }
-        )
     mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
     # Optionally finish wandb run
     if args.wandb and rank == 0:
