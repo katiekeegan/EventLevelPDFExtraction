@@ -1,17 +1,30 @@
 """
-PDF Parameter Inference Plotting Driver (Reload Per-Architecture Models)
+PDF Parameter Inference Plotting Driver with Analytic Laplace Uncertainty
 
-This script reloads and generates plots for each model architecture:
-MLP, Transformer, Gaussian, and Multimodal. It takes the same CLI arguments
-(latent_dim, param_dim, problem, etc.) as your PDF_learning script, finds the
-corresponding experiment directories and checkpoints, and saves plots for each.
+This script reloads and generates plots for each model architecture with
+ANALYTIC uncertainty propagation using Laplace approximation (delta method).
+
+Key Features:
+- Uses analytic uncertainty propagation instead of Monte Carlo sampling
+- Supports all architectures: MLP, Transformer, Gaussian, and Multimodal
+- Automatically detects and loads Laplace approximations when available
+- Falls back to Monte Carlo for backward compatibility when Laplace unavailable
+- Faster and more accurate uncertainty quantification
+
+Uncertainty Methods:
+- When Laplace model available: Uses analytic delta method for uncertainty
+- When Laplace unavailable: Falls back to Monte Carlo sampling
+- For Gaussian heads: Uses intrinsic uncertainty from predicted variances
 
 Usage:
-    python plotting_driver_UQ_reload.py --arch mlp --latent_dim 1024 --param_dim 4 --problem simplified_dis ...
-    python plotting_driver_UQ_reload.py --arch gaussian --latent_dim 1024 --param_dim 4 --problem simplified_dis ...
-    python plotting_driver_UQ_reload.py --arch multimodal --latent_dim 1024 --param_dim 4 --problem simplified_dis ...
-    python plotting_driver_UQ_reload.py --arch transformer --latent_dim 1024 --param_dim 4 --problem simplified_dis ...
-    python plotting_driver_UQ_reload.py --arch all --latent_dim 1024 --param_dim 4 --problem simplified_dis ...
+    # Use analytic uncertainty (recommended - requires Laplace models):
+    python plotting_driver_UQ.py --arch gaussian --latent_dim 1024 --param_dim 4 --problem simplified_dis
+    
+    # Plot all architectures with analytic uncertainty:
+    python plotting_driver_UQ.py --arch all --latent_dim 1024 --param_dim 4 --problem simplified_dis
+    
+    # Reduce n_mc for faster fallback when Laplace unavailable:
+    python plotting_driver_UQ.py --arch mlp --n_mc 50 --latent_dim 1024 --param_dim 4
 """
 
 import torch
@@ -87,16 +100,40 @@ def load_laplace_if_available(experiment_dir, arch, model, device):
 def main():
     import argparse
     parser = argparse.ArgumentParser(
-        description='Reload models for each architecture and generate plots. Arguments should match PDF_learning.py.',
+        description='Generate plots with analytic Laplace uncertainty propagation. '
+                   'Uses delta method for fast, accurate uncertainty quantification.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Uncertainty Methods:
+  When Laplace models are available, uses analytic uncertainty propagation 
+  via delta method for improved speed and accuracy. Falls back to Monte 
+  Carlo sampling when Laplace models are not found.
+
+Examples:
+  # Plot with analytic uncertainty (recommended):
+  python plotting_driver_UQ.py --arch gaussian --problem simplified_dis
+  
+  # Plot all architectures:
+  python plotting_driver_UQ.py --arch all --latent_dim 512
+  
+  # Faster fallback for missing Laplace models:
+  python plotting_driver_UQ.py --arch mlp --n_mc 50
+        """
     )
     parser.add_argument('--arch', type=str, default='all',
                         help='Which architecture to plot: mlp, transformer, gaussian, multimodal, or all')
-    parser.add_argument('--latent_dim', type=int, default=1024)
-    parser.add_argument('--param_dim', type=int, default=4)
-    parser.add_argument('--problem', type=str, default='simplified_dis')
-    parser.add_argument('--nmodes', type=int, default=2)
-    parser.add_argument('--n_mc', type=int, default=100)
-    parser.add_argument('--num_events', type=int, default=100000)
+    parser.add_argument('--latent_dim', type=int, default=1024,
+                        help='Latent dimension of the model')
+    parser.add_argument('--param_dim', type=int, default=4,
+                        help='Parameter dimension (4 for simplified_dis, 6 for realistic_dis)')
+    parser.add_argument('--problem', type=str, default='simplified_dis',
+                        help='Problem type: simplified_dis or realistic_dis')
+    parser.add_argument('--nmodes', type=int, default=2,
+                        help='Number of modes for multimodal architecture')
+    parser.add_argument('--n_mc', type=int, default=100,
+                        help='Number of MC samples (used only when Laplace unavailable)')
+    parser.add_argument('--num_events', type=int, default=100000,
+                        help='Number of events for simulation')
     parser.add_argument('--true_params', type=float, nargs='+', default=None,
                         help='True parameter values for plotting, e.g. --true_params 0.5 0.5 0.5 0.5')
     args = parser.parse_args()
