@@ -25,7 +25,7 @@ def train(
     device = next(model.parameters()).device
     opt = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
-    alpha1, alpha2 = 0.01, 0.01  # regularization weights
+    alpha1, alpha2 = 0.01, 0.1  # regularization weights
 
     model.train()
     torch.backends.cudnn.benchmark = True  # Enable autotuner
@@ -47,18 +47,18 @@ def train(
                 dtype=torch.float16
             ):  # try float16 for better perf on A100s
                 latent = model(x_sets)  # [B * n_repeat, D]
-                contrastive = triplet_theta_contrastive_loss(latent, theta)
+                contrastive = triplet_theta_contrastive_loss(latent, theta, margin=0.1)
 
                 # Regularization: L2 norm of embeddings
-                # l2_reg = latent.norm(p=2, dim=1).mean()
-                l2_reg = torch.tensor([0.0]).to(device)
+                l2_reg = latent.norm(p=2, dim=1).mean()
+                # l2_reg = torch.tensor([0.0]).to(device)
 
                 # Covariance decorrelation (fast)
-                # z = latent - latent.mean(dim=0, keepdim=True)
-                # cov = z.T @ z / (z.size(0) - 1)
-                # off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
-                # decorrelation = (off_diag**2).sum()
-                decorrelation = torch.tensor([0.0]).to(device)
+                z = latent - latent.mean(dim=0, keepdim=True)
+                cov = z.T @ z / (z.size(0) - 1)
+                off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
+                decorrelation = (off_diag**2).sum()
+                # decorrelation = torch.tensor([0.0]).to(device)
 
                 loss = contrastive + alpha1 * l2_reg + alpha2 * decorrelation
 
@@ -170,12 +170,12 @@ def main_worker(rank, world_size, args):
         prefetch_factor=4,
     )
     if not (args.problem == "gaussian"):
-        dummy_theta = torch.zeros(input_dim, device=device)
         if args.problem == "mceg":
-            # Just generating a test parameter to get the right input dimension
-            dummy_theta = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00,2.33000000e+01], device=device)
-        dummy_x = simulator.sample(dummy_theta, args.num_events)
-        input_dim = log_feature_engineering(dummy_x).shape[-1]
+            input_dim = 2
+        else:
+            dummy_theta = torch.zeros(input_dim, device=device)
+            dummy_x = simulator.sample(dummy_theta, args.num_events)
+            input_dim = log_feature_engineering(dummy_x).shape[-1]
         print("Sampled successfully from MCEG simulator!")
         model = PointNetPMA(
             input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
@@ -211,9 +211,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=2000)
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--num_epochs", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--latent_dim", type=int, default=1024)
+    parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--problem", type=str, default="simplified_dis")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument(

@@ -306,7 +306,8 @@ class MCEGDISDataset(IterableDataset):
                 [-10.0, 10.0],
             ])
 
-        self.feature_engineering = feature_engineering
+    def feature_engineering(self, x):
+        return torch.log(x + 1e-8)  # Avoid log(0) by adding a small constant
 
     def __iter__(self):
         device = torch.device(f"cuda:{self.rank}" if torch.cuda.is_available() else "cpu")
@@ -327,8 +328,15 @@ class MCEGDISDataset(IterableDataset):
 
             xs = []
             for _ in range(self.n_repeat):
-                x = self.simulator.sample(theta, self.num_events+1000)
+                x = self.simulator.sample(theta, self.num_events + 1000)
                 x = x[:self.num_events, ...]
-                xs.append(self.feature_engineering(x).cpu())
+                fe_x = self.feature_engineering(x)
+                # Ensure tensor shape and type
+                if not isinstance(fe_x, torch.Tensor):
+                    fe_x = torch.tensor(fe_x)
+                fe_x = fe_x.cpu().contiguous().clone()
+                xs.append(fe_x)
+            stacked_xs = torch.stack(xs).cpu().contiguous().clone()
 
-            yield theta.cpu().contiguous(), torch.stack(xs).cpu().contiguous()
+            print(f"theta shape: {theta.shape}, xs shape: {stacked_xs.shape}")
+            yield theta.cpu().contiguous().clone(), stacked_xs
