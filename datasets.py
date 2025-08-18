@@ -14,7 +14,7 @@ import os
 import h5py
 import numpy as np
 from tqdm import tqdm
-from simulator import SimplifiedDIS, RealisticDIS, up, down, advanced_feature_engineering
+from simulator import SimplifiedDIS, RealisticDIS, up, down, advanced_feature_engineering, MCEGSimulator, Gaussian2DSimulator
 from utils import log_feature_engineering
 
 from scipy.stats import beta
@@ -176,6 +176,7 @@ class DISDataset(IterableDataset):
         self.world_size = world_size
         self.theta_bounds = torch.tensor([[0.0, 5]] * theta_dim)
         self.n_repeat = n_repeat
+        self.theta_dim = theta_dim
 
     def __len__(self):
         return self.samples_per_rank
@@ -206,9 +207,9 @@ class DISDataset(IterableDataset):
                 bad_sample = False
                 for _ in range(self.n_repeat):
                     x = self.simulator.sample(theta, self.num_events + 1000)
-                    if self.simulator.clip_alert:  # check after sample
-                        bad_sample = True
-                        break
+                    if isinstance(self.simulator.clip_alert, bool):
+                        bad_sample = self.simulator.clip_alert
+                        break   
                     x = x[:self.num_events, ...]
                     xs.append(self.feature_engineering(x).cpu())
 

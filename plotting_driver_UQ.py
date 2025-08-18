@@ -36,6 +36,67 @@ from models import *
 from plotting_UQ_utils import *
 from PDF_learning_UQ import *
 
+# utils_laplace.py
+import os, torch
+from laplace.laplace import Laplace
+
+def build_head(arch, latent_dim, param_dim, device, nmodes=None):
+    if arch == "mlp":
+        return MLPHead(latent_dim, param_dim).to(device)
+    if arch == "transformer":
+        return TransformerHead(latent_dim, param_dim).to(device)
+    if arch == "gaussian":
+        return GaussianHead(latent_dim, param_dim).to(device)
+    if arch == "multimodal":
+        return MultimodalHead(latent_dim, param_dim, nmodes=nmodes).to(device)
+    raise ValueError(f"Unknown arch: {arch}")
+
+
+HEAD_PTH = {
+    "mlp": "mlp_head_final.pth",
+    "transformer": "transformer_head_final.pth",
+    "gaussian": "gaussian_head_final.pth",
+    "multimodal": "multimodal_head_final.pth",
+}
+
+LAPLACE_CANDIDATES = lambda arch: [
+    f"laplace_{arch}.pt",
+    f"laplace_{arch}.ckpt",
+    f"laplace_{arch}_state.pt",
+    # historical fallbacks (optional):
+    "laplace_mlp.pt" if arch == "mlp" else None,
+    "laplace_transformer.pt" if arch == "transformer" else None,
+]
+
+def make_model(experiment_dir, arch, device, args):
+    m = build_head(arch, args.latent_dim, args.param_dim, device, nmodes=getattr(args, "nmodes", None))
+    map_path = os.path.join(experiment_dir, HEAD_PTH[arch])
+    if not os.path.exists(map_path):
+        print(f"⚠️  Expected MAP weights not found for {arch}: {map_path}")
+        return m.eval()  # return uninitialized head so Laplace still constructs
+    try:
+        state = torch.load(map_path, map_location=device)
+        m.load_state_dict(state, strict=True)
+    except RuntimeError as e:
+        # Helpful debug: show missing/unexpected keys and continue with strict=False
+        print("⚠️  Strict load failed for", arch, "->", map_path)
+        print(e)
+        missing, unexpected = [], []
+        try:
+            # parse message lightly
+            msg = str(e)
+            print("Attempting strict=False load as fallback.")
+        except Exception:
+            pass
+        m.load_state_dict(state, strict=False)
+    return m.eval()
+
+def _finalize_device_eval(la, device):
+    if hasattr(la, "model") and la.model is not None:
+        la.model.to(device).eval()
+    return la
+
+    
 def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal=False, nmodes=2):
     """
     Reloads model from checkpoint for the specified architecture.
@@ -77,25 +138,64 @@ def reload_pointnet(experiment_dir, latent_dim, device):
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
     pointnet_model.eval()
     return pointnet_model
+def load_laplace(make_model_fn, ckpt_path, device="cpu",
+                 default_likelihood="regression",
+                 default_subset="last_layer",
+                 default_hessian="kron"):
+    if not os.path.exists(ckpt_path):
+        return None
+    obj = torch.load(ckpt_path, map_location=device, weights_only=False)
 
-def load_laplace_if_available(experiment_dir, arch, model, device):
-    """
-    Attempt to load Laplace approximation for the specified model/arch.
-    Returns laplace_model or None.
-    """
-    laplace_path = os.path.join(experiment_dir, f"laplace_{arch}.pt")
-    if not os.path.exists(laplace_path):
-        return None
-    try:
-        from laplace import Laplace
-    except ImportError:
-        print("Laplace library not installed, proceeding without Laplace uncertainty.")
-        return None
-    laplace_model = Laplace(model, 'regression', subset_of_weights='all')
-    state_dict = torch.load(laplace_path, map_location=device)
-    laplace_model.load_state_dict(state_dict)
-    print(f"✔ Loaded Laplace for {arch} from {laplace_path}")
-    return laplace_model
+    # Case A: dict with 'laplace_state' [+ optional 'meta']
+    if isinstance(obj, dict) and "laplace_state" in obj:
+        meta = obj.get("meta", {
+            "likelihood": default_likelihood,
+            "subset_of_weights": default_subset,
+            "hessian_structure": default_hessian,
+        })
+        model = make_model_fn()  # this already .to(device).eval()
+        la = Laplace(model,
+                     meta["likelihood"],
+                     subset_of_weights=meta["subset_of_weights"],
+                     hessian_structure=meta["hessian_structure"])
+        la.load_state_dict(obj["laplace_state"])
+        return _finalize_device_eval(la, device)
+
+    # Case B: plain state_dict (no meta)
+    if isinstance(obj, dict) and any(torch.is_tensor(v) for v in obj.values()):
+        model = make_model_fn()
+        la = Laplace(model,
+                     default_likelihood,
+                     subset_of_weights=default_subset,
+                     hessian_structure=default_hessian)
+        la.load_state_dict(obj)
+        return _finalize_device_eval(la, device)
+
+    # Case C: pickled Laplace object
+    if hasattr(obj, "model"):
+        la = obj
+        return _finalize_device_eval(la, device)
+
+    print(f"⚠️  Unrecognized Laplace checkpoint format: {ckpt_path}")
+    return None
+
+def load_laplace_if_available(experiment_dir, arch, device, args):
+    # try several filenames in order
+    for name in filter(None, LAPLACE_CANDIDATES(arch)):
+        ckpt_path = os.path.join(experiment_dir, name)
+        if not os.path.exists(ckpt_path):
+            continue
+        def make_model_fn():
+            return make_model(experiment_dir, arch, device, args)
+        la = load_laplace(make_model_fn, ckpt_path, device=device,
+                          default_likelihood="regression",
+                          default_subset="last_layer",
+                          default_hessian="kron")
+        if la is not None:
+            print(f"✓ Loaded Laplace from {ckpt_path}")
+            return la
+    print(f"ℹ️  No Laplace checkpoint found for {arch}. Tried: {', '.join([p for p in LAPLACE_CANDIDATES(arch) if p])}")
+    return None
 
 def main():
     import argparse
@@ -172,8 +272,15 @@ Examples:
         plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
         os.makedirs(plot_dir, exist_ok=True)
         # Attempt to load Laplace approximation
-        laplace_model = load_laplace_if_available(experiment_dir, arch, model, device)
+        laplace_model = load_laplace_if_available(experiment_dir, arch, device,args)
 
+        if laplace_model is not None:
+            # quick preview latent (batch=1)
+            latent_preview = torch.zeros(1, args.latent_dim, device=device)
+            with torch.no_grad():
+                param_mean, param_std = get_analytic_uncertainty(model, latent_preview, laplace_model=laplace_model)
+            print("Output parameter mean (preview):", param_mean.squeeze(0).cpu().numpy())
+            print("Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy())
         # Run all plotting functions, passing laplace_model if available
         plot_params_distribution_single(
             model=model,

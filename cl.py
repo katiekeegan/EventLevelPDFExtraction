@@ -176,7 +176,6 @@ def main_worker(rank, world_size, args):
             dummy_theta = torch.zeros(input_dim, device=device)
             dummy_x = simulator.sample(dummy_theta, args.num_events)
             input_dim = log_feature_engineering(dummy_x).shape[-1]
-        print("Sampled successfully from MCEG simulator!")
         model = PointNetPMA(
             input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
         ).to(device)
@@ -208,12 +207,12 @@ def main_worker(rank, world_size, args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_samples", type=int, default=2000)
+    parser.add_argument("--num_samples", type=int, default=4000)
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--num_epochs", type=int, default=200)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--latent_dim", type=int, default=512)
+    parser.add_argument("--latent_dim", type=int, default=256)
     parser.add_argument("--problem", type=str, default="simplified_dis")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument(

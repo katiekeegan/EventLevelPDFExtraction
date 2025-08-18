@@ -14,6 +14,8 @@ from models import *
 from simulator import *
 from utils import *
 
+import os, json, torch
+
 # Laplace-torch for Laplace approximation
 from laplace import Laplace
 
@@ -24,6 +26,54 @@ warnings.filterwarnings("ignore")
 # --- Add this at the top of your file with other imports ---
 import torch.nn as nn
 import torch
+def save_laplace(la, output_dir, filename="laplace_mlp_state.pt",
+                 likelihood="regression",
+                 subset_of_weights="last_layer",
+                 hessian_structure="kron",
+                 extra_meta=None):
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, filename)
+    meta = {
+        "likelihood": likelihood,
+        "subset_of_weights": subset_of_weights,
+        "hessian_structure": hessian_structure,
+    }
+    if extra_meta:  # e.g. {"temperature": 1.0, "sigma_noise": 0.1}
+        meta.update(extra_meta)
+    torch.save({"laplace_state": la.state_dict(), "meta": meta}, path)
+    return path
+
+def load_laplace(make_model_fn, ckpt_path, device="cpu"):
+    """
+    make_model_fn() -> your base model instance with MAP weights already loaded.
+    """
+    from laplace.laplace import Laplace
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+
+    model = make_model_fn().to(device)
+    meta = ckpt["meta"]
+    la = Laplace(model,
+                 likelihood=meta["likelihood"],
+                 subset_of_weights=meta["subset_of_weights"],
+                 hessian_structure=meta["hessian_structure"])
+    la.load_state_dict(ckpt["laplace_state"])
+    return las
+class MeanOnlyWrapper(nn.Module):
+    def __init__(self, gaussian_model: nn.Module):
+        super().__init__()
+        self.model = gaussian_model  # forward returns (mean, log_std)
+    def forward(self, x):
+        mean, _ = self.model(x)
+        return mean
+
+def last_linear(module: nn.Module) -> nn.Linear:
+    # find the last nn.Linear actually present in the wrapped model
+    last = None
+    for m in module.modules():
+        if isinstance(m, nn.Linear):
+            last = m
+    assert last is not None, "No Linear layer found in mean path."
+    return last
 
 # --- Custom Gaussian NLL loss for Laplace ---
 def gaussian_nll_loss(output, target):
@@ -231,15 +281,15 @@ def train_gaussian(model, train_loader, val_loader, device, epochs=100, lr=1e-4,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis"])
     parser.add_argument("--latent_dim", type=int, default=1024)
-    parser.add_argument("--num_samples", type=int, default=1000)
+    parser.add_argument("--num_samples", type=int, default=3000)
     parser.add_argument("--num_events", type=int, default=100000)
     parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     args = parser.parse_args()
 
-    output_dir = os.path.join("experiments", f"{args.problem}_latent_{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}")
+    output_dir = os.path.join("experiments", f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}")
     os.makedirs(output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -282,35 +332,66 @@ def main():
         print("Training MLP...")
         mlp_head = MLPHead(args.latent_dim, param_dim)
         trained_mlp = train_standard(mlp_head, train_loader, val_loader, device, epochs=args.epochs)
-        lap_mlp = fit_laplace(trained_mlp, train_loader, regression=True)
         torch.save(trained_mlp.state_dict(), os.path.join(output_dir, "mlp_head_final.pth"))
-        torch.save(lap_mlp.state_dict(), os.path.join(output_dir, "laplace_mlp_state.pt"))
+        from laplace.laplace import Laplace
+
+        lap_mlp = Laplace(trained_mlp, 'regression',
+                        subset_of_weights='last_layer',
+                        hessian_structure='kron')
+        lap_mlp.fit(train_loader)
+        # after fitting:
+        save_laplace(lap_mlp, output_dir,
+                    filename="laplace_mlp.pt",
+                    likelihood="regression",
+                    subset_of_weights="last_layer",
+                    hessian_structure="kron")
 
     if args.arch in ["transformer", "all"]:
         print("Training Transformer...")
         transformer_head = TransformerHead(args.latent_dim, param_dim)
         trained_transformer = train_standard(transformer_head, train_loader, val_loader, device, epochs=args.epochs)
-        lap_transformer = fit_laplace(trained_transformer, train_loader, regression=True)
         torch.save(trained_transformer.state_dict(), os.path.join(output_dir, "transformer_head_final.pth"))
-        torch.save(lap_transformer.state_dict(), os.path.join(output_dir, "laplace_transformer_state.pt"))
-    # --- Main patch for Laplace fitting and saving ---
+        from laplace import Laplace
+        lap_transformer = Laplace(trained_transformer, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
+        lap_transformer.fit(train_loader)
+        # after fitting:
+        save_laplace(lap_transformer, output_dir,
+                    filename="laplace_transformer.pt",
+                    likelihood="regression",
+                    subset_of_weights="last_layer",
+                    hessian_structure="kron")
+
+
     if args.arch in ["gaussian", "all"]:
         print("Training Gaussian (NLL loss, with Laplace)...")
-        gaussian_head = GaussianHead(args.latent_dim, param_dim)
-        trained_gaussian = train_gaussian(
-            gaussian_head, train_loader, val_loader, device, epochs=args.epochs
-        )
-        # Save the trained Gaussian head
-        torch.save(trained_gaussian.state_dict(), os.path.join(output_dir, "gaussian_head_final.pth"))
-        print("Gaussian model trained and saved (NLL loss).")
-
-        # Fit Laplace and save Laplace object
         from laplace import Laplace
-        lap_gaussian = Laplace(trained_gaussian, 'regression', subset_of_weights='all')
-        lap_gaussian.fit(train_loader)
-        laplace_path = os.path.join(output_dir, "laplace_gaussian.pt")
-        torch.save(lap_gaussian.state_dict(), laplace_path)
-        print(f"Laplace approximation fitted and saved to {laplace_path}")
+        # after training + saving the gaussian head
+        gaussian_head = GaussianHead(args.latent_dim, param_dim).to(device)
+        trained_gaussian = train_gaussian(gaussian_head, train_loader, val_loader, device, epochs=args.epochs)
+        torch.save(trained_gaussian.state_dict(), os.path.join(output_dir, "gaussian_head_final.pth"))
+
+    # for n, p in trained_gaussian.named_parameters():
+    #     if "logstd" in n or "log_std" in n or "sigma" in n:
+    #         p.requires_grad_(False)
+
+    # wrapped_mean_model = MeanOnlyWrapper(trained_gaussian).to(device).eval()
+
+    # # Choose the last *mean* layer explicitly:
+    # mean_last = last_linear(wrapped_mean_model)  # if your architecture mixes paths,
+    #                                             # replace with a direct handle to the mean head's final Linear
+
+    # lap_gaussian = Laplace(
+    #     wrapped_mean_model,
+    #     likelihood='regression',
+    #     subset_of_weights='last_layer',
+    #     hessian_structure='kron',
+    #     last_layer=mean_last,              # <-- critical line
+    # )
+
+    # lap_gaussian.fit(train_loader)
+    # lap_gaussian.optimize_prior_precision(method='marglik')
+
+    # torch.save(lap_gaussian.state_dict(), os.path.join(output_dir, "laplace_gaussian_state.pth"))
 
     if args.arch in ["multimodal", "all"]:
         print("Training Mixture of Gaussians (NLL loss, with Laplace)...")
@@ -321,15 +402,14 @@ def main():
         torch.save(trained_multimodal.state_dict(), os.path.join(output_dir, "multimodal_head_final.pth"))
         print("Mixture of Gaussians model trained and saved (NLL loss).")
 
-        # Fit Laplace and save Laplace object
-        from laplace import Laplace
-        lap_multimodal = Laplace(trained_multimodal, 'regression', subset_of_weights='all')
-        lap_multimodal.fit(train_loader)
-        laplace_path = os.path.join(output_dir, "laplace_multimodal.pt")
-        torch.save(lap_multimodal.state_dict(), laplace_path)
-        print(f"Laplace approximation fitted and saved to {laplace_path}")
+        # # Fit Laplace and save Laplace object
+        # from laplace import Laplace
+        # lap_multimodal = Laplace(trained_multimodal, 'regression', subset_of_weights='all')
+        # lap_multimodal.fit(train_loader)
+        # laplace_path = os.path.join(output_dir, "laplace_multimodal.pt")
+        # torch.save(lap_multimodal.state_dict(), laplace_path)  # <--- FIXED
+        # print(f"Laplace approximation fitted and saved to {laplace_path}")
 
-
-    print("All models trained and saved (NLL loss, no Laplace applied).")
+    print("All models trained and saved (NLL loss, Laplace fits saved).")
 if __name__ == "__main__":
     main()

@@ -6,67 +6,67 @@ from simulator import advanced_feature_engineering, SimplifiedDIS, RealisticDIS
 
 def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
-    Computes analytic uncertainty using Laplace approximation (delta method).
-    
-    Args:
-        model: The neural network model (head)
-        latent_embedding: Input latent embedding tensor
-        laplace_model: Fitted Laplace approximation object
-        
-    Returns:
-        tuple: (mean_params, std_params) for analytic uncertainty
-               mean_params: MAP estimate of parameters [batch_size, param_dim]
-               std_params: Standard deviation per parameter [batch_size, param_dim]
-               
-    Note: Uses analytic propagation of Laplace uncertainty via delta method
-    instead of Monte Carlo sampling for improved speed and accuracy.
+    Return (mean_params, std_params) for the model outputs given a Laplace posterior.
+    Works across older laplace-torch builds by trying several APIs.
     """
     device = latent_embedding.device
-    
+    model.eval()
+
     if laplace_model is not None:
-        # Use Laplace approximation for analytic uncertainty propagation
         with torch.no_grad():
-            # Get predictive mean and variance analytically
-            pred_mean, pred_var = laplace_model(latent_embedding, joint=False)
-            
-            # Extract diagonal covariance as standard deviations
-            if pred_var.dim() == 3:  # [batch_size, output_dim, output_dim]
-                # Take diagonal elements and sqrt for standard deviation
-                pred_std = torch.sqrt(torch.diagonal(pred_var, dim1=-2, dim2=-1))
-            else:  # [batch_size, output_dim] - already diagonal variance
-                pred_std = torch.sqrt(pred_var)
-                
-            return pred_mean, pred_std
-    else:
-        # Fallback: Standard model without uncertainty
-        model.eval()
-        with torch.no_grad():
-            output = model(latent_embedding)
-            
-        if isinstance(output, tuple) and len(output) == 2:  # GaussianHead
-            means, logvars = output
-            stds = torch.exp(0.5 * logvars)
-            return means, stds
-        elif isinstance(output, tuple) and len(output) == 3:  # MultimodalHead
-            # For multimodal, return mode with highest weight
-            means, logvars, weights = output
-            batch_size = means.shape[0]
-            
-            # Get mode with highest weight for each batch element
-            mode_indices = torch.argmax(weights, dim=-1)  # [batch_size]
-            
-            # Extract mean and std for the selected mode
-            selected_means = means[torch.arange(batch_size), mode_indices]  # [batch_size, param_dim]
-            selected_logvars = logvars[torch.arange(batch_size), mode_indices]  # [batch_size, param_dim]
-            selected_stds = torch.exp(0.5 * selected_logvars)
-            
-            return selected_means, selected_stds
-        else:
-            # MLP/Transformer deterministic output - no uncertainty
-            # Return zero std for compatibility
-            pred_mean = output
-            pred_std = torch.zeros_like(pred_mean)
-            return pred_mean, pred_std
+            # --- Path 1: predictive_distribution(x) -> distribution with .loc and .scale
+            pred_dist_fn = getattr(laplace_model, "predictive_distribution", None)
+            if callable(pred_dist_fn):
+                dist = pred_dist_fn(latent_embedding)
+                mean_params = dist.loc
+                std_params  = dist.scale
+                return mean_params.cpu(), std_params.cpu()
+
+            # --- Path 2: calling the object sometimes returns (mean, var)
+            try:
+                out = laplace_model(latent_embedding, joint=False)
+                if isinstance(out, tuple) and len(out) == 2:
+                    pred_mean, pred_var = out
+                    if pred_var.dim() == 3:
+                        pred_std = torch.sqrt(torch.diagonal(pred_var, dim1=-2, dim2=-1))
+                    else:
+                        pred_std = torch.sqrt(pred_var.clamp_min(0))
+                    return pred_mean.cpu(), pred_std.cpu()
+            except Exception:
+                pass
+
+            # --- Path 3: predict(..., pred_type='glm', link_approx='mc')
+            predict_fn = getattr(laplace_model, "predict", None)
+            if callable(predict_fn):
+                try:
+                    pred = predict_fn(latent_embedding, pred_type='glm', link_approx='mc', n_samples=200)
+                    if isinstance(pred, tuple) and len(pred) == 2:
+                        mean, var = pred
+                        std = torch.sqrt(var.clamp_min(0))
+                        return mean.cpu(), std.cpu()
+                    if hasattr(pred, "loc") and hasattr(pred, "scale"):
+                        return pred.loc.cpu(), pred.scale.cpu()
+                except Exception:
+                    pass
+
+    # --- Fallbacks (no Laplace available) ---
+    with torch.no_grad():
+        output = model(latent_embedding.to(device))
+    if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
+        means, logvars = output
+        stds = torch.exp(0.5 * logvars)
+        return means.cpu(), stds.cpu()
+    elif isinstance(output, tuple) and len(output) == 3:  # Multimodal head
+        means, logvars, weights = output
+        b = means.shape[0]
+        idx = torch.argmax(weights, dim=-1)
+        sel_means = means[torch.arange(b), idx]
+        sel_stds  = torch.exp(0.5 * logvars[torch.arange(b), idx])
+        return sel_means.cpu(), sel_stds.cpu()
+    else:  # deterministic
+        pred_mean = output
+        pred_std  = torch.zeros_like(pred_mean)
+        return pred_mean.cpu(), pred_std.cpu()
 
 
 def get_gaussian_samples(model, latent_embedding, n_samples=100, laplace_model=None):
