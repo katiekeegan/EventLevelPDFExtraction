@@ -3,6 +3,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 from simulator import advanced_feature_engineering, SimplifiedDIS, RealisticDIS
+import umap.umap_ as umap
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from simulator import *
+from PDF_learning import advanced_feature_engineering
+from plotting_driver_UQ import reload_pointnet
+from datasets import *
 
 def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
@@ -224,7 +231,7 @@ def plot_PDF_distribution_single(
     pointnet_model,
     true_params,
     device,
-    n_mc=100,  # Kept for backward compatibility but ignored when using analytic uncertainty
+    n_mc=200,  # bump a bit if you like smoother quantiles
     laplace_model=None,
     problem='simplified_dis',
     Q2_slices=None,
@@ -232,10 +239,11 @@ def plot_PDF_distribution_single(
     save_path="pdf_distribution.png"
 ):
     """
-    Plot PDF distributions using analytic Laplace uncertainty propagation.
-    
-    When laplace_model is provided, uses analytic uncertainty propagation to 
-    compute error bands instead of Monte Carlo sampling for improved speed and accuracy.
+    Plot PDF distributions using parameter-posterior sampling.
+
+    If laplace_model is provided, draw parameter samples from the Laplace
+    Gaussian posterior and compute the pointwise median/IQR of the resulting
+    function values (same aggregation as the legacy MC path).
     """
     model.eval()
     pointnet_model.eval()
@@ -247,71 +255,66 @@ def plot_PDF_distribution_single(
     xs_tensor = advanced_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
+    # --- Sampling strategy ---
+    # If Laplace is available, sample parameters from its Gaussian posterior.
+    # Otherwise, fall back to your legacy get_gaussian_samples behavior.
     if laplace_model is not None:
-        # Use analytic uncertainty propagation (delta method)
-        mean_params, std_params = get_analytic_uncertainty(model, latent_embedding, laplace_model)
-        mean_params = mean_params.cpu().squeeze(0)
-        std_params = std_params.cpu().squeeze(0)
-        use_analytic = True
+        samples = get_gaussian_samples(
+            model,
+            latent_embedding,
+            n_samples=n_mc,
+            laplace_model=laplace_model  # should draw from N(theta_hat, Sigma_laplace)
+        ).cpu()
+        label_curve = "Median (Laplace posterior MC)"
+        label_band  = "IQR"
     else:
-        # Fallback to MC sampling for backward compatibility
-        samples = get_gaussian_samples(model, latent_embedding, n_samples=n_mc, laplace_model=laplace_model).cpu()
-        use_analytic = False
+        samples = get_gaussian_samples(
+            model,
+            latent_embedding,
+            n_samples=n_mc,
+            laplace_model=None
+        ).cpu()
+        label_curve = "Median (MC)"
+        label_band  = "IQR"
 
     if problem == 'simplified_dis':
         x_vals = torch.linspace(0, 1, 500).to(device)
         for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
-            
-            if use_analytic:
-                # Compute PDF using analytic uncertainty
-                simulator.init(mean_params)
+            # Evaluate function for each sampled parameter vector
+            fn_vals_all = []
+            for i in range(samples.shape[0]):
+                simulator.init(samples[i])
                 fn = getattr(simulator, fn_name)
-                mean_vals = fn(x_vals).detach().cpu()
-                
-                # Compute uncertainty bounds using ±2σ (approximately 95% confidence interval)
-                # For PDF uncertainty, we approximate using parameter uncertainty
-                # This is a first-order approximation; for exact uncertainty propagation,
-                # we would need the Jacobian of the PDF w.r.t. parameters
-                param_std_norm = torch.norm(std_params).item()
-                uncertainty_factor = 2.0 * param_std_norm  # Heuristic scaling
-                
-                lower_bounds = mean_vals * (1 - uncertainty_factor)
-                upper_bounds = mean_vals * (1 + uncertainty_factor)
-                
-                # Ensure non-negative PDFs
-                lower_bounds = torch.clamp(lower_bounds, min=0.0)
-                
-            else:
-                # MC sampling approach (legacy)
-                fn_vals_all = []
-                for i in range(n_mc):
-                    simulator.init(samples[i])
-                    fn = getattr(simulator, fn_name)
-                    fn_vals_all.append(fn(x_vals).unsqueeze(0))
+                fn_vals_all.append(fn(x_vals).unsqueeze(0))
 
-                fn_stack = torch.cat(fn_vals_all, dim=0)
-                mean_vals = fn_stack.median(dim=0).values.detach().cpu()
-                lower_bounds = torch.quantile(fn_stack, 0.25, dim=0).detach().cpu()
-                upper_bounds = torch.quantile(fn_stack, 0.75, dim=0).detach().cpu()
+            fn_stack = torch.cat(fn_vals_all, dim=0)  # [n_mc, 500]
+            median_vals = fn_stack.median(dim=0).values.detach().cpu()
+            lower_bounds = torch.quantile(fn_stack, 0.25, dim=0).detach().cpu()
+            upper_bounds = torch.quantile(fn_stack, 0.75, dim=0).detach().cpu()
 
-            # Compute true values for comparison
+            # True curve
             simulator.init(true_params.squeeze())
             true_vals = getattr(simulator, fn_name)(x_vals).detach().cpu()
 
-            # Create plot
+            # Plot
             fig, ax = plt.subplots(figsize=(7, 5))
             ax.plot(x_vals.detach().cpu(), true_vals, label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
-            
-            if use_analytic:
-                ax.plot(x_vals.detach().cpu(), mean_vals, linestyle='--', 
-                       label=fr"MAP ${fn_label}(x|\hat{{\theta}})$ (Analytic)", color="crimson", linewidth=2)
-                ax.fill_between(x_vals.detach().cpu(), lower_bounds, upper_bounds, 
-                               color="crimson", alpha=0.3, label="95% Analytic CI")
-            else:
-                ax.plot(x_vals.detach().cpu(), mean_vals, linestyle='--', 
-                       label=fr"Median ${fn_label}(x|\hat{{\theta}})$ (MC)", color="crimson", linewidth=2)
-                ax.fill_between(x_vals.detach().cpu(), lower_bounds, upper_bounds, 
-                               color="crimson", alpha=0.3, label="IQR")
+            ax.plot(
+                x_vals.detach().cpu(),
+                median_vals,
+                linestyle='--',
+                label=fr"{label_curve} ${fn_label}(x)$",
+                color="crimson",
+                linewidth=2
+            )
+            ax.fill_between(
+                x_vals.detach().cpu(),
+                lower_bounds,
+                upper_bounds,
+                color="crimson",
+                alpha=0.3,
+                label=label_band
+            )
 
             ax.set_xlabel(r"$x$")
             ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -612,3 +615,99 @@ def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=False, n
     plt.savefig('log_loss_PDF_learning.png', dpi=300)
     if show_plot: plt.show()
     plt.close()
+
+def generate_latents_and_params(pointnet_model, params_list, device, num_events=1000):
+    latents = []
+    all_params = []
+    for params in params_list:
+        # Simulate events for these parameters
+        xs, ys = simulate_events(params, num_events=num_events)
+        xs_tensor = torch.tensor(xs, dtype=torch.float32).to(device)
+        feats = advanced_feature_engineering(xs_tensor)
+        with torch.no_grad():
+            latent = pointnet_model(feats.unsqueeze(0))  # shape: [1, latent_dim]
+        latents.append(latent.cpu().numpy().squeeze(0))
+        all_params.append(params)
+    latents = np.array(latents)
+    all_params = np.array(all_params)
+    return latents, all_params
+
+def plot_latents(latents, params, method='umap', param_idx=0, title=None, save_path=None):
+    if method == 'tsne':
+        reducer = TSNE(n_components=2, random_state=42)
+    else:
+        reducer = umap.UMAP(n_components=2, random_state=42)
+    emb = reducer.fit_transform(latents)
+    plt.figure(figsize=(8,6))
+    scatter = plt.scatter(emb[:,0], emb[:,1], c=params[:,param_idx], cmap='viridis', s=30)
+    plt.xlabel(f"{method.upper()} dim 1")
+    plt.ylabel(f"{method.upper()} dim 2")
+    plt.title(title or f"Latent space ({method.upper()}) colored by param {param_idx}")
+    plt.colorbar(scatter, label=f"Parameter {param_idx}")
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    plt.show()
+
+def extract_latents_from_data(pointnet_model, args, problem, device):
+    """
+    Generate data and extract latents using PointNet model.
+
+    Returns:
+        latents: [n_samples, latent_dim]
+        thetas: [n_samples, param_dim]
+    """
+    # Generate parameters and simulated events
+    thetas, xs = generate_data(args.num_samples, args.num_events, problem=problem, device=device)
+    # Feature engineering
+    feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]
+    # Reshape for PointNet batching
+    n_samples = thetas.shape[0]
+    n_events = xs.shape[1]
+    feats = feats.view(n_samples, n_events, -1)  # [n_samples, n_events, n_features]
+
+    # Extract latents
+    latents = []
+    with torch.no_grad():
+        for i in range(n_samples):
+            latent = pointnet_model(feats[i].unsqueeze(0))  # [1, latent_dim]
+            latents.append(latent.cpu().numpy().squeeze(0))
+    latents = np.array(latents)
+    return latents, thetas.cpu().numpy()
+
+def plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap', save_path=None, show=True):
+    """
+    Plot latent vectors (n_samples x latent_dim) reduced to 2D via UMAP or t-SNE,
+    colored by parameters (n_samples x param_dim).
+    """
+    # Reduce latents to 2D
+    if method == 'tsne':
+        reducer = TSNE(n_components=2, random_state=42)
+    else:
+        reducer = umap.UMAP(n_components=2, random_state=42)
+    emb = reducer.fit_transform(latents)
+
+    # Determine coloring
+    if color_mode == 'single':
+        color = params[:, param_idx]
+        label = f"Parameter {param_idx}"
+    elif color_mode == 'mean':
+        color = np.mean(params, axis=1)
+        label = "Mean parameter"
+    elif color_mode == 'pca':
+        pca = PCA(n_components=1)
+        color = pca.fit_transform(params).flatten()
+        label = "First principal component of parameters"
+    else:
+        raise ValueError("color_mode must be 'single', 'mean', or 'pca'")
+
+    # Plot
+    plt.figure(figsize=(8,6))
+    sc = plt.scatter(emb[:,0], emb[:,1], c=color, cmap='viridis', s=30)
+    plt.xlabel(f"{method.upper()} dim 1")
+    plt.ylabel(f"{method.upper()} dim 2")
+    plt.title(f"Latent space ({method.upper()}), colored by {label}")
+    plt.colorbar(sc, label=label)
+    if save_path:
+        plt.savefig(save_path, bbox_inches='tight')
+    if show:
+        plt.show()

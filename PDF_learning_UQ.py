@@ -281,11 +281,11 @@ def train_gaussian(model, train_loader, val_loader, device, epochs=100, lr=1e-4,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--epochs", type=int, default=2000)
     parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis"])
-    parser.add_argument("--latent_dim", type=int, default=1024)
-    parser.add_argument("--num_samples", type=int, default=3000)
-    parser.add_argument("--num_events", type=int, default=100000)
+    parser.add_argument("--latent_dim", type=int, default=256)
+    parser.add_argument("--num_samples", type=int, default=4000)
+    parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     args = parser.parse_args()
 
@@ -299,7 +299,7 @@ def main():
 
     # Load PointNetPMA encoder
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True)
-    state_dict = torch.load("experiments/simplified_dis_latent1024_ns_1000_ne_100000/final_model.pth", map_location="cpu")
+    state_dict = torch.load(output_dir + "/final_model.pth", map_location="cpu")
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict(state_dict)

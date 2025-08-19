@@ -34,6 +34,7 @@ from PDF_learning import *
 from simulator import *
 from models import *
 from plotting_UQ_utils import *
+from datasets import *
 from PDF_learning_UQ import *
 
 # utils_laplace.py
@@ -232,6 +233,7 @@ Examples:
                         help='Number of modes for multimodal architecture')
     parser.add_argument('--n_mc', type=int, default=100,
                         help='Number of MC samples (used only when Laplace unavailable)')
+    parser.add_argument("--num_samples", type=int, default=4000)
     parser.add_argument('--num_events', type=int, default=100000,
                         help='Number of events for simulation')
     parser.add_argument('--true_params', type=float, nargs='+', default=None,
@@ -239,7 +241,7 @@ Examples:
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    experiment_dir = f"experiments/{args.problem}_latent_{args.latent_dim}_ns_1000_ne_{args.num_events}"
+    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
     experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_1000_ne_{args.num_events}"
 
     # Which architectures to plot?
@@ -260,7 +262,15 @@ Examples:
 
     # Load PointNet once (shared across all heads)
     pointnet_model = reload_pointnet(experiment_dir_pointnet, args.latent_dim, device)
+    param_ranges = [np.linspace(0.0, 5.0, 10) for _ in range(4)]
+    params_grid = np.array(np.meshgrid(*param_ranges)).reshape(4, -1).T
 
+    # Extract latents and parameters
+    latents, thetas = extract_latents_from_data(pointnet_model, args, args.problem, device)
+    plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap')
+    # plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap')
+    plot_latents_umap(latents, thetas, color_mode='mean', method='umap')
+    plot_latents_umap(latents, thetas, color_mode='pca', method='tsne')
     for arch in archs:
         print(f"\n==== Plotting for architecture: {arch.upper()} ====")
         multimodal = (arch == "multimodal")

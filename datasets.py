@@ -177,6 +177,7 @@ class DISDataset(IterableDataset):
         self.theta_bounds = torch.tensor([[0.0, 5]] * theta_dim)
         self.n_repeat = n_repeat
         self.theta_dim = theta_dim
+        self.feature_engineering = advanced_feature_engineering
 
     def __len__(self):
         return self.samples_per_rank
@@ -207,7 +208,7 @@ class DISDataset(IterableDataset):
                 bad_sample = False
                 for _ in range(self.n_repeat):
                     x = self.simulator.sample(theta, self.num_events + 1000)
-                    if isinstance(self.simulator.clip_alert, bool):
+                    if bool(getattr(self.simulator, "clip_alert", False)):
                         bad_sample = self.simulator.clip_alert
                         break   
                     x = x[:self.num_events, ...]
