@@ -103,6 +103,8 @@ class MCEGSimulator:
 
     def sample(self, params, nevents=1):
         assert nevents > 0, "Number of events must be positive"
+        if not isinstance(params, torch.Tensor):
+            params = torch.tensor(params, dtype=torch.float32, device=self.device)
         self.init(params)  # Take in new parameters
         # Initialize Monte Carlo Event Generator
         mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)

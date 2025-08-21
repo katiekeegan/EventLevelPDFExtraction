@@ -283,10 +283,11 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--epochs", type=int, default=2000)
-    parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis"])
+    parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis", "mceg"])
     parser.add_argument("--latent_dim", type=int, default=256)
     parser.add_argument("--num_samples", type=int, default=4000)
     parser.add_argument("--num_events", type=int, default=10000)
+    parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
     parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     args = parser.parse_args()
 
@@ -295,32 +296,35 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     thetas, xs = generate_data(args.num_samples, args.num_events, problem=args.problem, device=device)
-    input_dim = 6 if args.problem == "simplified_dis" else 12
+    if args.problem == "simplified_dis":
+        input_dim = 6
+    elif args.problem == "realistic_dis":
+        input_dim = 12
+    elif args.problem == "mceg":
+        input_dim = 2
     param_dim = thetas.size(-1)
 
     # Load PointNetPMA encoder
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True)
-    state_dict = torch.load(output_dir + "/final_model.pth", map_location="cpu")
+    state_dict = torch.load(output_dir + '/' + args.cl_model, map_location="cpu")
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict(state_dict)
     pointnet_model.eval()
     pointnet_model.to(device)
 
-    latent_path = "latent_features.h5"
-    if not os.path.exists(latent_path):
-        xs_tensor_engineered = log_feature_engineering(xs)
+    xs_tensor_engineered = log_feature_engineering(xs)
 
-        # Initialize PointNetEmbedding model (do this once)
-        input_dim = xs_tensor_engineered.shape[-1]
-        print(f"[precompute] Input dimension: {input_dim}")
-        print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
-        # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
-        precompute_latents_to_disk(
-            pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
-        )
-        del xs_tensor_engineered
-        del xs
+    # Initialize PointNetEmbedding model (do this once)
+    input_dim = xs_tensor_engineered.shape[-1]
+    print(f"[precompute] Input dimension: {input_dim}")
+    print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
+    # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
+    precompute_latents_to_disk(
+        pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
+    )
+    del xs_tensor_engineered
+    del xs
 
     dataset = H5Dataset(latent_path)
     n_val = int(0.1 * len(dataset))

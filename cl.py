@@ -274,7 +274,6 @@ def main_worker(rank, world_size, args):
     train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, theta_head=theta_head,)
     cleanup()
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--num_samples", type=int, default=4000)

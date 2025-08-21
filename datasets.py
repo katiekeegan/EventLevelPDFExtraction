@@ -19,6 +19,67 @@ from utils import log_feature_engineering
 
 from scipy.stats import beta
 
+def _as_numpy(x):
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return np.asarray(x)
+
+def _coerce_sample(arr, num_events, x_dim=None):
+    """
+    Take arbitrary-shaped sample `arr` and coerce to (num_events, F).
+    - Detect the 'event' axis (prefer exact match with num_events, else closest).
+    - Move event axis to front.
+    - Flatten remaining axes as features.
+    - Truncate/pad events to num_events.
+    - If x_dim is given, truncate/pad features to exactly x_dim.
+    """
+    a = _as_numpy(arr)
+    a = np.squeeze(a)  # drop size-1 dims
+    if a.size == 0:
+        # degenerate case: just return zeros
+        F = x_dim if x_dim is not None else 1
+        return np.zeros((num_events, F), dtype=np.float32)
+
+    # If 1D -> interpret as (N, 1)
+    if a.ndim == 1:
+        a = a.reshape(-1, 1)
+
+    # Pick event axis: exact match to num_events if possible, else nearest size
+    if any(s == num_events for s in a.shape):
+        event_axis = next(i for i, s in enumerate(a.shape) if s == num_events)
+    else:
+        # Choose axis whose size is closest to num_events
+        sizes = list(a.shape)
+        diffs = [abs(s - num_events) for s in sizes]
+        event_axis = int(np.argmin(diffs))
+
+    # Move event axis to axis 0
+    if event_axis != 0:
+        a = np.moveaxis(a, event_axis, 0)
+
+    # Now a is (N_events_like, ...features...)
+    N = a.shape[0]
+    feat = int(np.prod(a.shape[1:])) if a.ndim > 1 else 1
+    a = a.reshape(N, feat)
+
+    # Truncate/pad events
+    if N >= num_events:
+        a = a[:num_events, :]
+    else:
+        pad_events = np.zeros((num_events - N, feat), dtype=a.dtype)
+        a = np.concatenate([a, pad_events], axis=0)
+
+    # Optionally force feature size
+    if x_dim is not None:
+        if a.shape[1] >= x_dim:
+            a = a[:, :x_dim]
+        else:
+            pad_feat = np.zeros((num_events, x_dim - a.shape[1]), dtype=a.dtype)
+            a = np.concatenate([a, pad_feat], axis=1)
+
+    return a.astype(np.float32)
+
+
 def sample_skewed_uniform(low, high, size, alpha=0.5, beta_param=1.0):
     # Sample from Beta(α, β), which is defined on [0,1]
     raw = beta.rvs(alpha, beta_param, size=size)
@@ -140,30 +201,105 @@ class EventDataset(Dataset):
         return torch.stack(latents), torch.stack(params)
 
 # Data Generation with improved stability
-def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=2, device=torch.device("cpu")):
+# def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=2, device=torch.device("cpu")):
+#     if problem == 'simplified_dis':
+#         simulator = SimplifiedDIS(device)
+#         theta_dim = 4 # [au, bu, ad, bd]
+#         ranges = [(0.0, 5), (0.0, 5), (0.0, 5), (0.0, 5)]  # Example ranges
+#     elif problem == 'realistic_dis':
+#         simulator = RealisticDIS(device)
+#         theta_dim = 6
+#         ranges = [
+#                 (-2.0, 2.0),   # logA0
+#                 (-1.0, 1.0),   # delta
+#                 (0.0, 5.0),    # a
+#                 (0.0, 10.0),   # b
+#                 (-5.0, 5.0),   # c
+#                 (-5.0, 5.0),   # d
+#         ]
+#     elif problem == 'mceg':
+#         simulator = MCEGSimulator(device)
+#         theta_dim = 4    
+#         ranges = [
+#                 (-1.0, 10.0),
+#                 (0.0, 10.0),
+#                 (-10.0, 10.0),
+#                 (-10.0, 10.0),
+#             ]
+#     # thetas = np.column_stack([np.random.uniform(low, high, size=num_samples) for low, high in ranges])
+#     thetas = np.column_stack([
+#     sample_skewed_uniform(low, high, num_samples, alpha=1.0, beta_param=2.0)
+#     for low, high in ranges
+#     ])
+#     if problem == 'mceg':
+#         xs = np.array([simulator.sample(theta, num_events+1000)[:, :num_events, ...].cpu().numpy() for theta in thetas]) + 1e-8
+#         # xs = x # Ensure we only take the first num_events events
+#     else:
+#         xs = np.array([simulator.sample(theta, num_events).cpu().numpy() for theta in thetas]) + 1e-8
+#     thetas_tensor = torch.tensor(thetas, dtype=torch.float32, device=device)
+#     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+#     return thetas_tensor, xs_tensor
+
+def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=None, device=torch.device("cpu")):
+    # 1) Simulator + numeric ranges (use tuples of floats)
     if problem == 'simplified_dis':
         simulator = SimplifiedDIS(device)
-        theta_dim = 4 # [au, bu, ad, bd]
-        ranges = [(0.0, 5), (0.0, 5), (0.0, 5), (0.0, 5)]  # Example ranges
+        theta_dim = 4  # [au, bu, ad, bd]
+        ranges = [(0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)]
     elif problem == 'realistic_dis':
         simulator = RealisticDIS(device)
         theta_dim = 6
         ranges = [
-                (-2.0, 2.0),   # logA0
-                (-1.0, 1.0),   # delta
-                (0.0, 5.0),    # a
-                (0.0, 10.0),   # b
-                (-5.0, 5.0),   # c
-                (-5.0, 5.0),   # d
+            (-2.0, 2.0),   # logA0
+            (-1.0, 1.0),   # delta
+            (0.0, 5.0),    # a
+            (0.0, 10.0),   # b
+            (-5.0, 5.0),   # c
+            (-5.0, 5.0),   # d
         ]
-    # thetas = np.column_stack([np.random.uniform(low, high, size=num_samples) for low, high in ranges])
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(device)
+        theta_dim = 4
+        ranges = [(-1.0, 10.0), (0.0, 10.0), (-10.0, 10.0), (-10.0, 10.0)]
+    else:
+        raise ValueError(f"Unknown problem: {problem}")
+
+    # 2) Sample thetas (floats)
     thetas = np.column_stack([
-    sample_skewed_uniform(low, high, num_samples, alpha=1.0, beta_param=2.0)
-    for low, high in ranges
-    ])
-    xs = np.array([simulator.sample(theta, num_events).cpu().numpy() for theta in thetas]) + 1e-8
+        sample_skewed_uniform(float(low), float(high), num_samples, alpha=1.0, beta_param=2.0)
+        for (low, high) in ranges
+    ]).astype(np.float32)
+
+    # 3) Collect samples with full flexibility
+    processed = []
+    max_feat = 0
+
+    for i in range(num_samples):
+        theta_np = thetas[i]
+        theta_t = torch.tensor(theta_np, dtype=torch.float32, device=device)
+
+        # Try sampling; if some sims underproduce events, that's fine—_coerce_sample will pad.
+        # If a specific simulator needs oversampling, do it here (but don't assume event axis).
+        sample_t = simulator.sample(theta_t, int(num_events))
+        s = _coerce_sample(sample_t, num_events, x_dim=x_dim)
+        processed.append(s)
+        if s.shape[1] > max_feat:
+            max_feat = s.shape[1]
+
+    # 4) Pad features to the max seen (if x_dim not fixed)
+    if x_dim is None:
+        x_dim_eff = max_feat
+    else:
+        x_dim_eff = x_dim
+
+    xs_np = np.zeros((num_samples, num_events, x_dim_eff), dtype=np.float32)
+    for i, s in enumerate(processed):
+        f = min(s.shape[1], x_dim_eff)
+        xs_np[i, :, :f] = s[:, :f]
+
+    # 5) Convert to tensors (+ tiny epsilon if you like)
     thetas_tensor = torch.tensor(thetas, dtype=torch.float32, device=device)
-    xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+    xs_tensor = torch.tensor(xs_np + 1e-8, dtype=torch.float32, device=device)
     return thetas_tensor, xs_tensor
 
 class DISDataset(IterableDataset):

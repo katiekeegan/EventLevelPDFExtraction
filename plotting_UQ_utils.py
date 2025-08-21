@@ -711,3 +711,4 @@ def plot_latents_umap(latents, params, color_mode='single', param_idx=0, method=
         plt.savefig(save_path, bbox_inches='tight')
     if show:
         plt.show()
+
