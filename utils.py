@@ -102,13 +102,13 @@ def precompute_features_and_latents_to_disk(pointnet_model, xs_tensor, thetas, o
             del xs_sample, xs_engineered, latent
             torch.cuda.empty_cache()
 
-def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
+def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, latent_dim, chunk_size=4):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     pointnet_model = pointnet_model.to(device)
     pointnet_model.eval()
     
     with h5py.File(output_path, 'w') as f:
-        latent_shape = (len(xs_tensor), 1024)
+        latent_shape = (len(xs_tensor), latent_dim)
         latent_dset = f.create_dataset('latents', shape=latent_shape, dtype=np.float32,
                                        chunks=(chunk_size, latent_shape[1]))
         

@@ -19,48 +19,98 @@ from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
 from utils import *
 
 
+class TinyThetaHead(nn.Module):
+    """
+    Extremely small head: latent_dim -> theta_dim
+    One tiny hidden layer to keep capacity minimal.
+    """
+    def __init__(self, latent_dim: int, theta_dim: int, hidden: int = 16):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim, hidden, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, theta_dim, bias=True)
+        )
+
+    def forward(self, z):
+        return self.net(z)
+
 def train(
-    model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10
+    model,
+    dataloader,
+    epochs,
+    lr,
+    rank,
+    wandb_enabled,
+    output_dir,
+    save_every=10,
+    theta_head: nn.Module = None,
+    beta_l1: float = 0.01,      # weight for SmoothL1(theta_pred, theta)
+    beta_cos: float = 0.01,     # weight for cosine alignment
+    alpha1: float = 0.01,      # existing L2 reg weight
+    alpha2: float = 0.1        # existing decorrelation weight
 ):
     device = next(model.parameters()).device
-    opt = optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    assert theta_head is not None, "Please create a TinyThetaHead and pass it as theta_head."
+    theta_head = theta_head.to(device)
+
+    # IMPORTANT: optimize both networks
+    opt = optim.Adam(
+        list(model.parameters()) + list(theta_head.parameters()),
+        lr=lr, weight_decay=1e-4
+    )
+
     scaler = torch.cuda.amp.GradScaler()
-    alpha1, alpha2 = 0.01, 0.1  # regularization weights
+    l1_loss = nn.SmoothL1Loss(reduction="mean")
+    cos_sim = nn.CosineSimilarity(dim=1, eps=1e-8)
 
     model.train()
+    theta_head.train()
     torch.backends.cudnn.benchmark = True  # Enable autotuner
 
     for epoch in range(epochs):
         total_loss = 0.0
 
         for theta, x_sets in dataloader:
-            x_sets = x_sets.to(torch.float32)  # or .float()
+            x_sets = x_sets.to(torch.float32)
             B, n_repeat, num_points, feat_dim = x_sets.shape
 
             # Efficient reshape and repeat
             x_sets = x_sets.reshape(B * n_repeat, num_points, feat_dim).to(device)
-            theta = theta.repeat_interleave(n_repeat, dim=0).to(device)
+            theta = theta.repeat_interleave(n_repeat, dim=0).to(device)  # [B*n_repeat, theta_dim]
 
             opt.zero_grad(set_to_none=True)
 
-            with torch.cuda.amp.autocast(
-                dtype=torch.float16
-            ):  # try float16 for better perf on A100s
-                latent = model(x_sets)  # [B * n_repeat, D]
+            with torch.cuda.amp.autocast(dtype=torch.float16):  # good for A100s
+                # Get latent embedding from your encoder
+                latent = model(x_sets)  # shape [B*n_repeat, D]
+
+                # Existing contrastive objective (assumes your function is defined elsewhere)
                 contrastive = triplet_theta_contrastive_loss(latent, theta, margin=0.1)
 
                 # Regularization: L2 norm of embeddings
                 l2_reg = latent.norm(p=2, dim=1).mean()
-                # l2_reg = torch.tensor([0.0]).to(device)
 
                 # Covariance decorrelation (fast)
                 z = latent - latent.mean(dim=0, keepdim=True)
                 cov = z.T @ z / (z.size(0) - 1)
                 off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
                 decorrelation = (off_diag**2).sum()
-                # decorrelation = torch.tensor([0.0]).to(device)
 
-                loss = contrastive + alpha1 * l2_reg + alpha2 * decorrelation
+                # ===== Auxiliary theta head =====
+                theta_pred = theta_head(latent)                   # [B*n_repeat, theta_dim]
+                loss_theta_l1 = l1_loss(theta_pred, theta)        # Smooth L1
+                # Cosine similarity -> convert to a loss in [0, 2]
+                loss_theta_cos = (1.0 - cos_sim(theta_pred, theta)).mean()
+
+                # Total loss
+                loss = (
+                    contrastive
+                    + alpha1 * l2_reg
+                    + alpha2 * decorrelation
+                    + beta_l1 * loss_theta_l1
+                    + beta_cos * loss_theta_cos
+                )
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -73,28 +123,28 @@ def train(
                 wandb.log(
                     {
                         "epoch": epoch + 1,
-                        "loss": loss.item(),
+                        "loss_total": loss.item(),
                         "contrastive": contrastive.item(),
                         "l2_reg": l2_reg.item(),
                         "decorrelation": decorrelation.item(),
+                        "aux_theta_l1": loss_theta_l1.item(),
+                        "aux_theta_cos": loss_theta_cos.item(),
                     }
                 )
             print(
-                f"Epoch {epoch + 1}, "
-                f"Loss: {loss.item():.4f}, "
-                f"Contrastive: {contrastive.item():.4f}, "
-                f"L2 Reg: {l2_reg.item():.4f}, "
-                f"Decorrelation: {decorrelation.item():.4f}"
+                f"Epoch {epoch + 1} | "
+                f"Total: {loss.item():.4f} | "
+                f"Contr: {contrastive.item():.4f} | "
+                f"L2: {l2_reg.item():.4f} | "
+                f"Decorr: {decorrelation.item():.4f} | "
+                f"ThetaL1: {loss_theta_l1.item():.4f} | "
+                f"ThetaCos: {loss_theta_cos.item():.4f}"
             )
-            if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
-                torch.save(
-                    model.state_dict(),
-                    os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"),
-                )
 
+            if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
+                torch.save( model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"), )
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
-
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
@@ -192,6 +242,26 @@ def main_worker(rank, world_size, args):
 
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = DDP(model, device_ids=[rank])
+        # After you have a batch:
+        theta, x_sets = next(iter(dataloader))
+        B, n_repeat, num_points, feat_dim = x_sets.shape
+
+        param = next(model.parameters())
+        param_device = param.device
+        param_dtype = param.dtype
+
+        # move + cast to exactly the model's dtype/device
+        theta   = theta.to(device=param_device, dtype=param_dtype)
+        x_sets  = x_sets.to(device=param_device, dtype=param_dtype)
+
+        x_test = x_sets.reshape(B * n_repeat, num_points, feat_dim)
+        with torch.no_grad():
+            z = model(x_test)  # [B*n_repeat, D]
+        latent_dim = z.shape[1]
+        theta_dim = theta.shape[1]
+
+        theta_head = TinyThetaHead(latent_dim, theta_dim, hidden=16).to(device)  # very small
+        theta_head = DDP(theta_head, device_ids=[rank])             # no SyncBN needed
 
         # Wandb safety setup
     if rank != 0:
@@ -201,7 +271,7 @@ def main_worker(rank, world_size, args):
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_cl", name=args.experiment_name, config=vars(args))
 
-    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir)
+    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, theta_head=theta_head,)
     cleanup()
 
 

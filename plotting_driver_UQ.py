@@ -223,7 +223,7 @@ Examples:
     )
     parser.add_argument('--arch', type=str, default='all',
                         help='Which architecture to plot: mlp, transformer, gaussian, multimodal, or all')
-    parser.add_argument('--latent_dim', type=int, default=1024,
+    parser.add_argument('--latent_dim', type=int, default=256,
                         help='Latent dimension of the model')
     parser.add_argument('--param_dim', type=int, default=4,
                         help='Parameter dimension (4 for simplified_dis, 6 for realistic_dis)')
@@ -234,7 +234,7 @@ Examples:
     parser.add_argument('--n_mc', type=int, default=100,
                         help='Number of MC samples (used only when Laplace unavailable)')
     parser.add_argument("--num_samples", type=int, default=4000)
-    parser.add_argument('--num_events', type=int, default=100000,
+    parser.add_argument('--num_events', type=int, default=10000,
                         help='Number of events for simulation')
     parser.add_argument('--true_params', type=float, nargs='+', default=None,
                         help='True parameter values for plotting, e.g. --true_params 0.5 0.5 0.5 0.5')
@@ -242,7 +242,7 @@ Examples:
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
-    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_1000_ne_{args.num_events}"
+    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_4000_ne_{args.num_events}"
 
     # Which architectures to plot?
     archs = []
@@ -267,10 +267,10 @@ Examples:
 
     # Extract latents and parameters
     latents, thetas = extract_latents_from_data(pointnet_model, args, args.problem, device)
-    plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap')
+    plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap', save_path=os.path.join(experiment_dir, "umap_single.png"))
     # plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap')
-    plot_latents_umap(latents, thetas, color_mode='mean', method='umap')
-    plot_latents_umap(latents, thetas, color_mode='pca', method='tsne')
+    plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
+    plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
     for arch in archs:
         print(f"\n==== Plotting for architecture: {arch.upper()} ====")
         multimodal = (arch == "multimodal")

@@ -186,6 +186,7 @@ def train_standard(model, train_loader, val_loader, device, epochs=100, lr=1e-4)
             latent, target = latent.to(device), target.to(device)
             optimizer.zero_grad(set_to_none=True)
             with amp.autocast(dtype=torch.float16):
+                # print(f"latent shape: {latent.shape}, target shape: {target.shape}")
                 pred = model(latent)
                 loss = F.mse_loss(pred, target)
             scaler.scale(loss).backward()
@@ -314,8 +315,9 @@ def main():
         input_dim = xs_tensor_engineered.shape[-1]
         print(f"[precompute] Input dimension: {input_dim}")
         print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
+        # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
         precompute_latents_to_disk(
-            pointnet_model, xs_tensor_engineered, latent_path, chunk_size=8
+            pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
         )
         del xs_tensor_engineered
         del xs
