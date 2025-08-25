@@ -1,7 +1,7 @@
 # PDF Parameter Inference - MSE Simulator Loss Implementation
 
 ## Summary
-Successfully implemented a refactored version of `PDF_learning_UQ.py` that uses MSE loss between simulator outputs instead of log-relative PDF discrepancy, while maintaining full compatibility with Laplace approximation for uncertainty quantification.
+Successfully implemented a refactored version of `PDF_learning_UQ.py` that uses MSE loss between up() and down() PDF outputs for fixed x values instead of log-relative PDF discrepancy, while maintaining full compatibility with Laplace approximation for uncertainty quantification.
 
 ## Implementation Details
 
@@ -14,7 +14,7 @@ Successfully implemented a refactored version of `PDF_learning_UQ.py` that uses 
 #### 1. Core Loss Functions
 ```python
 def pdf_theta_mse_loss(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
-    """Compute MSE between simulator outputs for predicted and true parameters"""
+    """Compute MSE between up() and down() outputs for fixed xs under predicted and true parameters"""
     
 def pdf_theta_mse_loss_batched(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
     """Optimized batched version with chunking for memory efficiency"""
@@ -63,7 +63,7 @@ analysis_loss = pdf_theta_loss(theta_pred, theta_true, simulator)
 
 ### 🎯 Requirements Met
 
-✅ **New MSE Loss Function**: `pdf_theta_mse_loss` computes MSE between simulator outputs  
+✅ **New MSE Loss Function**: `pdf_theta_mse_loss` computes MSE between up() and down() outputs for fixed x values  
 ✅ **Training Integration**: Integrated into model training loop for simplified_dis problem  
 ✅ **Laplace Compatibility**: Models work seamlessly with Laplace approximation  
 ✅ **Original Loss Preserved**: `pdf_theta_loss` kept for analysis/evaluation  
@@ -80,6 +80,34 @@ analysis_loss = pdf_theta_loss(theta_pred, theta_true, simulator)
 - **Device Agnostic**: Proper GPU/CPU handling for simulators
 - **Error Resilient**: Robust handling of edge cases
 - **Backward Compatible**: Existing workflows unaffected
+
+### 📐 Loss Function Details
+
+The new `pdf_theta_mse_loss` implements the requested approach:
+
+```python
+# For SimplifiedDIS simulator with fixed x values
+x_values = torch.linspace(eps, 1-eps, n_points)
+
+# Predicted parameters
+simulator.init(theta_pred)
+pred_up = simulator.up(x_values)    # up() PDF values
+pred_down = simulator.down(x_values) # down() PDF values
+
+# True parameters  
+simulator.init(theta_true)
+true_up = simulator.up(x_values)    # up() PDF values
+true_down = simulator.down(x_values) # down() PDF values
+
+# MSE loss between up() and down() outputs
+loss = MSE(pred_up, true_up) + MSE(pred_down, true_down)
+```
+
+**Key Advantages:**
+- Direct comparison of PDF shapes at fixed x points
+- No randomness in loss computation (unlike sampling-based approaches)
+- Clear gradient signal for parameter optimization
+- Computationally efficient compared to full simulation
 
 ### 🎮 Command Line Interface
 
@@ -107,11 +135,12 @@ All validation tests passed:
 
 ### 📈 Benefits
 
-1. **More Direct Training Signal**: MSE between simulator outputs provides clearer optimization target
-2. **Flexible Analysis**: Switch between training and evaluation loss functions
-3. **Performance Optimized**: Batched operations for scalability
-4. **Full UQ Support**: Seamless Laplace approximation integration
-5. **Minimal Disruption**: Surgical changes that preserve existing functionality
+1. **More Direct Training Signal**: MSE between up() and down() PDF outputs at fixed x points provides clearer optimization target
+2. **Deterministic Loss**: No randomness from sampling, ensuring consistent gradients
+3. **PDF Shape Comparison**: Direct comparison of predicted vs true PDF shapes  
+4. **Computationally Efficient**: Fixed x evaluation is faster than full simulation
+5. **Full UQ Support**: Seamless Laplace approximation integration
+6. **Minimal Disruption**: Surgical changes that preserve existing functionality
 
 ### 🔄 Workflow Integration
 

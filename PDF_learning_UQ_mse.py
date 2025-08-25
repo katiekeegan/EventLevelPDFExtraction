@@ -121,86 +121,188 @@ def gaussian_nll_loss(output, target):
 # --- NEW: PDF/Simulator-based MSE loss function ---
 def pdf_theta_mse_loss(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
     """
-    Compute MSE between simulator outputs for predicted and true parameters.
+    Compute MSE between up() and down() outputs for fixed xs under predicted and true parameters.
+    
+    This loss function compares the PDF up() and down() function outputs at fixed x values
+    for predicted vs true parameters, providing a direct comparison of PDF shapes.
     
     Args:
         theta_pred: Predicted parameters, shape (batch_size, param_dim)
         theta_true: True parameters, shape (batch_size, param_dim)
         simulator: Simulator instance (SimplifiedDIS, RealisticDIS, etc.)
         problem: Problem type for parameter bounds and normalization
-        nevents: Number of events to generate for each parameter set
+        nevents: Number of fixed x points to evaluate (used as nx_points)
         
     Returns:
-        MSE loss between simulator outputs
+        MSE loss between up() and down() outputs for fixed x values
     """
     batch_size = theta_pred.shape[0]
     
-    # Generate simulator outputs for both predicted and true parameters
-    pred_outputs = []
-    true_outputs = []
+    # Generate fixed x values for evaluation
+    eps = 1e-6
+    nx_points = nevents  # Reuse nevents parameter as number of x points
+    x_values = torch.linspace(eps, 1 - eps, nx_points, device=theta_pred.device)
     
-    for i in range(batch_size):
-        # Generate outputs for predicted parameters
-        pred_sample = simulator.sample(theta_pred[i], nevents=nevents)
-        pred_outputs.append(pred_sample.view(-1))  # Flatten to 1D
+    # Handle different simulator types
+    if hasattr(simulator, 'up') and hasattr(simulator, 'down'):
+        # SimplifiedDIS case
+        pred_up_outputs = []
+        pred_down_outputs = []
+        true_up_outputs = []
+        true_down_outputs = []
         
-        # Generate outputs for true parameters  
-        true_sample = simulator.sample(theta_true[i], nevents=nevents)
-        true_outputs.append(true_sample.view(-1))  # Flatten to 1D
-    
-    # Stack into tensors
-    pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
-    true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
-    
-    # Compute MSE between simulator outputs
-    mse_loss = F.mse_loss(pred_outputs, true_outputs)
+        for i in range(batch_size):
+            # Evaluate up() and down() for predicted parameters
+            simulator.init(theta_pred[i])
+            pred_up = simulator.up(x_values)
+            pred_down = simulator.down(x_values)
+            pred_up_outputs.append(pred_up)
+            pred_down_outputs.append(pred_down)
+            
+            # Evaluate up() and down() for true parameters  
+            simulator.init(theta_true[i])
+            true_up = simulator.up(x_values)
+            true_down = simulator.down(x_values)
+            true_up_outputs.append(true_up)
+            true_down_outputs.append(true_down)
+        
+        # Stack into tensors
+        pred_up_outputs = torch.stack(pred_up_outputs)  # (batch_size, nx_points)
+        pred_down_outputs = torch.stack(pred_down_outputs)  # (batch_size, nx_points)
+        true_up_outputs = torch.stack(true_up_outputs)  # (batch_size, nx_points)
+        true_down_outputs = torch.stack(true_down_outputs)  # (batch_size, nx_points)
+        
+        # Compute MSE between up() and down() outputs
+        mse_up = F.mse_loss(pred_up_outputs, true_up_outputs)
+        mse_down = F.mse_loss(pred_down_outputs, true_down_outputs)
+        mse_loss = mse_up + mse_down
+        
+    else:
+        # Fallback to original sampling approach for other simulators
+        pred_outputs = []
+        true_outputs = []
+        
+        for i in range(batch_size):
+            # Generate outputs for predicted parameters
+            pred_sample = simulator.sample(theta_pred[i], nevents=nevents)
+            pred_outputs.append(pred_sample.view(-1))  # Flatten to 1D
+            
+            # Generate outputs for true parameters  
+            true_sample = simulator.sample(theta_true[i], nevents=nevents)
+            true_outputs.append(true_sample.view(-1))  # Flatten to 1D
+        
+        # Stack into tensors
+        pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
+        true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
+        
+        # Compute MSE between simulator outputs
+        mse_loss = F.mse_loss(pred_outputs, true_outputs)
     
     return mse_loss
 
 # --- NEW: Vectorized/batched version for better performance ---
 def pdf_theta_mse_loss_batched(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
     """
-    Compute MSE between simulator outputs with optimized batching.
+    Compute MSE between up() and down() outputs for fixed xs with optimized batching.
     
-    This version tries to batch simulator calls when possible for better performance.
-    Falls back to individual processing for memory efficiency.
+    This version processes in chunks to manage memory efficiently while comparing
+    up() and down() outputs at fixed x values.
     """
     batch_size = theta_pred.shape[0]
     
-    # For all simulators, process in chunks to manage memory efficiently
-    pred_outputs = []
-    true_outputs = []
+    # Generate fixed x values for evaluation
+    eps = 1e-6
+    nx_points = nevents  # Reuse nevents parameter as number of x points
+    x_values = torch.linspace(eps, 1 - eps, nx_points, device=theta_pred.device)
     
-    # Process in smaller chunks to manage memory
-    chunk_size = min(4, batch_size)  # Process 4 samples at a time to avoid memory issues
-    
-    for i in range(0, batch_size, chunk_size):
-        end_idx = min(i + chunk_size, batch_size)
+    # Handle different simulator types
+    if hasattr(simulator, 'up') and hasattr(simulator, 'down'):
+        # SimplifiedDIS case with chunked processing
+        pred_up_outputs = []
+        pred_down_outputs = []
+        true_up_outputs = []
+        true_down_outputs = []
         
-        # Generate for this chunk
-        chunk_pred_outputs = []
-        chunk_true_outputs = []
+        # Process in smaller chunks to manage memory
+        chunk_size = min(4, batch_size)  # Process 4 samples at a time to avoid memory issues
         
-        for j in range(i, end_idx):
-            # Generate outputs for predicted parameters
-            pred_sample = simulator.sample(theta_pred[j], nevents=nevents)
-            pred_outputs_flat = pred_sample.view(-1)  # Flatten to 1D
+        for i in range(0, batch_size, chunk_size):
+            end_idx = min(i + chunk_size, batch_size)
             
-            # Generate outputs for true parameters  
-            true_sample = simulator.sample(theta_true[j], nevents=nevents)
-            true_outputs_flat = true_sample.view(-1)  # Flatten to 1D
+            # Generate for this chunk
+            chunk_pred_up = []
+            chunk_pred_down = []
+            chunk_true_up = []
+            chunk_true_down = []
             
-            chunk_pred_outputs.append(pred_outputs_flat)
-            chunk_true_outputs.append(true_outputs_flat)
+            for j in range(i, end_idx):
+                # Evaluate up() and down() for predicted parameters
+                simulator.init(theta_pred[j])
+                pred_up = simulator.up(x_values)
+                pred_down = simulator.down(x_values)
+                chunk_pred_up.append(pred_up)
+                chunk_pred_down.append(pred_down)
+                
+                # Evaluate up() and down() for true parameters  
+                simulator.init(theta_true[j])
+                true_up = simulator.up(x_values)
+                true_down = simulator.down(x_values)
+                chunk_true_up.append(true_up)
+                chunk_true_down.append(true_down)
+            
+            pred_up_outputs.extend(chunk_pred_up)
+            pred_down_outputs.extend(chunk_pred_down)
+            true_up_outputs.extend(chunk_true_up)
+            true_down_outputs.extend(chunk_true_down)
         
-        pred_outputs.extend(chunk_pred_outputs)
-        true_outputs.extend(chunk_true_outputs)
+        # Stack and compute loss
+        pred_up_outputs = torch.stack(pred_up_outputs)  # (batch_size, nx_points)
+        pred_down_outputs = torch.stack(pred_down_outputs)  # (batch_size, nx_points)
+        true_up_outputs = torch.stack(true_up_outputs)  # (batch_size, nx_points)
+        true_down_outputs = torch.stack(true_down_outputs)  # (batch_size, nx_points)
+        
+        # Compute MSE between up() and down() outputs
+        mse_up = F.mse_loss(pred_up_outputs, true_up_outputs)
+        mse_down = F.mse_loss(pred_down_outputs, true_down_outputs)
+        mse_loss = mse_up + mse_down
+        
+    else:
+        # Fallback to original sampling approach for other simulators
+        pred_outputs = []
+        true_outputs = []
+        
+        # Process in smaller chunks to manage memory
+        chunk_size = min(4, batch_size)  # Process 4 samples at a time to avoid memory issues
+        
+        for i in range(0, batch_size, chunk_size):
+            end_idx = min(i + chunk_size, batch_size)
+            
+            # Generate for this chunk
+            chunk_pred_outputs = []
+            chunk_true_outputs = []
+            
+            for j in range(i, end_idx):
+                # Generate outputs for predicted parameters
+                pred_sample = simulator.sample(theta_pred[j], nevents=nevents)
+                pred_outputs_flat = pred_sample.view(-1)  # Flatten to 1D
+                
+                # Generate outputs for true parameters  
+                true_sample = simulator.sample(theta_true[j], nevents=nevents)
+                true_outputs_flat = true_sample.view(-1)  # Flatten to 1D
+                
+                chunk_pred_outputs.append(pred_outputs_flat)
+                chunk_true_outputs.append(true_outputs_flat)
+            
+            pred_outputs.extend(chunk_pred_outputs)
+            true_outputs.extend(chunk_true_outputs)
+        
+        # Stack and compute loss
+        pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
+        true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
+        
+        mse_loss = F.mse_loss(pred_outputs, true_outputs)
     
-    # Stack and compute loss
-    pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
-    true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
-    
-    return F.mse_loss(pred_outputs, true_outputs)
+    return mse_loss
 
 # --- Original pdf_theta_loss function for analysis/evaluation ---
 def pdf_theta_loss(theta_pred, theta_true, simulator, problem="simplified_dis", x_vals=None):
