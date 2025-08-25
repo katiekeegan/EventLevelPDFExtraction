@@ -14,11 +14,11 @@ Key Features:
 - Command line switching between loss types
 
 Usage:
-    # Train with simulator MSE loss
-    python PDF_learning_UQ_mse.py --arch mse_simulator --use_simulator_loss
+    # Train with simulator MSE loss - MLP
+    python PDF_learning_UQ_mse.py --arch mlp --use_simulator_loss
     
-    # Train specific architecture with simulator loss
-    python PDF_learning_UQ_mse.py --arch mlp --use_simulator_loss --nevents_loss 2000
+    # Train with simulator MSE loss - Transformer
+    python PDF_learning_UQ_mse.py --arch transformer --use_simulator_loss --nevents_loss 2000
     
     # Standard training (same as original)
     python PDF_learning_UQ_mse.py --arch all
@@ -609,13 +609,13 @@ def main():
     parser.add_argument("--num_samples", type=int, default=4000)
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
-    parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "mse_simulator", "all"])
+    parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     parser.add_argument("--use_simulator_loss", action="store_true", help="Use simulator MSE loss instead of parameter MSE")
     parser.add_argument("--nevents_loss", type=int, default=1000, help="Number of events for simulator loss computation")
     args = parser.parse_args()
 
     # Add MSE suffix to output directory when using simulator loss
-    suffix = "_mse" if args.use_simulator_loss or args.arch == "mse_simulator" else ""
+    suffix = "_mse" if args.use_simulator_loss else ""
     output_dir = os.path.join("experiments", f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}{suffix}")
     os.makedirs(output_dir, exist_ok=True)
 
@@ -668,11 +668,11 @@ def main():
         simulator = MCEGSimulator(device=device)
 
     # Train and Laplace all heads with option for simulator MSE loss
-    if args.arch in ["mlp", "mse_simulator", "all"]:
-        print("Training MLP with simulator MSE loss..." if args.use_simulator_loss or args.arch == "mse_simulator" else "Training MLP...")
+    if args.arch in ["mlp", "all"]:
+        print("Training MLP with simulator MSE loss..." if args.use_simulator_loss else "Training MLP...")
         mlp_head = MLPHead(args.latent_dim, param_dim)
         
-        if args.use_simulator_loss or args.arch == "mse_simulator":
+        if args.use_simulator_loss:
             trained_mlp = train_mse_simulator(
                 mlp_head, train_loader, val_loader, device, simulator, 
                 problem=args.problem, epochs=args.epochs, nevents=args.nevents_loss,
@@ -690,7 +690,7 @@ def main():
                         hessian_structure='kron')
         lap_mlp.fit(train_loader)
         
-        filename = "laplace_mlp_mse.pt" if args.use_simulator_loss or args.arch == "mse_simulator" else "laplace_mlp.pt"
+        filename = "laplace_mlp_mse.pt" if args.use_simulator_loss else "laplace_mlp.pt"
         save_laplace(lap_mlp, output_dir,
                     filename=filename,
                     likelihood="regression",
@@ -743,7 +743,7 @@ def main():
     print("All models trained and saved.")
     print(f"Models saved to: {output_dir}")
     
-    if args.use_simulator_loss or args.arch == "mse_simulator":
+    if args.use_simulator_loss:
         print("\n--- USAGE NOTES ---")
         print("Models were trained using MSE loss between simulator outputs.")
         print("For analysis/evaluation, you can use the original pdf_theta_loss function")

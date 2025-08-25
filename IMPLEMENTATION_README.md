@@ -38,11 +38,11 @@ def train_mse_simulator(model, train_loader, val_loader, device, simulator,
 # Train MLP with simulator MSE loss
 python PDF_learning_UQ_mse.py --arch mlp --use_simulator_loss
 
-# Train all architectures with simulator MSE  
-python PDF_learning_UQ_mse.py --arch mse_simulator
+# Train Transformer with simulator MSE loss  
+python PDF_learning_UQ_mse.py --arch transformer --use_simulator_loss
 
 # Custom settings
-python PDF_learning_UQ_mse.py --arch transformer --use_simulator_loss --nevents_loss 2000
+python PDF_learning_UQ_mse.py --arch mlp --use_simulator_loss --nevents_loss 2000
 ```
 
 #### Standard Training (Original Behavior)
@@ -112,9 +112,8 @@ loss = MSE(pred_up, true_up) + MSE(pred_down, true_down)
 ### 🎮 Command Line Interface
 
 New arguments added:
-- `--use_simulator_loss`: Enable simulator MSE loss
+- `--use_simulator_loss`: Enable simulator MSE loss for any architecture (MLP or Transformer)
 - `--nevents_loss INT`: Number of events for loss computation (default: 1000)
-- `--arch mse_simulator`: New architecture option for simulator MSE training
 
 ### 📊 Model Compatibility
 
