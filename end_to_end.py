@@ -10,6 +10,8 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, IterableDataset
+from PDF_learning_UQ import MLPHead, TransformerHead
+from utils import pdf_theta_loss
 
 import wandb
 from datasets import *
@@ -44,14 +46,13 @@ def train(
     wandb_enabled,
     output_dir,
     save_every=10,
+    args=None,
     theta_head: nn.Module = None,
-    beta_l1: float = 0.01,      # weight for SmoothL1(theta_pred, theta)
-    beta_cos: float = 0.01,     # weight for cosine alignment
-    alpha1: float = 0.01,      # existing L2 reg weight
+    beta_l1: float = 0.1,      # weight for SmoothL1(theta_pred, theta)
+    beta_cos: float = 0.1,     # weight for cosine alignment
+    alpha1: float = 0.1,      # existing L2 reg weight
     alpha2: float = 0.1,        # existing decorrelation weight
-    margin: float = 0.2,
-    sim_threshold: float = 2.0,
-    dissim_threshold: float = 3.0,
+    simulator=None
 ):
     device = next(model.parameters()).device
     assert theta_head is not None, "Please create a TinyThetaHead and pass it as theta_head."
@@ -89,31 +90,40 @@ def train(
                 latent = model(x_sets)  # shape [B*n_repeat, D]
 
                 # Existing contrastive objective (assumes your function is defined elsewhere)
-                contrastive = triplet_theta_contrastive_loss(latent, theta, margin=margin, sim_threshold=sim_threshold, dissim_threshold=dissim_threshold)
+                contrastive = triplet_theta_contrastive_loss(latent, theta, margin=0.2, sim_threshold=0.1, dissim_threshold=0.5)
 
-                # Regularization: L2 norm of embeddings
+                # # Regularization: L2 norm of embeddings
                 l2_reg = latent.norm(p=2, dim=1).mean()
 
-                # Covariance decorrelation (fast)
+                # # Covariance decorrelation (fast)
                 z = latent - latent.mean(dim=0, keepdim=True)
                 cov = z.T @ z / (z.size(0) - 1)
                 off_diag = cov * (1 - torch.eye(cov.size(0), device=device))
                 decorrelation = (off_diag**2).sum()
 
                 # ===== Auxiliary theta head =====
-                theta_pred = theta_head(latent)                   # [B*n_repeat, theta_dim]
-                loss_theta_l1 = l1_loss(theta_pred, theta)        # Smooth L1
-                # Cosine similarity -> convert to a loss in [0, 2]
-                loss_theta_cos = (1.0 - cos_sim(theta_pred, theta)).mean()
+                theta_pred = theta_head(latent)
+                                   # [B*n_repeat, theta_dim]
+                # loss_theta_l1 = l1_loss(theta_pred, theta)        # Smooth L1
+                # # Cosine similarity -> convert to a loss in [0, 2]
+                # loss_theta_cos = (1.0 - cos_sim(theta_pred, theta)).mean()
 
-                # Total loss
-                loss = (
-                    contrastive
-                    + alpha1 * l2_reg
-                    + alpha2 * decorrelation
-                    + beta_l1 * loss_theta_l1
-                    # + beta_cos * loss_theta_cos
-                )
+                # loss = pdf_theta_loss(
+                    # theta_pred, theta, args.problem
+                # )
+
+                mse_loss = F.mse_loss(theta_pred, theta)
+
+                loss = contrastive + mse_loss + alpha1 * decorrelation + alpha2 * l2_reg
+
+                # # Total loss
+                # loss = (
+                #     contrastive
+                #     + alpha1 * l2_reg
+                #     + alpha2 * decorrelation
+                #     + beta_l1 * loss_theta_l1
+                #     + beta_cos * loss_theta_cos
+                # )
 
             scaler.scale(loss).backward()
             scaler.step(opt)
@@ -130,7 +140,7 @@ def train(
                         "contrastive": contrastive.item(),
                         "l2_reg": l2_reg.item(),
                         "decorrelation": decorrelation.item(),
-                        "aux_theta_l1": loss_theta_l1.item(),
+                        # "aux_theta_l1": loss_theta_l1.item(),
                         # "aux_theta_cos": loss_theta_cos.item(),
                     }
                 )
@@ -140,14 +150,15 @@ def train(
                 f"Contr: {contrastive.item():.4f} | "
                 f"L2: {l2_reg.item():.4f} | "
                 f"Decorr: {decorrelation.item():.4f} | "
-                f"ThetaL1: {loss_theta_l1.item():.4f} | "
-                f"ThetaCos: {loss_theta_cos.item():.4f}"
+                # f"ThetaL1: {loss_theta_l1.item():.4f} | "
+                # f"ThetaCos: {loss_theta_cos.item():.4f}"
             )
 
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
                 torch.save( model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"), )
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
+        torch.save(theta_head.state_dict(), os.path.join(output_dir, f"theta_head_{args.problem}.pth"))
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
@@ -262,8 +273,10 @@ def main_worker(rank, world_size, args):
             z = model(x_test)  # [B*n_repeat, D]
         latent_dim = z.shape[1]
         theta_dim = theta.shape[1]
-
-        theta_head = TinyThetaHead(latent_dim, theta_dim, hidden=16).to(device)  # very small
+        if args.head == "MLP":
+            theta_head = MLPHead(latent_dim, theta_dim).to(device)
+        elif args.head == "Transformer":
+            theta_head = TransformerHead(latent_dim, theta_dim).to(device)
         theta_head = DDP(theta_head, device_ids=[rank])             # no SyncBN needed
 
         # Wandb safety setup
@@ -272,24 +285,22 @@ def main_worker(rank, world_size, args):
 
     print("WANDB WAS ENABLED: ", args.wandb)
     if rank == 0 and args.wandb:
-        wandb.init(project="quantom_cl", name=args.experiment_name, config=vars(args))
+        wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
-    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, theta_head=theta_head,margin=args.margin, sim_threshold=args.sim_threshold, dissim_threshold=args.dissim_threshold)
+    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args, theta_head=theta_head,simulator=simulator)
     cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_samples", type=int, default=4000)
-    parser.add_argument("--num_events", type=int, default=100000)
-    parser.add_argument("--num_epochs", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--num_samples", type=int, default=10000)
+    parser.add_argument("--num_events", type=int, default=10000)
+    parser.add_argument("--num_epochs", type=int, default=1000)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--latent_dim", type=int, default=128)
+    parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--problem", type=str, default="simplified_dis")
+    parser.add_argument('--head', type=str, default='Transformer')
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--margin", type=float, default=0.2)
-    parser.add_argument("--sim_threshold", type=float, default=2.0)
-    parser.add_argument("--dissim_threshold", type=float, default=3.0)
     parser.add_argument(
         "--experiment_name",
         type=str,

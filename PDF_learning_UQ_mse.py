@@ -45,6 +45,8 @@ from utils import *
 
 import os, json, torch
 
+from torch.autograd import Function
+
 # Laplace-torch for Laplace approximation
 from laplace import Laplace
 
@@ -118,6 +120,147 @@ def gaussian_nll_loss(output, target):
     nll = 0.5 * logvars + 0.5 * ((target - means) ** 2) / var
     return nll.sum(dim=-1).mean()
 
+def _get_pdf_accessor(simulator):
+    """
+    Return f(theta, x, Q2, flav) -> tensor (len(x),) of xF(x,Q2,flav), robust to
+    scalar-only PDF implementations. It tries vector x once; on failure, it loops scalars.
+    """
+    # discover a callable that computes xF
+    if hasattr(simulator, 'get_xF'):
+        raw = simulator.get_xF
+        need_init = hasattr(simulator, 'init')
+    elif hasattr(simulator, 'pdf') and hasattr(simulator.pdf, 'get_xF'):
+        raw = simulator.pdf.get_xF
+        need_init = hasattr(simulator, 'init')
+    elif hasattr(simulator, 'get_pdf_xF'):
+        raw = simulator.get_pdf_xF
+        need_init = hasattr(simulator, 'init')
+    else:
+        return None
+
+    def f(theta, x, Q2, flav):
+        # ensure params are set
+        if need_init:
+            simulator.init(theta)
+
+        # numpy view of x (1D)
+        x_np = x.detach().cpu().numpy().astype(float, copy=False)
+
+        # 1) try a single vector call
+        try:
+            vals = raw(x_np, float(Q2), flav)
+            vals_np = np.asarray(vals)
+            # expect shape (nx,) (or broadcastable). If clearly wrong, fallback.
+            if vals_np.shape == x_np.shape:
+                return torch.as_tensor(vals_np, dtype=torch.float32, device=x.device)
+        except Exception:
+            pass
+
+        # 2) scalar fallback (robust path)
+        out = np.empty_like(x_np, dtype=float)
+        for i, xi in enumerate(x_np):
+            out[i] = raw(float(xi), float(Q2), flav)
+        return torch.as_tensor(out, dtype=torch.float32, device=x.device)
+
+    return f
+
+def numpy_xF(simulator, theta, x, q2, flav):
+    """
+    Robust accessor for xF(x, Q2, flav) that works whether the simulator
+    only supports scalar x or not. Keeps mellin.invert unchanged.
+    """
+    # Ensure params are set
+    if hasattr(simulator, 'init'):
+        simulator.init(theta)
+
+    x_arr = np.asarray(x)
+
+    # Fast path: scalar x
+    if x_arr.ndim == 0:
+        return simulator.pdf.get_xF(float(x_arr), float(q2), flav)
+
+    # General path: loop scalars to avoid broadcasting inside mellin.invert
+    flat = x_arr.reshape(-1)
+    out = np.empty_like(flat, dtype=np.float64)
+    for i, xi in enumerate(flat):
+        out[i] = simulator.pdf.get_xF(float(xi), float(q2), flav)
+    return out.reshape(x_arr.shape)
+
+class NumpySimXFFunction(Function):
+    @staticmethod
+    def forward(ctx, theta, x, q2, flav, simulator, eps_scale: float):
+        """
+        theta: (P,) tensor, requires_grad=True
+        x:     (nx,) tensor
+        q2:    float or 0-dim tensor
+        flav:  whatever the simulator expects (str/int)
+        simulator: your MCEGSimulator instance
+        eps_scale: relative step size for finite-diff per parameter
+        """
+        device, dtype = theta.device, theta.dtype
+
+        # --- detach for NumPy forward (we will supply gradients manually) ---
+        theta_np = theta.detach().cpu().numpy().astype(np.float64, copy=True)
+        x_np     = x.detach().cpu().numpy().astype(np.float64, copy=False)
+
+        vals_np  = np.asarray(numpy_xF(simulator, theta_np, x_np, float(q2), flav))
+        vals     = torch.from_numpy(vals_np).to(device=device, dtype=dtype)
+
+        # save for backward
+        ctx.simulator = simulator
+        ctx.theta_np  = theta_np
+        ctx.x_np      = x_np
+        ctx.q2        = float(q2)
+        ctx.flav      = flav
+        ctx.eps_scale = float(eps_scale)
+
+        return vals
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        """
+        grad_output: (nx,) tensor
+        returns gradients for (theta, x, q2, flav, simulator, eps_scale).
+        Only theta gets a gradient; others are None.
+        """
+        simulator = ctx.simulator
+        theta_np  = ctx.theta_np
+        x_np      = ctx.x_np
+        q2        = ctx.q2
+        flav      = ctx.flav
+        eps_scale = ctx.eps_scale
+
+        P   = theta_np.shape[0]
+        nx  = x_np.shape[0]
+
+        # bring grad_output to cpu numpy
+        g = grad_output.detach().cpu().numpy().astype(np.float64, copy=False)
+
+        # per-parameter central differences, compute VJP = (J^T g)
+        grad_theta = np.zeros((P,), dtype=np.float64)
+        # step size per param: eps = eps_scale * max(1, |theta_j|)
+        eps_vec = eps_scale * np.maximum(1.0, np.abs(theta_np))
+
+        # cache baseline if you want to do forward-diff; for central diff we don’t need it
+        for j in range(P):
+            eps = eps_vec[j]
+            th_plus  = theta_np.copy(); th_plus[j]  += eps
+            th_minus = theta_np.copy(); th_minus[j] -= eps
+
+            f_plus  = np.asarray(numpy_xF(simulator, th_plus,  x_np, q2, flav), dtype=np.float64)
+            f_minus = np.asarray(numpy_xF(simulator, th_minus, x_np, q2, flav), dtype=np.float64)
+            df_dthj = (f_plus - f_minus) / (2.0 * eps)          # shape (nx,)
+            grad_theta[j] = (df_dthj * g).sum()                 # inner product => scalar
+
+        grad_theta_t = torch.from_numpy(grad_theta).to(grad_output.device, dtype=grad_output.dtype)
+
+        # no grads for x, q2, flav, simulator, eps_scale
+        return grad_theta_t, None, None, None, None, None
+
+# convenience function
+def torch_xF(theta, x, q2, flav, simulator, eps_scale=1e-4):
+    return NumpySimXFFunction.apply(theta, x, q2, flav, simulator, float(eps_scale))
+
 # --- NEW: PDF/Simulator-based MSE loss function ---
 def pdf_theta_mse_loss(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
     """
@@ -178,30 +321,36 @@ def pdf_theta_mse_loss(theta_pred, theta_true, simulator, problem="simplified_di
         mse_loss = mse_up + mse_down
         
     else:
-        # Fallback to original sampling approach for other simulators
-        pred_outputs = []
-        true_outputs = []
-        
+        # pick a sane nx (don’t tie it to nevents if you’re not generating events)
+        nx = max(128, min(1024, int(nevents)))  # or just a constant like 256
+        x = torch.linspace(x_min + eps, x_max - eps, nx, device=device)
+
+        if not Q2_slices:
+            Q2_slices = [4.0, 10.0, 100.0]
+
+        batch_losses = []
         for i in range(batch_size):
-            # Generate outputs for predicted parameters
-            pred_sample = simulator.sample(theta_pred[i], nevents=nevents)
-            pred_outputs.append(pred_sample.view(-1))  # Flatten to 1D
-            
-            # Generate outputs for true parameters  
-            true_sample = simulator.sample(theta_true[i], nevents=nevents)
-            true_outputs.append(true_sample.view(-1))  # Flatten to 1D
-        
-        # Stack into tensors
-        pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
-        true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
-        
-        # Compute MSE between simulator outputs
-        mse_loss = F.mse_loss(pred_outputs, true_outputs)
+            per_pred, per_true = [], []
+            for q2 in Q2_slices:
+                for flav in flavors:
+                    vals_pred = torch_xF(theta_pred[i], x, q2, flav, simulator)     # differentiable via custom backward
+                    vals_true = torch_xF(theta_true[i].detach(), x, q2, flav, simulator).detach()
+                    per_pred.append(vals_pred)
+                    per_true.append(vals_true)
+
+            pred_mat = torch.stack(per_pred)   # (n_curves, nx), requires_grad=True
+            true_mat = torch.stack(per_true)   # (n_curves, nx)
+            mse_i = torch.nn.functional.mse_loss(pred_mat, true_mat)
+            batch_losses.append(mse_i)
+
+        mse_loss = torch.stack(batch_losses).mean()
     
     return mse_loss
 
 # --- NEW: Vectorized/batched version for better performance ---
-def pdf_theta_mse_loss_batched(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000):
+def pdf_theta_mse_loss_batched(theta_pred, theta_true, simulator, problem="simplified_dis", nevents=1000, flavors=("u"),     Q2_slices=None,          # e.g. [par.mc2+1e-2, 10.0, 100.0]
+    x_min=1e-4,
+    x_max=0.9):
     """
     Compute MSE between up() and down() outputs for fixed xs with optimized batching.
     
@@ -267,40 +416,29 @@ def pdf_theta_mse_loss_batched(theta_pred, theta_true, simulator, problem="simpl
         mse_loss = mse_up + mse_down
         
     else:
-        # Fallback to original sampling approach for other simulators
-        pred_outputs = []
-        true_outputs = []
-        
-        # Process in smaller chunks to manage memory
-        chunk_size = min(4, batch_size)  # Process 4 samples at a time to avoid memory issues
-        
-        for i in range(0, batch_size, chunk_size):
-            end_idx = min(i + chunk_size, batch_size)
-            
-            # Generate for this chunk
-            chunk_pred_outputs = []
-            chunk_true_outputs = []
-            
-            for j in range(i, end_idx):
-                # Generate outputs for predicted parameters
-                pred_sample = simulator.sample(theta_pred[j], nevents=nevents)
-                pred_outputs_flat = pred_sample.view(-1)  # Flatten to 1D
-                
-                # Generate outputs for true parameters  
-                true_sample = simulator.sample(theta_true[j], nevents=nevents)
-                true_outputs_flat = true_sample.view(-1)  # Flatten to 1D
-                
-                chunk_pred_outputs.append(pred_outputs_flat)
-                chunk_true_outputs.append(true_outputs_flat)
-            
-            pred_outputs.extend(chunk_pred_outputs)
-            true_outputs.extend(chunk_true_outputs)
-        
-        # Stack and compute loss
-        pred_outputs = torch.stack(pred_outputs)  # (batch_size, nevents*features)
-        true_outputs = torch.stack(true_outputs)  # (batch_size, nevents*features)
-        
-        mse_loss = F.mse_loss(pred_outputs, true_outputs)
+        # pick a sane nx (don’t tie it to nevents if you’re not generating events)
+        nx = max(128, min(1024, int(nevents)))  # or just a constant like 256
+        x = torch.linspace(x_min + eps, x_max - eps, nx, device=device)
+
+        if not Q2_slices:
+            Q2_slices = [4.0, 10.0, 100.0]
+
+        batch_losses = []
+        for i in range(batch_size):
+            per_pred, per_true = [], []
+            for q2 in Q2_slices:
+                for flav in flavors:
+                    vals_pred = torch_xF(theta_pred[i], x, q2, flav, simulator)     # differentiable via custom backward
+                    vals_true = torch_xF(theta_true[i].detach(), x, q2, flav, simulator).detach()
+                    per_pred.append(vals_pred)
+                    per_true.append(vals_true)
+
+            pred_mat = torch.stack(per_pred)   # (n_curves, nx), requires_grad=True
+            true_mat = torch.stack(per_true)   # (n_curves, nx)
+            mse_i = torch.nn.functional.mse_loss(pred_mat, true_mat)
+            batch_losses.append(mse_i)
+
+        mse_loss = torch.stack(batch_losses).mean()
     
     return mse_loss
 
@@ -498,6 +636,8 @@ def train_mse_simulator(model, train_loader, val_loader, device, simulator, prob
                 else:
                     # Use standard parameter MSE loss
                     loss = F.mse_loss(pred, target)
+
+                print(loss)
             
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -603,11 +743,11 @@ def train_gaussian(model, train_loader, val_loader, device, epochs=100, lr=1e-4,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=2000)
+    parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis", "mceg"])
-    parser.add_argument("--latent_dim", type=int, default=256)
+    parser.add_argument("--latent_dim", type=int, default=128)
     parser.add_argument("--num_samples", type=int, default=4000)
-    parser.add_argument("--num_events", type=int, default=10000)
+    parser.add_argument("--num_events", type=int, default=100000)
     parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
     parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     parser.add_argument("--use_simulator_loss", action="store_true", help="Use simulator MSE loss instead of parameter MSE")
@@ -616,7 +756,7 @@ def main():
 
     # Add MSE suffix to output directory when using simulator loss
     suffix = "_mse" if args.use_simulator_loss else ""
-    output_dir = os.path.join("experiments", f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}{suffix}")
+    output_dir = os.path.join("experiments", f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}")
     os.makedirs(output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -631,14 +771,16 @@ def main():
 
     # Load PointNetPMA encoder
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True)
-    state_dict = torch.load(output_dir.replace(suffix, "") + '/' + args.cl_model, map_location="cpu")
+    state_dict = torch.load(output_dir + '/' + args.cl_model, map_location="cpu")
     state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
     state_dict = {k.replace("_orig_mod.", ""): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict(state_dict)
     pointnet_model.eval()
     pointnet_model.to(device)
-
-    xs_tensor_engineered = log_feature_engineering(xs)
+    if args.problem in ["simplified_dis", "realistic_dis"]:
+        xs_tensor_engineered = log_feature_engineering(xs)
+    else:
+        xs_tensor_engineered = xs
 
     # Initialize PointNetEmbedding model (do this once)
     input_dim = xs_tensor_engineered.shape[-1]
@@ -647,7 +789,7 @@ def main():
     
     latent_path = os.path.join(output_dir, "latents.h5")
     precompute_latents_to_disk(
-        pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
+        pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=64
     )
     del xs_tensor_engineered
     del xs
@@ -691,6 +833,7 @@ def main():
         lap_mlp.fit(train_loader)
         
         filename = "laplace_mlp_mse.pt" if args.use_simulator_loss else "laplace_mlp.pt"
+        print(f"Saving Laplace MLP to {filename}")
         save_laplace(lap_mlp, output_dir,
                     filename=filename,
                     likelihood="regression",
@@ -717,6 +860,7 @@ def main():
         lap_transformer.fit(train_loader)
         
         filename = "laplace_transformer_mse.pt" if args.use_simulator_loss else "laplace_transformer.pt"
+        print(f"Saving Laplace Transformer to {filename}")
         save_laplace(lap_transformer, output_dir,
                     filename=filename,
                     likelihood="regression",

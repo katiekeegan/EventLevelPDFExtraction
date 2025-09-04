@@ -123,10 +123,15 @@ class MLPHead(nn.Module):
     def __init__(self, embedding_dim, out_dim):
         super().__init__()
         self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, 512),
+            nn.Linear(embedding_dim, 128),
             nn.ReLU(),
-            nn.Linear(512, 128),
+            nn.Dropout(0.2),
+            nn.Linear(128, 128),
             nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
             nn.Linear(128, out_dim)
         )
     def forward(self, x):
@@ -282,11 +287,11 @@ def train_gaussian(model, train_loader, val_loader, device, epochs=100, lr=1e-4,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=2000)
+    parser.add_argument("--epochs", type=int, default=1000)
     parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis", "mceg"])
-    parser.add_argument("--latent_dim", type=int, default=256)
+    parser.add_argument("--latent_dim", type=int, default=128)
     parser.add_argument("--num_samples", type=int, default=4000)
-    parser.add_argument("--num_events", type=int, default=10000)
+    parser.add_argument("--num_events", type=int, default=100000)
     parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
     parser.add_argument("--arch", type=str, default="all", choices=["mlp", "transformer", "gaussian", "multimodal", "all"])
     args = parser.parse_args()
@@ -313,18 +318,23 @@ def main():
     pointnet_model.eval()
     pointnet_model.to(device)
 
-    xs_tensor_engineered = log_feature_engineering(xs)
+    # latent_path = "simplified_dis_latent_features.h5"
+    # if not os.path.exists(latent_path):
+    if args.problem != "mceg":
+        xs_tensor_engineered = log_feature_engineering(xs)
+    else:
+        xs_tensor_engineered = xs
 
-    # Initialize PointNetEmbedding model (do this once)
-    input_dim = xs_tensor_engineered.shape[-1]
-    print(f"[precompute] Input dimension: {input_dim}")
-    print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
-    # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
-    precompute_latents_to_disk(
-        pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
-    )
-    del xs_tensor_engineered
-    del xs
+        # Initialize PointNetEmbedding model (do this once)
+        input_dim = xs_tensor_engineered.shape[-1]
+        print(f"[precompute] Input dimension: {input_dim}")
+        print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
+        # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
+        precompute_latents_to_disk(
+            pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
+        )
+        del xs_tensor_engineered
+        del xs
 
     dataset = H5Dataset(latent_path)
     n_val = int(0.1 * len(dataset))
@@ -368,13 +378,13 @@ def main():
                     hessian_structure="kron")
 
 
-    if args.arch in ["gaussian", "all"]:
-        print("Training Gaussian (NLL loss, with Laplace)...")
-        from laplace import Laplace
-        # after training + saving the gaussian head
-        gaussian_head = GaussianHead(args.latent_dim, param_dim).to(device)
-        trained_gaussian = train_gaussian(gaussian_head, train_loader, val_loader, device, epochs=args.epochs)
-        torch.save(trained_gaussian.state_dict(), os.path.join(output_dir, "gaussian_head_final.pth"))
+    # if args.arch in ["gaussian", "all"]:
+    #     print("Training Gaussian (NLL loss, with Laplace)...")
+    #     from laplace import Laplace
+    #     # after training + saving the gaussian head
+    #     gaussian_head = GaussianHead(args.latent_dim, param_dim).to(device)
+    #     trained_gaussian = train_gaussian(gaussian_head, train_loader, val_loader, device, epochs=args.epochs)
+    #     torch.save(trained_gaussian.state_dict(), os.path.join(output_dir, "gaussian_head_final.pth"))
 
     # for n, p in trained_gaussian.named_parameters():
     #     if "logstd" in n or "log_std" in n or "sigma" in n:
@@ -399,14 +409,14 @@ def main():
 
     # torch.save(lap_gaussian.state_dict(), os.path.join(output_dir, "laplace_gaussian_state.pth"))
 
-    if args.arch in ["multimodal", "all"]:
-        print("Training Mixture of Gaussians (NLL loss, with Laplace)...")
-        multimodal_head = GaussianHead(args.latent_dim, param_dim, multimodal=True, nmodes=2)
-        trained_multimodal = train_gaussian(
-            multimodal_head, train_loader, val_loader, device, epochs=args.epochs, multimodal=True, nmodes=2
-        )
-        torch.save(trained_multimodal.state_dict(), os.path.join(output_dir, "multimodal_head_final.pth"))
-        print("Mixture of Gaussians model trained and saved (NLL loss).")
+    # if args.arch in ["multimodal", "all"]:
+    #     print("Training Mixture of Gaussians (NLL loss, with Laplace)...")
+    #     multimodal_head = GaussianHead(args.latent_dim, param_dim, multimodal=True, nmodes=2)
+    #     trained_multimodal = train_gaussian(
+    #         multimodal_head, train_loader, val_loader, device, epochs=args.epochs, multimodal=True, nmodes=2
+    #     )
+    #     torch.save(trained_multimodal.state_dict(), os.path.join(output_dir, "multimodal_head_final.pth"))
+    #     print("Mixture of Gaussians model trained and saved (NLL loss).")
 
         # # Fit Laplace and save Laplace object
         # from laplace import Laplace

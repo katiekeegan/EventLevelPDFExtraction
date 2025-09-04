@@ -46,27 +46,21 @@ def build_head(arch, latent_dim, param_dim, device, nmodes=None):
         return MLPHead(latent_dim, param_dim).to(device)
     if arch == "transformer":
         return TransformerHead(latent_dim, param_dim).to(device)
-    if arch == "gaussian":
-        return GaussianHead(latent_dim, param_dim).to(device)
-    if arch == "multimodal":
-        return MultimodalHead(latent_dim, param_dim, nmodes=nmodes).to(device)
     raise ValueError(f"Unknown arch: {arch}")
 
 
 HEAD_PTH = {
     "mlp": "mlp_head_final.pth",
     "transformer": "transformer_head_final.pth",
-    "gaussian": "gaussian_head_final.pth",
-    "multimodal": "multimodal_head_final.pth",
 }
 
 LAPLACE_CANDIDATES = lambda arch: [
     f"laplace_{arch}.pt",
     f"laplace_{arch}.ckpt",
-    f"laplace_{arch}_state.pt",
+    # f"laplace_{arch}_state.pt",
     # historical fallbacks (optional):
-    "laplace_mlp.pt" if arch == "mlp" else None,
-    "laplace_transformer.pt" if arch == "transformer" else None,
+    # "laplace_mlp.pt" if arch == "mlp" else None,
+    # "laplace_transformer.pt" if arch == "transformer" else None,
 ]
 
 def make_model(experiment_dir, arch, device, args):
@@ -108,12 +102,6 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
     elif arch == "transformer":
         checkpoint_path = os.path.join(experiment_dir, "transformer_head_final.pth")
         model = TransformerHead(latent_dim, param_dim).to(device)
-    elif arch == "gaussian":
-        checkpoint_path = os.path.join(experiment_dir, "gaussian_head_final.pth")
-        model = GaussianHead(latent_dim, param_dim).to(device)
-    elif arch == "multimodal":
-        checkpoint_path = os.path.join(experiment_dir, "multimodal_head_final.pth")
-        model = GaussianHead(latent_dim, param_dim, multimodal=True, nmodes=nmodes).to(device)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
     if not os.path.exists(checkpoint_path):
@@ -124,15 +112,19 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
     model.eval()
     return model
 
-def reload_pointnet(experiment_dir, latent_dim, device):
+def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pth', problem='simplified_dis'):
     """
     Reloads PointNet model from the experiment directory.
     """
-    pointnet_path = os.path.join(experiment_dir, "final_model.pth")
+    # pointnet_path = os.path.join(experiment_dir, "final_model.pth")
+    pointnet_path = os.path.join(experiment_dir, cl_model)
     # Dummy input for input_dim inference
     xs_dummy = np.random.randn(100, 2)
     xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
-    input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
+    if problem != 'mceg':
+        input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
+    else:
+        input_dim = xs_dummy_tensor.shape[-1]
     pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
@@ -223,7 +215,7 @@ Examples:
     )
     parser.add_argument('--arch', type=str, default='all',
                         help='Which architecture to plot: mlp, transformer, gaussian, multimodal, or all')
-    parser.add_argument('--latent_dim', type=int, default=256,
+    parser.add_argument('--latent_dim', type=int, default=128,
                         help='Latent dimension of the model')
     parser.add_argument('--param_dim', type=int, default=4,
                         help='Parameter dimension (4 for simplified_dis, 6 for realistic_dis)')
@@ -234,20 +226,22 @@ Examples:
     parser.add_argument('--n_mc', type=int, default=100,
                         help='Number of MC samples (used only when Laplace unavailable)')
     parser.add_argument("--num_samples", type=int, default=4000)
-    parser.add_argument('--num_events', type=int, default=10000,
+    parser.add_argument('--num_events', type=int, default=100000,
                         help='Number of events for simulation')
     parser.add_argument('--true_params', type=float, nargs='+', default=None,
                         help='True parameter values for plotting, e.g. --true_params 0.5 0.5 0.5 0.5')
+    parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
-    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_4000_ne_{args.num_events}"
+    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
 
     # Which architectures to plot?
     archs = []
     if args.arch == "all":
-        archs = ["mlp", "transformer", "gaussian", "multimodal"]
+        archs = ["mlp", "transformer"]
     else:
         archs = [args.arch]
 
@@ -258,10 +252,10 @@ Examples:
         if args.problem == 'realistic_dis':
             true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0], dtype=torch.float32)
         else:
-            true_params = torch.tensor([0.5, 0.5, 0.5, 0.5], dtype=torch.float32)
+            true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
 
     # Load PointNet once (shared across all heads)
-    pointnet_model = reload_pointnet(experiment_dir_pointnet, args.latent_dim, device)
+    pointnet_model = reload_pointnet(experiment_dir_pointnet, args.latent_dim, device, args.cl_model, args.problem)
     param_ranges = [np.linspace(0.0, 5.0, 10) for _ in range(4)]
     params_grid = np.array(np.meshgrid(*param_ranges)).reshape(4, -1).T
 
@@ -271,6 +265,7 @@ Examples:
     # plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap')
     plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
     plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
+    plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
     for arch in archs:
         print(f"\n==== Plotting for architecture: {arch.upper()} ====")
         multimodal = (arch == "multimodal")
@@ -303,16 +298,28 @@ Examples:
             problem=args.problem,
             save_path=os.path.join(plot_dir, "params_distribution.png")
         )
-        plot_PDF_distribution_single_same_plot(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=true_params,
-            device=device,
-            n_mc=args.n_mc,
-            laplace_model=laplace_model,
-            problem=args.problem,
-            save_path=os.path.join(plot_dir, "pdf_overlay.png")
-        )
+        if args.problem != 'mceg':
+            plot_PDF_distribution_single_same_plot(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                n_mc=args.n_mc,
+                laplace_model=laplace_model,
+                problem=args.problem,
+                save_path=os.path.join(plot_dir, "pdf_overlay.png")
+            )
+        elif args.problem == 'mceg':
+            plot_PDF_distribution_single_same_plot_mceg(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                n_mc=args.n_mc,
+                laplace_model=laplace_model,
+                problem=args.problem,
+                save_dir=plot_dir
+            )
         plot_PDF_distribution_single(
             model=model,
             pointnet_model=pointnet_model,
@@ -324,16 +331,17 @@ Examples:
             Q2_slices=[0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0],
             save_dir=plot_dir
         )
-        plot_event_histogram_simplified_DIS(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=true_params,
-            device=device,
-            n_mc=args.n_mc,
-            laplace_model=laplace_model,
-            num_events=args.num_events,
-            save_path=os.path.join(plot_dir, "event_histogram_simplified.png")
-        )
+        if args.problem == 'simplified_dis':
+            plot_event_histogram_simplified_DIS(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                n_mc=args.n_mc,
+                laplace_model=laplace_model,
+                num_events=args.num_events,
+                save_path=os.path.join(plot_dir, "event_histogram_simplified.png")
+            )
         print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
 
 if __name__ == "__main__":

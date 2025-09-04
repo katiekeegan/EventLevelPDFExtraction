@@ -18,6 +18,7 @@ from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import IterableDataset
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data import TensorDataset
+from simulator import * 
 # Ensure reproducibility
 torch.manual_seed(42)
 # Set default device
@@ -207,3 +208,96 @@ def setup(rank, world_size):
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
+
+@torch.no_grad()
+def _make_default_grids(device, x_range=(1e-3, 0.9), n_x=500, Q2_slices=(1.0, 1.5, 2.0, 10.0, 50.0)):
+    # log-space in x is common for PDFs
+    x_vals = torch.logspace(torch.log10(torch.tensor(x_range[0])),
+                            torch.log10(torch.tensor(x_range[1])),
+                            steps=n_x, device=device, dtype=torch.float32)
+    Q2_vals = torch.tensor(Q2_slices, device=device, dtype=torch.float32)  # (S,)
+    return x_vals, Q2_vals
+
+def _compute_pdf_grid(simulator, params_batch, x_vals, Q2_vals):
+    """
+    params_batch: (B, P) tensor of parameters
+    x_vals: (X,)  ; Q2_vals: (S,)
+    returns: q_pred of shape (B, S, X)
+    """
+    B = params_batch.shape[0]
+    S = Q2_vals.shape[0]
+    X = x_vals.shape[0]
+    q_pred = []
+
+    for b in range(B):
+        simulator.init(params_batch[b])
+        # stack all S slices for efficiency
+        q_slices = []
+        for s in range(S):
+            x_vec = x_vals
+            Q2_vec = torch.full_like(x_vals, Q2_vals[s])
+            # q(x, Q2) -> (X,)
+            q_slices.append(simulator.q(x_vec, Q2_vec).reshape(1, X))
+        q_pred.append(torch.cat(q_slices, dim=0).unsqueeze(0))  # (1, S, X)
+
+    return torch.cat(q_pred, dim=0)  # (B, S, X)
+
+def pdf_theta_loss(theta_pred, theta_true, problem):
+    """
+    Generalized PDF loss with signature (theta_pred, simulator) only.
+
+    What the simulator should (ideally) provide:
+      - Ground truth params:
+           simulator.theta_true  (B, P) tensor, or
+           simulator.get_true_params() -> (B, P)
+      - Optional evaluation grids:
+           simulator.x_grid  -> (X,)
+           simulator.Q2_grid -> (S,)
+      - For RealisticDIS-style:
+           EITHER simulator.q_from_theta(theta_batch, x_grid, Q2_grid) -> (B, S, X)
+           OR     simulator.init(theta); simulator.q(x_vec, Q2_vec) -> (X,)
+      - For SimplifiedDIS-style (no 'q'):
+           List of component function names on the simulator:
+             simulator.pdf_fn_names = ['up','down', ...]
+           Each fn is callable: getattr(simulator, name)(x_vec) -> (X,)
+           (If pdf_fn_names is absent, it will try to use ['up','down'] if present.)
+
+    Returns:
+        scalar loss tensor (log-relative entrywise PDF discrepancy).
+    """
+    device = theta_pred.device
+    eps = 1e-12
+
+    if problem == 'simplified_dis':
+        simulator = SimplifiedDIS(device=device)
+        x_vals = torch.linspace(0, 1, 500).to(device)
+        pred_vals_all = []
+        true_vals_all = []
+        for fn_name in ["up", "down"]:
+            fn_vals_all = []
+            fn_true_vals_all = []
+            for i in range(theta_pred.shape[0]):
+                simulator.init(theta_pred[i])
+                fn = getattr(simulator, fn_name)
+                vals_pred = fn(x_vals).unsqueeze(0)
+                # Replace NaN with 1000, +inf with 1000, -inf with -1000
+                vals_pred = torch.nan_to_num(vals_pred, nan=10000.0, posinf=10000.0, neginf=-10000.0)
+                fn_vals_all.append(vals_pred)
+
+                simulator.init(theta_true[i])
+                fn_true = getattr(simulator, fn_name)
+                vals_true = fn_true(x_vals).unsqueeze(0)
+                vals_true = torch.nan_to_num(vals_true, nan=10000.0, posinf=10000.0, neginf=-10000.0)
+                fn_true_vals_all.append(vals_true)
+
+                # print(f"Predicted Parameters: {theta_pred[i]}")
+                # print(f"Mean {fn_name} for pred: {fn_vals_all[-1].mean()}, true: {fn_true_vals_all[-1].mean()}")
+            fn_stack = torch.cat(fn_vals_all, dim=0)  # [batch_size, 500]
+            fn_true_stack = torch.cat(fn_true_vals_all, dim=0)  # [batch_size, 500]
+            pred_vals_all.append(fn_stack)
+            true_vals_all.append(fn_true_stack)
+        pred_vals = torch.stack(pred_vals_all, dim=1)  # [batch_size, 2, 500]
+        true_vals = torch.stack(true_vals_all, dim=1)
+        loss = torch.log(torch.clamp(pred_vals, min=eps) / torch.clamp(true_vals, min=eps)).abs().mean()
+
+    return loss

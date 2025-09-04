@@ -97,7 +97,10 @@ class MCEGSimulator:
         # Take in new parameters and update MCEG class
         new_cpar = self.pdf.get_current_par_array()[::]
         # Assume parameters are only corresponding to 'uv1' parameters
-        new_cpar[4:8] = params.to(self.device).cpu().numpy()  # Update uv1 parameters
+        if not isinstance(params, torch.Tensor):
+            new_cpar[4:8] = params
+        else:
+            new_cpar[4:8] = params.cpu().numpy()  # Update uv1 parameters
         self.pdf.setup(new_cpar)
         self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
