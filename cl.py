@@ -48,7 +48,7 @@ def train(
     beta_l1: float = 0.01,      # weight for SmoothL1(theta_pred, theta)
     beta_cos: float = 0.01,     # weight for cosine alignment
     alpha1: float = 0.01,      # existing L2 reg weight
-    alpha2: float = 0.1,        # existing decorrelation weight
+    alpha2: float = 0.01,        # existing decorrelation weight
     margin: float = 0.2,
     sim_threshold: float = 2.0,
     dissim_threshold: float = 3.0,
@@ -89,7 +89,7 @@ def train(
                 latent = model(x_sets)  # shape [B*n_repeat, D]
 
                 # Existing contrastive objective (assumes your function is defined elsewhere)
-                contrastive = triplet_theta_contrastive_loss(latent, theta, margin=margin, sim_threshold=sim_threshold, dissim_threshold=dissim_threshold)
+                # contrastive = triplet_theta_contrastive_loss(latent, theta, margin=margin, sim_threshold=sim_threshold, dissim_threshold=dissim_threshold)
 
                 # Regularization: L2 norm of embeddings
                 l2_reg = latent.norm(p=2, dim=1).mean()
@@ -104,14 +104,14 @@ def train(
                 theta_pred = theta_head(latent)                   # [B*n_repeat, theta_dim]
                 loss_theta_l1 = l1_loss(theta_pred, theta)        # Smooth L1
                 # Cosine similarity -> convert to a loss in [0, 2]
-                loss_theta_cos = (1.0 - cos_sim(theta_pred, theta)).mean()
+                # loss_theta_cos = (1.0 - cos_sim(theta_pred, theta)).mean()
 
                 # Total loss
                 loss = (
-                    contrastive
-                    + alpha1 * l2_reg
+                    # contrastive
+                    loss_theta_l1
                     + alpha2 * decorrelation
-                    + beta_l1 * loss_theta_l1
+                    + beta_l1 * l2_reg
                     # + beta_cos * loss_theta_cos
                 )
 
@@ -127,7 +127,7 @@ def train(
                     {
                         "epoch": epoch + 1,
                         "loss_total": loss.item(),
-                        "contrastive": contrastive.item(),
+                        # "contrastive": contrastive.item(),
                         "l2_reg": l2_reg.item(),
                         "decorrelation": decorrelation.item(),
                         "aux_theta_l1": loss_theta_l1.item(),
@@ -137,11 +137,11 @@ def train(
             print(
                 f"Epoch {epoch + 1} | "
                 f"Total: {loss.item():.4f} | "
-                f"Contr: {contrastive.item():.4f} | "
+                # f"Contr: {contrastive.item():.4f} | "
                 f"L2: {l2_reg.item():.4f} | "
                 f"Decorr: {decorrelation.item():.4f} | "
                 f"ThetaL1: {loss_theta_l1.item():.4f} | "
-                f"ThetaCos: {loss_theta_cos.item():.4f}"
+                # f"ThetaCos: {loss_theta_cos.item():.4f}"
             )
 
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
@@ -287,9 +287,9 @@ if __name__ == "__main__":
     parser.add_argument("--latent_dim", type=int, default=128)
     parser.add_argument("--problem", type=str, default="simplified_dis")
     parser.add_argument("--wandb", action="store_true")
-    parser.add_argument("--margin", type=float, default=0.2)
-    parser.add_argument("--sim_threshold", type=float, default=2.0)
-    parser.add_argument("--dissim_threshold", type=float, default=3.0)
+    parser.add_argument("--margin", type=float, default=0.4)
+    parser.add_argument("--sim_threshold", type=float, default=0.1)
+    parser.add_argument("--dissim_threshold", type=float, default=0.5)
     parser.add_argument(
         "--experiment_name",
         type=str,

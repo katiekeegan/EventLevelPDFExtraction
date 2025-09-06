@@ -647,7 +647,7 @@ def plot_latents(latents, params, method='umap', param_idx=0, title=None, save_p
         plt.savefig(save_path, bbox_inches='tight')
     plt.show()
 
-def extract_latents_from_data(pointnet_model, args, problem, device):
+def extract_latents_from_data(pointnet_model, args, problem, device, num_samples=1000):
     """
     Generate data and extract latents using PointNet model.
 
@@ -656,7 +656,7 @@ def extract_latents_from_data(pointnet_model, args, problem, device):
         thetas: [n_samples, param_dim]
     """
     # Generate parameters and simulated events
-    thetas, xs = generate_data(args.num_samples, args.num_events, problem=problem, device=device)
+    thetas, xs = generate_data(1000, args.num_events, problem=problem, device=device)
     # Feature engineering
     if problem != 'mceg':
         feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]
@@ -864,6 +864,134 @@ def safe_log_levels(A, n=60, lo_pct=1.0, hi_pct=99.0, default=(1e-6, 1.0)):
     levels = 10**np.linspace(np.log10(vmin), np.log10(vmax), n)
 
     return levels
+
+from typing import Optional, Tuple
+
+@torch.no_grad()
+def _simulate_pdf_curve_from_theta(
+    simulator,
+    theta: torch.Tensor,
+    num_events: int,
+    x_range: Tuple[float, float],
+    bins: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Simulate events under `theta` and return a density curve over x via a shared histogram.
+    Returns (x_centers [B], pdf_values [B]).
+    """
+    xs = simulator.sample(theta.detach().cpu().float(), num_events)  # shape (N, 2) or (N, ...)
+    x = np.asarray(xs)[:, 0]  # assume x is first column
+    H, edges = np.histogram(x, bins=bins, range=x_range, density=True)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    return centers, H
+
+def _to_SD(theta_samples: torch.Tensor) -> Tuple[int, int]:
+    """Return (S, D). Accepts [S,D] or [B,S,D] -> flattens across B."""
+    if theta_samples.dim() == 3:
+        B, S, D = theta_samples.shape
+        return B * S, D
+    elif theta_samples.dim() == 2:
+        S, D = theta_samples.shape
+        return S, D
+    else:
+        raise ValueError(f"theta_samples must be [S,D] or [B,S,D], got {tuple(theta_samples.shape)}")
+
+@torch.no_grad()
+def plot_PDF_distribution_single_same_plot_from_theta_samples(
+    simulator,
+    theta_samples: torch.Tensor,   # [S,D] or [B,S,D] on any device
+    true_params: Optional[torch.Tensor],
+    device: torch.device,
+    num_events_per_theta: int = 5000,
+    x_range: Tuple[float, float] = (0.0, 1.0),
+    bins: int = 100,
+    quantiles = (5, 25, 50, 75, 95),
+    overlay_point_estimate: bool = True,
+    point_estimate: str = "mean",  # "mean" or "median"
+    save_path: str = "pdf_overlay_flow.png",
+    title: Optional[str] = None,
+):
+    """
+    Builds posterior bands over the induced PDF(x) using simulator + theta_samples.
+    - Posterior bands: 5–95% and 25–75% + median curve.
+    - Optional overlays: truth curve (true_params) and a point-estimate curve (mean/median θ).
+    """
+    # Sanitize shapes
+    if theta_samples.dim() == 3:
+        B, S, D = theta_samples.shape
+        thetas = theta_samples.reshape(B * S, D)
+    else:
+        thetas = theta_samples
+        S, D = thetas.shape
+
+    # Precompute a common x-grid (by simulating once with the first theta)
+    x_centers_ref, _ = _simulate_pdf_curve_from_theta(
+        simulator, thetas[0].to(device), max(2000, num_events_per_theta // 5), x_range, bins
+    )
+    # Simulate all θ-samples → stack PDFs
+    pdf_mat = []
+    for s in range(thetas.shape[0]):
+        _, H = _simulate_pdf_curve_from_theta(
+            simulator, thetas[s].to(device), num_events_per_theta, x_range, bins
+        )
+        pdf_mat.append(H)
+    pdf_mat = np.stack(pdf_mat, axis=0)  # [S_total, BINS]
+
+    # Quantile bands
+    qdict = {q: np.quantile(pdf_mat, q/100.0, axis=0) for q in quantiles}
+
+    # Optional truth curve
+    truth_curve = None
+    if true_params is not None:
+        x_t, H_t = _simulate_pdf_curve_from_theta(
+            simulator, true_params.to(device), num_events_per_theta * 5, x_range, bins
+        )
+        truth_curve = (x_t, H_t)
+
+    # Optional point-estimate curve
+    pe_curve = None
+    if overlay_point_estimate:
+        if point_estimate == "mean":
+            theta_pe = thetas.mean(dim=0)
+        elif point_estimate == "median":
+            theta_pe = thetas.median(dim=0).values
+        else:
+            raise ValueError("point_estimate must be 'mean' or 'median'")
+        x_pe, H_pe = _simulate_pdf_curve_from_theta(
+            simulator, theta_pe.to(device), num_events_per_theta * 2, x_range, bins
+        )
+        pe_curve = (x_pe, H_pe)
+
+    # Plot
+    fig = plt.figure(figsize=(7, 4.5))
+    ax = plt.gca()
+
+    # Shaded bands
+    if 95 in qdict and 5 in qdict:
+        ax.fill_between(x_centers_ref, qdict[5], qdict[95], alpha=0.20, label="90% band")
+    if 75 in qdict and 25 in qdict:
+        ax.fill_between(x_centers_ref, qdict[25], qdict[75], alpha=0.35, label="50% band")
+
+    # Median curve
+    if 50 in qdict:
+        ax.plot(x_centers_ref, qdict[50], linewidth=2.0, label="Posterior median")
+
+    # Point estimate curve
+    if pe_curve is not None:
+        ax.plot(pe_curve[0], pe_curve[1], linestyle="--", linewidth=1.8,
+                label=f"Posterior {point_estimate}")
+
+    # Truth
+    if truth_curve is not None:
+        ax.plot(truth_curve[0], truth_curve[1], linewidth=2.0, label="Truth")
+
+    ax.set_xlabel("x")
+    ax.set_ylabel("PDF(x)")
+    if title: ax.set_title(title)
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close(fig)
 
 def plot_PDF_distribution_single_same_plot_mceg(
     model,

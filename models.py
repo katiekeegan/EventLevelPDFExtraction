@@ -460,7 +460,7 @@ class PointNetPDFRegressor(nn.Module):
 #         return latent
 
 class PointNetPMA(nn.Module):
-    def __init__(self, input_dim=2, latent_dim=64, hidden_dim=64, num_heads=4, num_seeds=8, predict_theta=True):
+    def __init__(self, input_dim=2, latent_dim=64, hidden_dim=32, num_heads=4, num_seeds=16, predict_theta=True):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -490,13 +490,6 @@ class PointNetPMA(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(latent_dim, latent_dim)
         )
-
-        # if predict_theta:
-        #     self.theta_regressor = nn.Sequential(
-        #         nn.Linear(latent_dim, 128),
-        #         nn.ReLU(),
-        #         nn.Linear(128, 4)
-        #     )
 
     def forward(self, x):
         B, N, _ = x.shape  # (B, N, input_dim)

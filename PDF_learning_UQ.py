@@ -74,7 +74,126 @@ def last_linear(module: nn.Module) -> nn.Linear:
             last = m
     assert last is not None, "No Linear layer found in mean path."
     return last
+class _MLP(nn.Module):
+    def __init__(self, in_dim, out_dim, hidden=256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden), nn.GELU(),
+            nn.Linear(hidden, hidden), nn.GELU(),
+            nn.Linear(hidden, out_dim)
+        )
+        for m in self.net:
+            if isinstance(m, nn.Linear):
+                nn.init.xavier_uniform_(m.weight)
+                nn.init.zeros_(m.bias)
+    def forward(self, x): return self.net(x)
 
+class _Coupling(nn.Module):
+    """
+    Affine coupling: splits theta by mask; s,t depend on (theta_masked, z).
+    """
+    def __init__(self, theta_dim, z_dim, hidden=256, scale_clamp=5.0, mask=None):
+        super().__init__()
+        self.theta_dim = theta_dim
+        self.z_dim = z_dim
+        self.scale_clamp = scale_clamp
+        if mask is None:
+            raise ValueError("mask is required")
+        self.register_buffer("mask", mask.float())  # [D]
+
+        in_dim = theta_dim + z_dim  # we concat masked theta and z
+        self.s_net = _MLP(in_dim, theta_dim, hidden)
+        self.t_net = _MLP(in_dim, theta_dim, hidden)
+
+    def forward(self, theta, z, inverse=False):
+        """
+        theta: [B,D], z: [B,Z]
+        Returns: theta_out, log_det (per-sample) for the direction used.
+        """
+        m = self.mask
+        theta_masked = theta * m  # [B,D]
+        h = torch.cat([theta_masked, z], dim=-1)  # [B, D+Z]
+        s = self.s_net(h)
+        t = self.t_net(h)
+        # stable scale
+        s = torch.tanh(s) * self.scale_clamp  # [-clamp, clamp]
+
+        if not inverse:
+            # y = x_masked + (1-m) * [ (x * exp(s)) + t ]
+            y = theta_masked + (1 - m) * (theta * torch.exp(s) + t)
+            log_det = ((1 - m) * s).sum(dim=-1)  # [B]
+            return y, log_det
+        else:
+            # x = y_masked + (1-m) * [ (y - t) * exp(-s) ]
+            x = theta_masked + (1 - m) * ((theta - t) * torch.exp(-s))
+            log_det = -((1 - m) * s).sum(dim=-1)  # [B]
+            return x, log_det
+
+class ConditionalRealNVP(nn.Module):
+    """
+    Conditional flow p_theta(. | z). Base = N(0,I) in D=param_dim.
+    """
+    def __init__(self, z_dim, param_dim, n_layers=8, hidden=256, scale_clamp=5.0):
+        super().__init__()
+        self.z_dim = z_dim
+        self.param_dim = param_dim
+
+        # alternating binary masks
+        masks = []
+        for i in range(n_layers):
+            mask = torch.zeros(param_dim)
+            mask[i % 2 :: 2] = 1.0
+            masks.append(mask)
+        self.layers = nn.ModuleList([
+            _Coupling(param_dim, z_dim, hidden=hidden, scale_clamp=scale_clamp, mask=m)
+            for m in masks
+        ])
+        self.base_mean = nn.Parameter(torch.zeros(param_dim), requires_grad=False)
+        self.base_logstd = nn.Parameter(torch.zeros(param_dim), requires_grad=False)
+
+    def forward(self, z, n_samples=None):
+        """
+        Sampling: draw theta ~ p(.|z).
+        z: [B,Z]; if n_samples is None, returns one sample per z -> [B,D]
+        else returns [B,n_samples,D]
+        """
+        if n_samples is None:
+            eps = torch.randn(z.size(0), self.param_dim, device=z.device, dtype=z.dtype)
+            return self._transform(eps, z, inverse=True)[0]  # [B,D]
+        else:
+            B = z.size(0)
+            eps = torch.randn(B * n_samples, self.param_dim, device=z.device, dtype=z.dtype)
+            z_rep = z.repeat_interleave(n_samples, dim=0)                      # [B*n,Dz]
+            theta, _ = self._transform(eps, z_rep, inverse=True)
+            return theta.view(B, n_samples, self.param_dim)                    # [B,S,D]
+
+    def log_prob(self, theta, z):
+        """
+        theta: [B,D], z: [B,Z] -> log p(theta|z) [B]
+        """
+        u, logdet = self._transform(theta, z, inverse=False)   # to base
+        log_pu = -0.5 * (((u - self.base_mean) ** 2) * torch.exp(-2*self.base_logstd)).sum(dim=-1)
+        log_pu += -0.5 * self.param_dim * math.log(2 * math.pi) - self.base_logstd.sum()
+        return log_pu + logdet
+
+    def _transform(self, theta, z, inverse=False):
+        """
+        Run through all coupling layers; accumulate logdet.
+        Direction depends on inverse flag.
+        """
+        logdet = torch.zeros(theta.size(0), device=theta.device, dtype=theta.dtype)
+        if not inverse:
+            h = theta
+            for layer in self.layers:
+                h, ld = layer(h, z, inverse=False)
+                logdet = logdet + ld
+            return h, logdet
+        else:
+            h = theta
+            for layer in reversed(self.layers):
+                h, ld = layer(h, z, inverse=True)
+                logdet = logdet + ld
+            return h, logdet
 # --- Custom Gaussian NLL loss for Laplace ---
 def gaussian_nll_loss(output, target):
     """
@@ -88,6 +207,41 @@ def gaussian_nll_loss(output, target):
     # Standard NLL for diagonal Gaussians
     nll = 0.5 * logvars + 0.5 * ((target - means) ** 2) / var
     return nll.sum(dim=-1).mean()
+
+def train_flow(flow, train_loader, val_loader, device, epochs=200, lr=2e-4):
+    flow = flow.to(device)
+    opt = torch.optim.Adam(flow.parameters(), lr=lr)
+    scaler = amp.GradScaler()
+    best = float('inf')
+
+    for ep in range(epochs):
+        flow.train()
+        tr = 0.0
+        for z, theta in train_loader:
+            z, theta = z.to(device), theta.to(device)
+            opt.zero_grad(set_to_none=True)
+            with amp.autocast(dtype=torch.float16):
+                nll = -flow.log_prob(theta, z).mean()
+            scaler.scale(nll).backward()
+            torch.nn.utils.clip_grad_norm_(flow.parameters(), 1.0)
+            scaler.step(opt); scaler.update()
+            tr += nll.item()
+        tr /= len(train_loader)
+
+        # val NLL
+        flow.eval()
+        va = 0.0
+        with torch.no_grad():
+            for z, theta in val_loader:
+                z, theta = z.to(device), theta.to(device)
+                va += (-flow.log_prob(theta, z).mean()).item()
+        va /= len(val_loader)
+        print(f"[Flow] Epoch {ep:03d} | Train NLL {tr:.4f} | Val NLL {va:.4f}")
+
+        if va < best:
+            best = va
+            torch.save(flow.state_dict(), "best_flow.pth")
+    return flow
 
 # --- Wrapper for Laplace fitting ---
 class GaussianLaplaceWrapper(nn.Module):
@@ -138,10 +292,10 @@ class MLPHead(nn.Module):
         return self.mlp(x)
 
 class TransformerHead(nn.Module):
-    def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2):
+    def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
         super().__init__()
         self.embedding = nn.Linear(embedding_dim, 128)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout)
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
         self.fc = nn.Linear(128, out_dim)
     def forward(self, x):
@@ -287,7 +441,7 @@ def train_gaussian(model, train_loader, val_loader, device, epochs=100, lr=1e-4,
 def main():
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--epochs", type=int, default=1000)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--problem", type=str, default="simplified_dis", choices=["simplified_dis", "realistic_dis", "mceg"])
     parser.add_argument("--latent_dim", type=int, default=128)
     parser.add_argument("--num_samples", type=int, default=4000)
@@ -300,7 +454,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    thetas, xs = generate_data(args.num_samples, args.num_events, problem=args.problem, device=device)
+    thetas, xs = generate_data(args.num_samples, 10000, problem=args.problem, device=device)
     if args.problem == "simplified_dis":
         input_dim = 6
     elif args.problem == "realistic_dis":
@@ -325,23 +479,25 @@ def main():
     else:
         xs_tensor_engineered = xs
 
-        # Initialize PointNetEmbedding model (do this once)
-        input_dim = xs_tensor_engineered.shape[-1]
-        print(f"[precompute] Input dimension: {input_dim}")
-        print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
-        # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
-        precompute_latents_to_disk(
-            pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
-        )
-        del xs_tensor_engineered
-        del xs
+
+    # Initialize PointNetEmbedding model (do this once)
+    input_dim = xs_tensor_engineered.shape[-1]
+    print(f"[precompute] Input dimension: {input_dim}")
+    print(f"xs_tensor_engineered shape: {xs_tensor_engineered.shape}")
+    latent_path = os.path.join(output_dir, f"{args.problem}_latent_features.h5")
+    # def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
+    precompute_latents_to_disk(
+        pointnet_model, xs_tensor_engineered, thetas, latent_path, args.latent_dim, chunk_size=8
+    )
+    del xs_tensor_engineered
+    del xs
 
     dataset = H5Dataset(latent_path)
     n_val = int(0.1 * len(dataset))
     n_train = len(dataset) - n_val
     train_set, val_set = random_split(dataset, [n_train, n_val])
-    train_loader = DataLoader(train_set, batch_size=32, shuffle=True, collate_fn=EventDataset.collate_fn)
-    val_loader = DataLoader(val_set, batch_size=32, shuffle=False, collate_fn=EventDataset.collate_fn)
+    train_loader = DataLoader(train_set, batch_size=8, shuffle=True, collate_fn=EventDataset.collate_fn)
+    val_loader = DataLoader(val_set, batch_size=8, shuffle=False, collate_fn=EventDataset.collate_fn)
 
     # Train and Laplace all heads
     if args.arch in ["mlp", "all"]:
@@ -376,6 +532,14 @@ def main():
                     likelihood="regression",
                     subset_of_weights="last_layer",
                     hessian_structure="kron")
+
+    if args.arch in ["flow", "all"]:
+        print("Training Conditional RealNVP flow...")
+        flow = ConditionalRealNVP(z_dim=args.latent_dim, param_dim=param_dim,
+                                n_layers=8, hidden=256, scale_clamp=5.0).to(device)
+        trained_flow = train_flow(flow, train_loader, val_loader, device,
+                                epochs=args.epochs, lr=2e-4)
+        torch.save(trained_flow.state_dict(), os.path.join(output_dir, "flow_final.pth"))
 
 
     # if args.arch in ["gaussian", "all"]:

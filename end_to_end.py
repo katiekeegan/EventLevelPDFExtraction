@@ -89,8 +89,8 @@ def train(
                 # Get latent embedding from your encoder
                 latent = model(x_sets)  # shape [B*n_repeat, D]
 
-                # Existing contrastive objective (assumes your function is defined elsewhere)
-                contrastive = triplet_theta_contrastive_loss(latent, theta, margin=0.2, sim_threshold=0.1, dissim_threshold=0.5)
+                # # Existing contrastive objective (assumes your function is defined elsewhere)
+                # contrastive = triplet_theta_contrastive_loss(latent, theta, margin=0.2, sim_threshold=0.1, dissim_threshold=0.5)
 
                 # # Regularization: L2 norm of embeddings
                 l2_reg = latent.norm(p=2, dim=1).mean()
@@ -112,9 +112,9 @@ def train(
                     # theta_pred, theta, args.problem
                 # )
 
-                mse_loss = F.mse_loss(theta_pred, theta)
+                l1_loss = F.l1_loss(theta_pred, theta)
 
-                loss = contrastive + mse_loss + alpha1 * decorrelation + alpha2 * l2_reg
+                loss = l1_loss #+ alpha1 * decorrelation + alpha2 * l2_reg
 
                 # # Total loss
                 # loss = (
@@ -137,7 +137,7 @@ def train(
                     {
                         "epoch": epoch + 1,
                         "loss_total": loss.item(),
-                        "contrastive": contrastive.item(),
+                        # "contrastive": contrastive.item(),
                         "l2_reg": l2_reg.item(),
                         "decorrelation": decorrelation.item(),
                         # "aux_theta_l1": loss_theta_l1.item(),
@@ -147,7 +147,7 @@ def train(
             print(
                 f"Epoch {epoch + 1} | "
                 f"Total: {loss.item():.4f} | "
-                f"Contr: {contrastive.item():.4f} | "
+                # f"Contr: {contrastive.item():.4f} | "
                 f"L2: {l2_reg.item():.4f} | "
                 f"Decorr: {decorrelation.item():.4f} | "
                 # f"ThetaL1: {loss_theta_l1.item():.4f} | "
@@ -156,6 +156,7 @@ def train(
 
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
                 torch.save( model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"), )
+                torch.save( theta_head.state_dict(), os.path.join(output_dir, f"theta_heads_epoch_{epoch+1}.pth"), )
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
         torch.save(theta_head.state_dict(), os.path.join(output_dir, f"theta_head_{args.problem}.pth"))
@@ -299,7 +300,7 @@ if __name__ == "__main__":
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--problem", type=str, default="simplified_dis")
-    parser.add_argument('--head', type=str, default='Transformer')
+    parser.add_argument('--head', type=str, default='MLP')
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument(
         "--experiment_name",
