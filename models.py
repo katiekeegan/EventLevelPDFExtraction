@@ -494,7 +494,9 @@ class PointNetPMA(nn.Module):
     def forward(self, x):
         B, N, _ = x.shape  # (B, N, input_dim)
 
-        x = self.mlp1(x)  # (B, N, hidden_dim)
+        x = x.view(B*N, self.input_dim)
+        x = self.mlp1(x)  # (B*N, hidden_dim)
+        x = x.view(B, N, self.hidden_dim)
 
         # Expand seed vectors for batch
         seed = self.seed_vectors.expand(B, -1, -1)  # (B, num_seeds, hidden_dim)
@@ -532,3 +534,15 @@ class LatentToParamsNN(nn.Module):
         variance = torch.exp(log_var)
         # log_var = torch.tanh(self.fc_logvar(x)) * 5  # Keep within a reasonable range
         return mean, variance
+
+class TransformerHead(nn.Module):
+    def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
+        super().__init__()
+        self.embedding = nn.Linear(embedding_dim, 128)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        self.fc = nn.Linear(128, out_dim)
+    def forward(self, x):
+        x = self.embedding(x).unsqueeze(0)
+        x = self.transformer(x).squeeze(0)
+        return self.fc(x)

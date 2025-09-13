@@ -1349,3 +1349,442 @@ def plot_PDF_distribution_single_same_plot_mceg(
     # plt.tight_layout(rect=[0,0,0.9,1])
     # plt.show()
     # plt.savefig(save_path, dpi=300)
+
+from typing import Optional, Tuple, List, Callable
+
+# ---------------------------
+# CNF helper: sample θ | latent
+# ---------------------------
+@torch.no_grad()
+def cnf_sample_theta(
+    model,
+    cond_latent: torch.Tensor,     # shape [1, L] or [B, L]
+    n_samples: int,
+    device: torch.device,
+    batch_size: int = 1024,
+) -> torch.Tensor:
+    """
+    Adapter for your CNF. Expects model.sample(n, cond=latent) -> [n, D] OR [B, n, D].
+    Handles both [1,L] and [B,L] latents; returns [n,D] if B==1 else [B,n,D].
+    """
+    cond_latent = cond_latent.to(device)
+    if cond_latent.dim() == 1:
+        cond_latent = cond_latent.unsqueeze(0)  # [1, L]
+    B = cond_latent.shape[0]
+
+    thetas = []
+    remaining = n_samples
+    while remaining > 0:
+        m = min(batch_size, remaining)
+        # ---- EDIT HERE if your sampler uses a different API ----
+        # Common patterns:
+        #   samples = model.sample(m, cond=cond_latent)            # -> [B, m, D]
+        #   samples = model.sample(m, condition=cond_latent)
+        #   samples = model.generate(m, context=cond_latent)
+        samples = model.sample(m, cond=cond_latent)  # <-- align to your CNF
+        # --------------------------------------------------------
+        if samples.dim() == 2:          # [m, D] (implies B==1)
+            samples = samples.unsqueeze(0)  # [1, m, D]
+        thetas.append(samples)           # [B, m, D]
+        remaining -= m
+
+    thetas = torch.cat(thetas, dim=1)    # [B, n, D]
+    return thetas.squeeze(0) if B == 1 else thetas
+
+
+# ---------------------------
+# Latent extraction from events
+# ---------------------------
+@torch.no_grad()
+def make_latent_from_true_params(
+    simulator,
+    pointnet_model,
+    true_params: torch.Tensor,
+    num_events: int,
+    device: torch.device,
+    feature_fn: Callable,  # e.g., advanced_feature_engineering
+) -> torch.Tensor:
+    """
+    Simulate events at θ*, featurize, embed with PointNet -> latent [1, L].
+    """
+    xs = simulator.sample(true_params.detach().cpu(), num_events)
+    xs = torch.tensor(xs, dtype=torch.float32, device=device)
+    xs_feat = feature_fn(xs)                 # your advanced_feature_engineering
+    pointnet_model.eval()
+    latent = pointnet_model(xs_feat.unsqueeze(0))  # [1, L]
+    return latent
+
+
+# ---------------------------
+# Utility: compute bands over f(x | θ) by sampling θ
+# ---------------------------
+@torch.no_grad()
+def function_bands_over_theta_samples(
+    eval_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    # eval_fn(x_grid, theta) -> [|x|]  ; theta shape [D]
+    theta_samples: torch.Tensor,  # [S, D]
+    x_grid: torch.Tensor,         # [X]
+    q_low: float = 0.25,
+    q_high: float = 0.75,
+    q_mid: float = 0.50,
+    device: Optional[torch.device] = None,
+    chunk: int = 256,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Returns (low, median, high) each of shape [X].
+    eval_fn must set the simulator to θ and return f(x|θ) at x_grid.
+    """
+    device = device or x_grid.device
+    S = theta_samples.shape[0]
+    outs = []
+
+    for s0 in range(0, S, chunk):
+        s1 = min(S, s0 + chunk)
+        thetas = theta_samples[s0:s1].to(device)
+        vals = []
+        for t in thetas:
+            vals.append(eval_fn(x_grid, t).unsqueeze(0))  # [1, X]
+        outs.append(torch.cat(vals, dim=0))  # [s1-s0, X]
+    stack = torch.cat(outs, dim=0)  # [S, X]
+
+    low = torch.quantile(stack, q_low, dim=0)
+    mid = torch.quantile(stack, q_mid, dim=0)
+    high = torch.quantile(stack, q_high, dim=0)
+    return low, mid, high
+
+
+# ---------------------------
+# Chi-squared helper
+# ---------------------------
+def compute_chisq_statistic(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12) -> float:
+    """
+    Unweighted (per-point) chi-squared-like discrepancy.
+    Customize with experimental variances/weights if you have them.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+    denom = np.maximum(np.abs(y_true), eps)
+    return float(np.mean(((y_pred - y_true) / denom)**2))
+
+
+# =========================================================
+# 1) Single-instance bands: simplified_dis (u,d) and realistic_dis (q at Q2 slices)
+# =========================================================
+@torch.no_grad()
+def plot_PDF_distribution_single_CNF(
+    model,                    # CNF
+    pointnet_model,           # feature encoder
+    true_params: torch.Tensor,
+    device: torch.device,
+    feature_fn: Callable,     # advanced_feature_engineering
+    simulator,                # SimplifiedDIS(...) or RealisticDIS(...)
+    n_theta: int = 512,       # # θ samples from CNF
+    n_events_for_latent: int = 100_000,
+    problem: str = 'simplified_dis',
+    x_range: Tuple[float, float] = (1e-3, 1.0),
+    nx: int = 500,
+    Q2_slices: Optional[List[float]] = None,
+    save_dir: Optional[str] = None,
+):
+    """
+    Build posterior bands for u(x|θ), d(x|θ) (simplified) or q(x,Q^2|θ) (realistic).
+    """
+    model.eval()
+    pointnet_model.eval()
+
+    # Make latent from θ* data
+    latent = make_latent_from_true_params(
+        simulator, pointnet_model, true_params.to(device),
+        num_events=n_events_for_latent, device=device, feature_fn=feature_fn
+    )  # [1, L]
+
+    # Sample θ ~ CNF(·|latent)
+    theta_samples = cnf_sample_theta_SimpleCNF(
+        cnf=model,                    # your SimpleCNF (or DDP-wrapped)
+        cond_latent=latent,           # [1,L] or [B,L] from PointNet
+        n_samples=100,            # e.g., 512
+        device=device,
+        batch_size=2048,              # tune for your GPU
+    )
+
+    # x-grid
+    x_lo, x_hi = x_range
+    x_vals = torch.logspace(np.log10(x_lo), np.log10(x_hi), nx, device=device) if x_lo > 0 else torch.linspace(x_lo, x_hi, nx, device=device)
+
+    if problem == 'simplified_dis':
+        # Small closures to evaluate u/d at given θ
+        def eval_up(x, theta):
+            simulator.init(theta)             # set θ
+            return simulator.up(x)            # [X]
+
+        def eval_down(x, theta):
+            simulator.init(theta)
+            return simulator.down(x)
+
+        # Bands
+        up_lo, up_mid, up_hi   = function_bands_over_theta_samples(eval_up,   theta_samples, x_vals, device=device)
+        dn_lo, dn_mid, dn_hi   = function_bands_over_theta_samples(eval_down, theta_samples, x_vals, device=device)
+
+        # Truth
+        simulator.init(true_params.to(device).squeeze())
+        up_true = simulator.up(x_vals)
+        dn_true = simulator.down(x_vals)
+
+        for (mid, lo, hi, truth, name, color) in [
+            (up_mid, up_lo, up_hi, up_true, "up",  "royalblue"),
+            (dn_mid, dn_lo, dn_hi, dn_true, "down","darkorange"),
+        ]:
+            fig, ax = plt.subplots(figsize=(7,5))
+            ax.plot(x_vals.detach().cpu(), truth.detach().cpu(), label=fr"True ${name}(x\mid\theta^*)$", linewidth=2)
+            ax.plot(x_vals.detach().cpu(), mid.detach().cpu(),   linestyle='--', label=fr"Median $\hat{{{name}}}(x)$", linewidth=2)
+            ax.fill_between(x_vals.detach().cpu(), lo.detach().cpu(), hi.detach().cpu(), alpha=0.30, label="IQR")
+            ax.set_xscale("log")
+            ax.set_xlim(x_range)
+            ax.set_xlabel(r"$x$")
+            ax.set_ylabel(fr"${name}(x\mid\theta)$")
+            ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+            ax.legend(frameon=False)
+            plt.tight_layout()
+            out = f"{save_dir}/{name}.png" if save_dir else f"{name}.png"
+            plt.savefig(out, dpi=200)
+            plt.close(fig)
+
+    elif problem == 'realistic_dis':
+        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+
+        def eval_q(x, theta, Q2_val: float):
+            simulator.init(theta)
+            Q2v = torch.full_like(x, float(Q2_val))
+            return simulator.q(x, Q2v)        # [X]
+
+        for Q2_fixed in Q2_slices:
+            def eval_q_fixed(x, theta):
+                return eval_q(x, theta, Q2_fixed)
+
+            lo, mid, hi = function_bands_over_theta_samples(eval_q_fixed, theta_samples, x_vals, device=device)
+
+            simulator.init(true_params.to(device).squeeze())
+            true_q = eval_q(x_vals, true_params.to(device).squeeze(), Q2_fixed)
+
+            fig, ax = plt.subplots(figsize=(7,5))
+            ax.plot(x_vals.detach().cpu(), true_q.detach().cpu(), linewidth=2.5,
+                    label=fr"True $q(x, Q^2={Q2_fixed})$")
+            ax.plot(x_vals.detach().cpu(), mid.detach().cpu(), linestyle='--', linewidth=2,
+                    label=fr"Median $\hat{{q}}(x, Q^2={Q2_fixed})$")
+            ax.fill_between(x_vals.detach().cpu(), lo.detach().cpu(), hi.detach().cpu(), alpha=0.25, label="IQR")
+
+            ax.set_xscale("log")
+            ax.set_xlim(x_range)
+            ax.set_xlabel(r"$x$")
+            ax.set_ylabel(r"$q(x,Q^2)$")
+            ax.set_title(fr"$q(x)$ at $Q^2={Q2_fixed}\,\mathrm{{GeV}}^2$")
+            ax.grid(True, which="both", linestyle=":", linewidth=0.5)
+            ax.legend(frameon=False)
+            plt.tight_layout()
+            out = f"{save_dir}/q_Q2_{int(Q2_fixed)}.png" if save_dir else f"q_Q2_{int(Q2_fixed)}.png"
+            plt.savefig(out, dpi=200)
+            plt.close(fig)
+
+    else:
+        raise ValueError("problem must be 'simplified_dis' or 'realistic_dis'")
+
+
+# =========================================================
+# 2) Multi-instance evaluation with χ², using CNF sampling for θ
+# =========================================================
+@torch.no_grad()
+def evaluate_over_n_parameters_CNF(
+    model, pointnet_model,
+    n: int = 100,
+    num_events: int = 100_000,
+    device: Optional[torch.device] = None,
+    problem: str = 'simplified_dis',
+    feature_fn: Callable = None,       # advanced_feature_engineering
+    simulator = None,
+    n_theta_per_case: int = 512,
+    save_dir=None
+):
+    """
+    Like your previous evaluator, but:
+      - samples θ from the CNF posterior (conditioned on latent from true events),
+      - builds predictive curves by averaging f(x|θ_s) over θ_s,
+      - computes |θ_pred - θ_true| / |θ_true| via posterior mean θ (optional).
+    """
+    device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    assert feature_fn is not None, "Pass your advanced_feature_engineering as feature_fn."
+
+    if problem == 'simplified_dis':
+        param_dim = 4
+        x_grid = torch.logspace(-3, np.log10(0.999), 1000, device=device)
+    elif problem == 'realistic_dis':
+        param_dim = 6 if "realistic" in problem else 4  # adjust as needed
+        x_grid = torch.logspace(-3, np.log10(0.9), 800, device=device)
+    else:
+        raise ValueError("problem must be 'simplified_dis' or 'realistic_dis'")
+
+    all_errors = []
+    chi2_up = []
+    chi2_down = []
+
+    for _ in range(n):
+        true_params = torch.empty(param_dim).uniform_(0.0, 5.0).to(device)
+
+        # latent from θ* data
+        latent = make_latent_from_true_params(
+            simulator, pointnet_model, true_params, num_events=num_events,
+            device=device, feature_fn=feature_fn
+        )  # [1, L]
+
+        # θ samples from CNF
+        theta_samples = cnf_sample_theta_SimpleCNF(
+        cnf=model,                    # your SimpleCNF (or DDP-wrapped)
+        cond_latent=latent,           # [1,L] or [B,L] from PointNet
+        n_samples=100,            # e.g., 512
+        device=device,
+        batch_size=2048,              # tune for your GPU
+        )
+
+        # (Optional) parameter error vs posterior mean θ
+        theta_mean = theta_samples.mean(dim=0)
+        rel_err = torch.abs(theta_mean - true_params) / (true_params.abs() + 1e-8)
+        all_errors.append(rel_err.detach().cpu())
+
+        if problem == 'simplified_dis':
+            # Predictive mean curves for up/down by averaging over θ samples
+            vals_up = []
+            vals_dn = []
+            for t in theta_samples:
+                simulator.init(t)
+                vals_up.append(simulator.up(x_grid).unsqueeze(0))
+                simulator.init(t)
+                vals_dn.append(simulator.down(x_grid).unsqueeze(0))
+            pred_up = torch.cat(vals_up, dim=0).mean(dim=0)  # [X]
+            pred_dn = torch.cat(vals_dn, dim=0).mean(dim=0)  # [X]
+
+            simulator.init(true_params)
+            true_up = simulator.up(x_grid)
+            true_dn = simulator.down(x_grid)
+
+            chi2_up.append(compute_chisq_statistic(true_up.cpu().numpy(), pred_up.cpu().numpy()))
+            chi2_down.append(compute_chisq_statistic(true_dn.cpu().numpy(), pred_dn.cpu().numpy()))
+
+        elif problem == 'realistic_dis':
+            # If you want χ² for q, pick a Q2 grid or average across slices
+            Q2_slices = [2.0, 10.0, 50.0, 200.0]
+            chis = []
+            for Q2_fixed in Q2_slices:
+                vals = []
+                Q2v = torch.full_like(x_grid, float(Q2_fixed))
+                for t in theta_samples:
+                    simulator.init(t)
+                    vals.append(simulator.q(x_grid, Q2v).unsqueeze(0))
+                pred_q = torch.cat(vals, dim=0).mean(dim=0)
+
+                simulator.init(true_params)
+                true_q = simulator.q(x_grid, Q2v)
+                chis.append(compute_chisq_statistic(true_q.cpu().numpy(), pred_q.cpu().numpy()))
+            # store mean across slices for convenience
+            chi2_up.append(float(np.mean(chis)))   # reuse arrays for convenience
+            chi2_down.append(float(np.std(chis)))  # e.g., store std separately
+        else:
+            raise ValueError
+
+    all_errors = torch.stack(all_errors).numpy()
+    chi2_up = np.array(chi2_up)
+    chi2_down = np.array(chi2_down)
+
+    # --- Plots for diagnostics ---
+    fig, axes = plt.subplots(1, param_dim, figsize=(4*param_dim, 4))
+    if param_dim == 1:
+        axes = [axes]
+    for i in range(param_dim):
+        axes[i].hist(all_errors[:, i], bins=50, alpha=0.8)
+        axes[i].set_title(f'Parameter {i+1} Relative Error')
+        axes[i].set_xlabel('Relative Error')
+        axes[i].set_ylabel('Frequency')
+    plt.tight_layout()
+    plt.savefig(save_dir + "/error_distributions_CNF.png", dpi=200)
+    plt.close(fig)
+
+    if problem == 'simplified_dis':
+        print(f"Median Chi² up:   {np.median(chi2_up):.4f} ± {chi2_up.std():.4f}")
+        print(f"Median Chi² down: {np.median(chi2_down):.4f} ± {chi2_down.std():.4f}")
+
+        chi2_up_clip = np.percentile(chi2_up, 99)
+        chi2_down_clip = np.percentile(chi2_down, 99)
+
+        plt.figure(figsize=(10,5))
+        plt.hist(chi2_up[chi2_up < chi2_up_clip], bins=50, alpha=0.6, label='Chi² Up')
+        plt.hist(chi2_down[chi2_down < chi2_down_clip], bins=50, alpha=0.6, label='Chi² Down')
+        plt.legend()
+        plt.title("Chi-Square Statistic Distribution (Clipped at 99th percentile)")
+        plt.xlabel("Chi-Square")
+        plt.ylabel("Frequency")
+        plt.tight_layout()
+        plt.savefig(save_dir + "/chisq_distributions_CNF_clipped.png", dpi=200)
+        plt.close()
+    else:
+        print("Stored mean/std χ² over Q² slices in chi2_up/chi2_down arrays (rename if desired).")
+
+@torch.no_grad()
+def cnf_sample_theta_SimpleCNF(
+    cnf,                    # instance of SimpleCNF or DDP-wrapped
+    cond_latent: torch.Tensor,   # [L], [1,L], or [B,L]
+    n_samples: int,
+    device: torch.device,
+    batch_size: int = 2048,      # split sampling if n is large
+) -> torch.Tensor:
+    """
+    Samples theta ~ p_cnf(theta | context) using your SimpleCNF's base and inverse.
+    Returns:
+      - [n_samples, D] if B == 1
+      - [B, n_samples, D] if B > 1
+    """
+    # unwrap DDP if needed
+    cnf_module = cnf.module if hasattr(cnf, "module") else cnf
+    cnf_module.eval()
+
+    cond_latent = cond_latent.to(device)
+    if cond_latent.dim() == 1:
+        cond_latent = cond_latent.unsqueeze(0)   # [1, L]
+    B, L = cond_latent.shape
+
+    theta_dim = cnf_module.theta_dim
+    base_mean   = cnf_module.base_mean.to(device)      # [D]
+    base_logstd = cnf_module.base_logstd.to(device)    # [D]
+    base_std    = base_logstd.exp()                    # [D]
+
+    out_list = []
+
+    # We’ll generate in chunks (m per chunk) to control memory.
+    remaining = n_samples
+    while remaining > 0:
+        m = min(batch_size, remaining)
+
+        # Base samples: for each context, draw m z's.
+        # Shape we want before inverse:
+        #   if B == 1: [m, D] with context broadcasted to [m, L]
+        #   if B > 1:  [B*m, D] with context repeated to [B*m, L]
+        if B == 1:
+            z = base_mean + base_std * torch.randn(m, theta_dim, device=device)  # [m, D]
+            ctx = cond_latent.repeat(m, 1)                                       # [m, L]
+            theta_chunk, _ = cnf_module.inverse(z, ctx)                          # [m, D]
+            out_list.append(theta_chunk.unsqueeze(0))                            # [1, m, D]
+        else:
+            z = base_mean + base_std * torch.randn(B * m, theta_dim, device=device)  # [B*m, D]
+            ctx = cond_latent.repeat_interleave(m, dim=0)                            # [B*m, L]
+            theta_chunk, _ = cnf_module.inverse(z, ctx)                               # [B*m, D]
+            theta_chunk = theta_chunk.view(B, m, theta_dim)                           # [B, m, D]
+            out_list.append(theta_chunk)
+
+        remaining -= m
+
+    # Concatenate along the sample dimension
+    if B == 1:
+        # out_list: [ [1,m1,D], [1,m2,D], ... ] -> [1, n, D] -> squeeze batch
+        theta = torch.cat(out_list, dim=1).squeeze(0)   # [n_samples, D]
+    else:
+        # out_list: [ [B,m1,D], [B,m2,D], ... ] -> [B, n, D]
+        theta = torch.cat(out_list, dim=1)              # [B, n_samples, D]
+
+    return theta

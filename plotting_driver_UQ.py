@@ -36,6 +36,7 @@ from models import *
 from plotting_UQ_utils import *
 from datasets import *
 from PDF_learning_UQ import *
+from cnf import *
 
 # utils_laplace.py
 import os, torch
@@ -263,7 +264,7 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
         input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
         input_dim = xs_dummy_tensor.shape[-1]
-    pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
+    pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
@@ -368,6 +369,20 @@ def _pick_ckpt_for_arch(arch: str, path_or_dir: str) -> str:
     cands.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     return cands[0]
 
+def sample_theta_from_flow(flow, emb, n_samples=100):
+    B = emb.shape[0]
+    theta_dim = flow.theta_dim
+    base_mean = flow.base_mean
+    base_logstd = flow.base_logstd
+
+    z = torch.randn(B, n_samples, theta_dim, device=emb.device) * base_logstd.exp() + base_mean
+    context = emb.unsqueeze(1).expand(-1, n_samples, -1)
+    context = context.reshape(B * n_samples, -1)
+    z = z.reshape(B * n_samples, theta_dim)
+    theta_samples, _ = flow.inverse(z, context)
+    theta_samples = theta_samples.view(B, n_samples, theta_dim)
+    return theta_samples
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -414,8 +429,8 @@ Examples:
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
-    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
+    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
+    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
 
     # Which architectures to plot?
     archs = []
@@ -430,8 +445,11 @@ Examples:
     else:
         if args.problem == 'realistic_dis':
             true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0], dtype=torch.float32)
-        else:
+        elif args.problem == 'mceg':
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
+        elif args.problem == 'simplified_dis':
+            true_params = torch.tensor([2.0, 1.2, 1.0, 1.2], dtype=torch.float32)
+            
 
     # Load PointNet once (shared across all heads)
     pointnet_model = reload_pointnet(experiment_dir_pointnet, args.latent_dim, device, args.cl_model, args.problem)
@@ -450,20 +468,16 @@ Examples:
         if arch == "flow":
             # look for a flow_model checkpoint in the experiment directory
             exp_dir = experiment_dir   # or however you’re already pointing to the directory
-            ckpt = os.path.join(exp_dir, "flow_final.pth")
+            ckpt = os.path.join(exp_dir, "final_cnf.pth")
            
             if _FLOW_CLASS_OK and os.path.isfile(ckpt):
                 plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
                 os.makedirs(plot_dir, exist_ok=True)
                 print(f"[flow] Loading flow model from {ckpt}")
                 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                flow = ConditionalRealNVP(
-                    z_dim=args.latent_dim,
-                    param_dim=args.param_dim,
-                    n_layers=8, hidden=256, scale_clamp=5.0
-                ).to(device)
+                flow = SimpleCNF(theta_dim=args.param_dim, context_dim=args.latent_dim, hidden_dim=256, num_layers=6).to(device)
                 state = torch.load(ckpt, map_location=device)
-                flow.load_state_dict(state)
+                flow.load_state_dict({k.replace('module.', ''): v for k, v in state.items()})
                 flow.eval()
 
                 # your existing z-loading logic
@@ -489,10 +503,9 @@ Examples:
                     xs_featurized = xs_tensor
                 latent_samples = pointnet_model(xs_featurized.unsqueeze(0)).to(device)  # [N, Dz]
                 z = latent_samples
-                with torch.no_grad():
-                    theta_samples = flow(z, n_samples=100)  # [B, S, D]
+                theta_samples = sample_theta_from_flow(flow, z, n_samples=100)
 
-                agg = theta_samples.reshape(-1, theta_samples.shape[-1]).cpu().numpy()
+                agg = theta_samples.reshape(-1, theta_samples.shape[-1]).cpu().detach().numpy()
                 plot_1d_marginals(agg, plot_dir, "flow")
                 plot_pairwise_2d(agg, plot_dir, "flow")
                 plot_corner(agg, os.path.join(plot_dir, "flow_corner.png"),
@@ -511,8 +524,12 @@ Examples:
                         overlay_point_estimate=True,
                         point_estimate="mean",
                         save_path=os.path.join(plot_dir, "pdf_overlay_flow.png"),
-                        title="Posterior PDF bands (SimplifiedDIS, flow θ-samples)"
+                        title="Posterior PDF bands"
                     )
+                    evaluate_over_n_parameters_CNF(
+                         flow, pointnet_model, num_events=args.num_events, device=device, simulator=simulator, feature_fn=advanced_feature_engineering, save_dir=plot_dir, n_theta_per_case=100)
+                    plot_PDF_distribution_single_CNF(flow, pointnet_model, true_params=true_params, device=device, feature_fn=advanced_feature_engineering, simulator=simulator, save_dir=plot_dir, n_events_for_latent=args.num_events, n_theta=100)
+                print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
         else:
             print(f"\n==== Plotting for architecture: {arch.upper()} ====")
             multimodal = (arch == "multimodal")

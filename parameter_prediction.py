@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 
 import wandb
 from datasets import *
-from models import PointNetPMA
+from models import *
 from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS, SimplifiedDIS)
 from utils import *
 
@@ -88,14 +88,14 @@ class SimpleCNF(nn.Module):
 # ---------------------------
 # Joint Training Function
 # ---------------------------
-def train_joint(model, cnf, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
+def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
     device = next(model.parameters()).device
-    cnf = cnf.to(device)  # FIX: Move CNF to GPU before DDP
-    opt = optim.Adam(list(model.parameters()) + list(cnf.parameters()), lr=lr, weight_decay=1e-4)
+    param_prediction_model = param_prediction_model.to(device)  # FIX: Move CNF to GPU before DDP
+    opt = optim.Adam(list(model.parameters()) + list(param_prediction_model.parameters()), lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
 
     model.train()
-    cnf.train()
+    param_prediction_model.train()
     torch.backends.cudnn.benchmark = True
 
     for epoch in range(epochs):
@@ -109,8 +109,10 @@ def train_joint(model, cnf, dataloader, epochs, lr, rank, wandb_enabled, output_
             opt.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(dtype=torch.float16):
                 emb = model(x_sets)  # [B*n_repeat, latent_dim]
-                log_prob = cnf.module.log_prob(theta, emb)
-                loss = -log_prob.mean()
+                # log_prob = cnf.module.log_prob(theta, emb)
+                # loss = -log_prob.mean()
+                predicted_theta = param_prediction_model(emb)  # [B*n_repeat, theta_dim]
+                loss = F.mse_loss(predicted_theta, theta)
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
@@ -119,15 +121,24 @@ def train_joint(model, cnf, dataloader, epochs, lr, rank, wandb_enabled, output_
         # Logging and checkpointing (only on rank 0)
         if rank == 0:
             if wandb_enabled:
-                wandb.log({"epoch": epoch + 1, "nll_loss": loss.item()})
-            print(f"Epoch {epoch + 1} | NLL Loss: {loss.item():.4f}")
+                wandb.log({"epoch": epoch + 1, "mse_loss": loss.item()})
+            print(f"Epoch {epoch + 1} | MSE Loss: {loss.item():.4f}")
 
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
                 torch.save(model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"))
-                torch.save(cnf.state_dict(), os.path.join(output_dir, f"cnf_epoch_{epoch+1}.pth"))
+                torch.save(param_prediction_model.state_dict(), os.path.join(output_dir, f"params_model_epoch_{epoch+1}.pth"))
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
-        torch.save(cnf.state_dict(), os.path.join(output_dir, "final_cnf.pth"))
+        torch.save(param_prediction_model.state_dict(), os.path.join(output_dir, "final_params_model.pth"))
+        from laplace import Laplace
+        lap_transformer = Laplace(param_prediction_model, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
+        lap_transformer.fit(train_loader)
+        # after fitting:
+        save_laplace(lap_transformer, output_dir,
+                    filename="laplace_transformer.pt",
+                    likelihood="regression",
+                    subset_of_weights="last_layer",
+                    hessian_structure="kron")
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
@@ -146,7 +157,7 @@ def main_worker(rank, world_size, args):
     device = torch.device(f"cuda:{rank}")
 
     if args.experiment_name is None:
-        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
+        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
 
     output_dir = os.path.join("experiments", args.experiment_name)
     os.makedirs(output_dir, exist_ok=True)
@@ -201,9 +212,9 @@ def main_worker(rank, world_size, args):
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = DDP(model, device_ids=[rank])
 
-    cnf = SimpleCNF(theta_dim=theta_dim, context_dim=latent_dim, hidden_dim=256, num_layers=6)
-    cnf = cnf.to(device)         # <------ FIX: move CNF to correct device before DDP
-    cnf = DDP(cnf, device_ids=[rank])
+    param_prediction_model = TransformerHead(latent_dim, theta_dim)
+    param_prediction_model = param_prediction_model.to(device)
+    param_prediction_model = DDP(param_prediction_model, device_ids=[rank])
 
     if rank != 0:
         os.environ["WANDB_MODE"] = "disabled"
@@ -212,7 +223,7 @@ def main_worker(rank, world_size, args):
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
-    train_joint(model, cnf, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
+    train_joint(model, param_prediction_model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
     cleanup()
 
 if __name__ == "__main__":
@@ -220,7 +231,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples", type=int, default=10000)
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--num_epochs", type=int, default=1000)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--problem", type=str, default="simplified_dis")
