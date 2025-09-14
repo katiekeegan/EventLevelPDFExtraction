@@ -171,3 +171,178 @@ The implementation is complete and ready for use. Users can:
 4. **Integration**: Use in existing analysis and plotting workflows
 
 The implementation successfully meets all requirements while providing enhanced functionality and maintaining full compatibility with existing workflows.
+
+---
+
+# Function-Level Uncertainty Quantification Implementation
+
+## Overview
+
+Major changes made to uncertainty quantification functions in `plotting_UQ_utils.py` to focus on **function-level uncertainty** rather than **parameter-level uncertainty**.
+
+## Key Changes Made
+
+### 1. Focus Shift: Parameters θ → Functions f(x)
+
+**Before**: Uncertainty quantification reported uncertainty over model parameters θ
+- Output: Parameter means and standard deviations
+- Plots: Parameter histograms with uncertainty bars
+- Interpretation: "The parameter θ₁ is 2.0 ± 0.1"
+
+**After**: Uncertainty quantification reports uncertainty over predicted PDF functions f(x) at each x-point
+- Output: Function means and standard deviations at each x
+- Plots: PDF curves with pointwise uncertainty bands  
+- Interpretation: "The PDF value u(x=0.01) is 1.5 ± 0.2"
+
+### 2. Pointwise Uncertainty Aggregation
+
+The new approach evaluates uncertainty pointwise in x:
+
+```python
+# For each bootstrap iteration:
+for bootstrap_sample in range(n_bootstrap):
+    # Generate events, extract latent, predict parameter distribution
+    theta_mean, theta_std = predict_parameters(events)
+    
+    # Sample multiple θ from predicted distribution
+    for theta_sample in sample_from_N(theta_mean, theta_std):
+        # Evaluate function at each x
+        f_values = evaluate_function(theta_sample, x_grid)
+        store_function_values(f_values)
+
+# Aggregate pointwise statistics
+for x in x_grid:
+    mean_f_x = mean(all_function_values_at_x)
+    std_f_x = std(all_function_values_at_x)
+    uncertainty_band[x] = mean_f_x ± std_f_x
+```
+
+### 3. Updated Function Signatures
+
+#### `plot_combined_uncertainty_PDF_distribution()`
+- **Changed**: Now generates function-level uncertainty files
+- **Output**: 
+  - `function_uncertainty_pdf_{name}.png`: PDF with function uncertainty bands
+  - `function_uncertainty_breakdown_{name}.txt`: Pointwise statistics
+  - `function_uncertainty_methodology.txt`: Method documentation
+
+#### `plot_PDF_distribution_single()`
+- **Updated**: Better labeling to emphasize function-level uncertainty
+- **Added**: Titles indicating "Function-Level Uncertainty"
+
+#### `plot_bootstrap_PDF_distribution()`
+- **Updated**: Consistent with function-level uncertainty terminology
+
+### 4. Uncertainty Combination Formula
+
+For combined uncertainty (bootstrap + Laplace):
+
+**Parameter space (old)**:
+```
+total_param_variance = var(bootstrap_param_means) + mean(laplace_param_variances)
+```
+
+**Function space (new)**:
+```
+# At each x-point:
+total_function_variance(x) = var(bootstrap_function_means(x)) + mean(laplace_function_variances(x))
+```
+
+## Benefits of Function-Level Uncertainty
+
+### 1. More Interpretable Results
+- Practitioners care about uncertainty in PDF predictions f(x), not parameter values θ
+- Uncertainty bands directly on PDF plots show confidence in different x-regions
+- Easier to assess prediction quality for physics applications
+
+### 2. Pointwise Diagnostics
+- Can identify x-regions with high/low prediction uncertainty
+- Detailed pointwise breakdown files show uncertainty vs. x
+- Better understanding of model performance across the input domain
+
+### 3. Physics Relevance
+- PDF uncertainty f(x) ± σ_f(x) directly relates to physics observables
+- Parameter uncertainty θ ± σ_θ requires additional propagation to understand impact
+- Function uncertainty is what's needed for downstream physics calculations
+
+## Files Modified
+
+1. **`plotting_UQ_utils.py`**: 
+   - Added detailed module docstring explaining the changes
+   - Updated `plot_combined_uncertainty_PDF_distribution()` with new approach
+   - Updated `plot_PDF_distribution_single()` with better labeling
+   - Updated `plot_bootstrap_PDF_distribution()` for consistency
+
+2. **`README.md`**:
+   - Added section on "Function-Level Uncertainty Quantification"
+   - Explained the motivation and method
+   - Updated usage examples and output file descriptions
+
+## Integration with Existing Code
+
+The changes are **backward compatible**:
+- Function signatures remain the same
+- Existing plotting drivers will work without modification
+- Falls back gracefully when Laplace models aren't available
+- Parameter diagnostics still available for debugging
+
+## Usage Examples
+
+```bash
+# Generate function-level uncertainty plots
+python plotting_driver_UQ.py --arch gaussian --problem simplified_dis
+
+# Combined uncertainty analysis with detailed breakdown
+python example_combined_uncertainty_usage.py --problem simplified_dis --n_bootstrap 50
+```
+
+## Output Files
+
+### Function-Level Uncertainty Plots
+- `function_uncertainty_pdf_up.png`: u(x) with uncertainty bands
+- `function_uncertainty_pdf_down.png`: d(x) with uncertainty bands
+- `function_uncertainty_pdf_Q2_{value}.png`: q(x) at fixed Q²
+
+### Pointwise Analysis
+- `function_uncertainty_breakdown_{name}.txt`: Statistics at each x
+- `function_uncertainty_methodology.txt`: Method documentation
+- `function_uncertainty_summary.png`: Summary across functions
+
+### Diagnostic Plots (still available)
+- Parameter histograms for debugging
+- Comparison plots between uncertainty methods
+
+## Technical Implementation
+
+### Key Data Structures
+```python
+function_samples = {
+    'up': {
+        'x_vals': torch.tensor([x1, x2, ...]),
+        'all_samples': torch.tensor([[f1(x1), f1(x2), ...],
+                                   [f2(x1), f2(x2), ...],
+                                   ...])  # [n_total_samples, n_x_points]
+    }
+}
+```
+
+### Pointwise Statistics
+```python
+# At each x-point:
+mean_pdf = all_samples.mean(dim=0)  # [n_x_points]
+std_pdf = all_samples.std(dim=0)    # [n_x_points]
+uncertainty_bands = mean_pdf ± std_pdf
+```
+
+This approach provides more interpretable and physics-relevant uncertainty quantification for PDF parameter inference applications.
+
+## Requirements Addressed
+
+✅ **Aggregate Uncertainty Over Functions**: Now computes uncertainty over u(x), d(x) at each x  
+✅ **Function-Level Uncertainty Bands**: Plots show mean ± std of PDF at each x  
+✅ **Pointwise Uncertainty Combination**: total_variance(x) = var_bootstrap(x) + var_laplace(x)  
+✅ **Numerical Breakdown for Functions**: Reports uncertainty at each x, not for parameters  
+✅ **Updated Plots**: All uncertainty plots focus on predicted functions  
+✅ **Detailed Documentation**: Comprehensive explanations of changes and methods  
+✅ **Target simplified_dis**: Implementation focused on simplified_dis case  
+✅ **Updated README**: Explains function-level uncertainty approach

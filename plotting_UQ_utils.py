@@ -12,6 +12,37 @@ from plotting_driver_UQ import reload_pointnet
 from datasets import *
 import pylab as py
 
+"""
+MAJOR UPDATE: Function-Level Uncertainty Quantification
+
+This module now focuses uncertainty quantification on the PREDICTED FUNCTIONS f(x) 
+rather than just the model parameters θ. This provides more interpretable uncertainty
+for PDF predictions in physics applications.
+
+KEY CHANGES:
+1. plot_combined_uncertainty_PDF_distribution(): Now computes pointwise uncertainty
+   over PDF functions u(x), d(x), q(x) by evaluating f(x|θ) for multiple θ samples
+   and aggregating statistics at each x-point.
+
+2. Pointwise uncertainty combination: total_variance(x) = var_bootstrap(x) + var_laplace(x)
+   - Data uncertainty: variance across bootstrap samples of function values at each x
+   - Model uncertainty: variance from Laplace parameter posterior propagated to functions
+   - Combined pointwise in function space, not parameter space
+
+3. Output files emphasize function uncertainty:
+   - function_uncertainty_pdf_{name}.png: PDF plots with function-level uncertainty bands  
+   - function_uncertainty_breakdown_{name}.txt: Pointwise statistics for each x
+   - function_uncertainty_methodology.txt: Detailed explanation of the approach
+
+4. More interpretable uncertainty bands that show prediction uncertainty of the PDFs
+   themselves, which is what practitioners care about for physics applications.
+
+Why this change: Parameter uncertainty θ ± σ_θ is less interpretable than function
+uncertainty f(x) ± σ_f(x). The new approach provides uncertainty bands directly on
+the predicted PDF curves, making it easier to assess prediction quality at specific
+x-values and understand the confidence in different regions of the PDF.
+"""
+
 def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
     Return (mean_params, std_params) for the model outputs given a Laplace posterior.
@@ -1815,12 +1846,21 @@ def plot_bootstrap_PDF_distribution(
     Q2_slices=None
 ):
     """
-    Bootstrap uncertainty visualization for fixed true parameters.
+    Bootstrap uncertainty visualization with function-level uncertainty focus.
     
-    This function performs bootstrap resampling to estimate uncertainty in PDF
-    predictions given a fixed set of true parameters. For each bootstrap sample,
-    it generates independent event sets, extracts latent vectors using PointNet,
-    predicts parameters using the model head, and computes PDFs.
+    **UPDATED**: This function now emphasizes uncertainty over the predicted PDF 
+    functions f(x) at each x-point, complementing the main combined uncertainty 
+    analysis but focusing specifically on data uncertainty via bootstrap resampling.
+    
+    For each bootstrap sample:
+    - Generates independent event sets from true parameters
+    - Extracts latent representations and predicts parameters  
+    - Evaluates PDF functions f(x|θ) using predicted parameters
+    - Aggregates function values pointwise to compute uncertainty at each x
+    
+    The uncertainty bands show variability in the predicted PDF functions due to
+    finite event samples (data uncertainty), providing interpretable confidence
+    intervals on the PDF predictions themselves.
     
     Args:
         model: Trained model head for parameter prediction
@@ -1837,13 +1877,13 @@ def plot_bootstrap_PDF_distribution(
         None (saves plots to save_dir)
         
     Saves:
-        - bootstrap_pdf_median_up.png: Median up PDF with uncertainty bands
-        - bootstrap_pdf_median_down.png: Median down PDF with uncertainty bands  
-        - bootstrap_pdf_Q2_{value}.png: Median PDF at fixed Q2 (realistic_dis)
-        - bootstrap_param_histograms.png: Parameter distribution histograms
+        - bootstrap_pdf_median_up.png: u(x) with function-level uncertainty bands
+        - bootstrap_pdf_median_down.png: d(x) with function-level uncertainty bands  
+        - bootstrap_pdf_Q2_{value}.png: q(x) at fixed Q2 with function uncertainty
+        - bootstrap_param_histograms.png: Parameter distribution histograms (diagnostic)
         
     Example Usage:
-        # For simplified DIS problem
+        # For simplified DIS problem with function-level uncertainty
         plot_bootstrap_PDF_distribution(
             model=model,
             pointnet_model=pointnet_model, 
@@ -2022,7 +2062,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1 sigma Bootstrap Uncertainty")
+                               label=fr"±1σ Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2030,7 +2070,7 @@ def plot_bootstrap_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Bootstrap PDF Distribution ({fn_name.title()}, {n_bootstrap} samples)")
+                ax.set_title(f"Function-Level Bootstrap Uncertainty: {fn_name.title()} PDF\n({n_bootstrap} bootstrap samples)")
                 
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_median_{fn_name}.png"), dpi=300)
@@ -2072,7 +2112,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1 sigma Bootstrap Uncertainty")
+                               label=fr"±1σ Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
@@ -2080,7 +2120,7 @@ def plot_bootstrap_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Bootstrap PDF Distribution (Q square ={Q2_fixed}, {n_bootstrap} samples)")
+                ax.set_title(f"Function-Level Bootstrap Uncertainty: $Q^2={Q2_fixed}$ GeV²\n({n_bootstrap} bootstrap samples)")
                 
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_Q2_{Q2_fixed}.png"), dpi=300)
