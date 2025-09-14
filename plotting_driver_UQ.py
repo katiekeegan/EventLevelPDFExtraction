@@ -239,7 +239,7 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
         checkpoint_path = os.path.join(experiment_dir, "mlp_head_final.pth")
         model = MLPHead(latent_dim, param_dim).to(device)
     elif arch == "transformer":
-        checkpoint_path = os.path.join(experiment_dir, "transformer_head_final.pth")
+        checkpoint_path = os.path.join(experiment_dir, "final_params_model.pth")
         model = TransformerHead(latent_dim, param_dim).to(device)
     else:
         raise ValueError(f"Unknown architecture: {arch}")
@@ -247,7 +247,7 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
         print(f"❌ Checkpoint not found for {arch}: {checkpoint_path}")
         return None
     state = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state)
+    model.load_state_dict({k.replace('module.', ''): v for k, v in state.items()})
     model.eval()
     return model
 
@@ -429,8 +429,8 @@ Examples:
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
-    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
+    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
 
     # Which architectures to plot?
     archs = []
@@ -448,7 +448,7 @@ Examples:
         elif args.problem == 'mceg':
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
-            true_params = torch.tensor([2.0, 1.2, 1.0, 1.2], dtype=torch.float32)
+            true_params = torch.tensor([2.0, 1.2, 2.0, 1.2], dtype=torch.float32)
             
 
     # Load PointNet once (shared across all heads)
@@ -468,7 +468,7 @@ Examples:
         if arch == "flow":
             # look for a flow_model checkpoint in the experiment directory
             exp_dir = experiment_dir   # or however you’re already pointing to the directory
-            ckpt = os.path.join(exp_dir, "final_cnf.pth")
+            ckpt = os.path.join(exp_dir, "final_params_model.pth")
            
             if _FLOW_CLASS_OK and os.path.isfile(ckpt):
                 plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
@@ -542,7 +542,46 @@ Examples:
             os.makedirs(plot_dir, exist_ok=True)
             # Attempt to load Laplace approximation
             laplace_model = load_laplace_if_available(experiment_dir, arch, device,args)
+            # --- Fallback: Fit Laplace if not found ---
+            if laplace_model is None and arch in ("mlp", "transformer"):
+                print(f"ℹ️ No Laplace checkpoint found for {arch}, fitting Laplace from model weights...")
 
+                fit_z = torch.tensor(latents[:500], dtype=torch.float32, device=device)
+                test_out = model(fit_z)
+                print("Model output shape:", test_out.shape)
+                fit_theta = torch.tensor(thetas[:500], dtype=torch.float32, device=device)
+                print(f"fit_z.shape: {fit_z.shape}, fit_theta.shape: {fit_theta.shape}")
+                # For multi-output regression, Laplace expects targets of shape [N, D]
+                # If fit_theta shape is [N], expand dims
+                if fit_theta.ndim == 1:
+                    fit_theta = fit_theta.unsqueeze(1)
+                # If fit_theta shape is [N, D], it's fine
+
+                try:
+                    from laplace import Laplace
+                    laplace_model = Laplace(
+                        model, 
+                        likelihood='regression', 
+                        subset_of_weights='last_layer', 
+                        hessian_structure='kron'
+                    )
+                    import traceback
+                    try:
+                        # Create a dataset of pairs
+                        train_dataset = TensorDataset(fit_z, fit_theta)
+
+                        # Create a DataLoader (mini-batch size of 64 is typical; adjust as needed)
+                        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+                        laplace_model.fit(train_loader)
+                        print(f"✓ Fitted Laplace approximation for {arch} using {fit_z.shape[0]} samples.")
+                    except Exception as e:
+                        print("❌ Could not fit Laplace approximation:", e)
+                        traceback.print_exc()
+                        laplace_model = None
+                except Exception as e:
+                    print("❌ Could not fit Laplace approximation:", e)
+                    laplace_model = None
             if laplace_model is not None:
                 # quick preview latent (batch=1)
                 latent_preview = torch.zeros(1, args.latent_dim, device=device)
