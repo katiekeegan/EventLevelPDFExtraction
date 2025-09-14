@@ -2,15 +2,49 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 import os
-from simulator import advanced_feature_engineering, SimplifiedDIS, RealisticDIS
-import umap.umap_ as umap
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from simulator import *
-from PDF_learning import advanced_feature_engineering
-from plotting_driver_UQ import reload_pointnet
-from datasets import *
 import pylab as py
+
+# Import optional dependencies with fallbacks
+try:
+    import umap.umap_ as umap
+except ImportError:
+    umap = None
+
+try:
+    from sklearn.manifold import TSNE
+    from sklearn.decomposition import PCA
+except ImportError:
+    TSNE = None
+    PCA = None
+
+# Import simulator and other modules only when needed
+def get_simulator_module():
+    try:
+        from simulator import SimplifiedDIS, RealisticDIS, MCEGSimulator
+        return SimplifiedDIS, RealisticDIS, MCEGSimulator
+    except ImportError:
+        return None, None, None
+
+def get_advanced_feature_engineering():
+    try:
+        from PDF_learning import advanced_feature_engineering
+        return advanced_feature_engineering
+    except ImportError:
+        return lambda x: x  # fallback identity function
+
+def get_plotting_driver_UQ():
+    try:
+        from plotting_driver_UQ import reload_pointnet
+        return reload_pointnet
+    except ImportError:
+        return None
+
+def get_datasets():
+    try:
+        import datasets
+        return datasets
+    except ImportError:
+        return None
 
 """
 MAJOR UPDATE: Function-Level Uncertainty Quantification
@@ -1917,13 +1951,21 @@ def plot_bootstrap_PDF_distribution(
     print(f"Starting bootstrap PDF analysis with {n_bootstrap} samples...")
     
     # Initialize simulator based on problem type
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    
     if problem == 'realistic_dis':
+        if RealisticDIS is None:
+            raise ImportError("RealisticDIS not available - please install required dependencies") 
         simulator = RealisticDIS(device=torch.device('cpu'))
         param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
     elif problem == 'simplified_dis':
+        if SimplifiedDIS is None:
+            raise ImportError("SimplifiedDIS not available - please install required dependencies")
         simulator = SimplifiedDIS(device=torch.device('cpu'))
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
     elif problem == 'mceg':
+        if MCEGSimulator is None:
+            raise ImportError("MCEGSimulator not available - please install required dependencies")
         simulator = MCEGSimulator(device=torch.device('cpu'))
         param_names = [f'Param {i+1}' for i in range(len(true_params))]
     else:
@@ -1944,15 +1986,17 @@ def plot_bootstrap_PDF_distribution(
         
         # Generate independent event set
         with torch.no_grad():
-            # Use make_latent_from_true_params to get latent from events
-            latent = make_latent_from_true_params(
-                simulator=simulator,
-                pointnet_model=pointnet_model,
-                true_params=true_params,
-                num_events=num_events,
-                device=device,
-                feature_fn=advanced_feature_engineering if problem != 'mceg' else lambda x: x
-            )
+            # Generate events directly from simulator
+            xs = simulator.sample(true_params.detach().cpu(), num_events)
+            xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+            
+            # Apply feature engineering based on problem type
+            advanced_feature_engineering = get_advanced_feature_engineering()
+            if problem != 'mceg':
+                xs_tensor = advanced_feature_engineering(xs_tensor)
+            
+            # Extract latent embedding using PointNet
+            latent = pointnet_model(xs_tensor.unsqueeze(0))
             
             # Predict parameters from latent
             predicted_params = model(latent).cpu().squeeze(0)  # [param_dim]
@@ -2248,17 +2292,28 @@ def plot_combined_uncertainty_PDF_distribution(
         print("  ⚠️  No Laplace model provided - using bootstrap-only function uncertainty")
     
     # Initialize simulator based on problem type
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    
     if problem == 'realistic_dis':
+        if RealisticDIS is None:
+            raise ImportError("RealisticDIS not available - please install required dependencies")
         simulator = RealisticDIS(device=torch.device('cpu'))
         param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
     elif problem == 'simplified_dis':
+        if SimplifiedDIS is None:
+            raise ImportError("SimplifiedDIS not available - please install required dependencies")
         simulator = SimplifiedDIS(device=torch.device('cpu'))
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
     elif problem == 'mceg':
+        if MCEGSimulator is None:
+            raise ImportError("MCEGSimulator not available - please install required dependencies")
         simulator = MCEGSimulator(device=torch.device('cpu'))
         param_names = [f'Param {i+1}' for i in range(len(true_params))]
     else:
         raise ValueError(f"Unknown problem type: {problem}")
+    
+    # Get feature engineering function
+    advanced_feature_engineering = get_advanced_feature_engineering()
     
     model.eval()
     pointnet_model.eval()
@@ -2828,3 +2883,918 @@ def validate_combined_uncertainty_inputs(
             raise ValueError(f"For problem '{problem}', expected {expected_dims[problem]} parameters, got {len(true_params)}")
     
     return True
+
+
+def plot_uncertainty_vs_events(
+    model,
+    pointnet_model, 
+    true_params,
+    device,
+    event_counts=None,
+    n_bootstrap=20,
+    laplace_model=None,
+    problem='simplified_dis',
+    save_dir=None,
+    Q2_slices=None,
+    fixed_x_values=None
+):
+    """
+    Plot uncertainty quantification consistency: how uncertainty bands shrink 
+    as the number of events (data) increases.
+    
+    This function demonstrates the fundamental principle that uncertainty should 
+    decrease as more data becomes available. For each event count, it runs the 
+    full uncertainty quantification pipeline and shows how both bootstrap 
+    (data uncertainty) and Laplace (model uncertainty) behave with varying 
+    amounts of training data.
+    
+    **Key Consistency Check**: Uncertainty should generally decrease as N_events 
+    increases, following statistical scaling laws (roughly proportional to 1/√N).
+    
+    Args:
+        model: Trained model head for parameter prediction
+        pointnet_model: Trained PointNet model for latent extraction
+        true_params: Fixed true parameter values [tensor of shape (param_dim,)]
+        device: Device to run computations on
+        event_counts: List of event counts to test [default: [1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6]]
+        n_bootstrap: Number of bootstrap samples per event count
+        laplace_model: Fitted Laplace approximation for model uncertainty (optional)
+        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        save_dir: Directory to save plots (required)
+        Q2_slices: List of Q2 values for realistic_dis problem (optional)
+        fixed_x_values: List of x values to track uncertainty (optional)
+        
+    Returns:
+        Dict: Summary statistics and scaling analysis results
+        
+    Saves:
+        - uncertainty_vs_events_scaling.png: Overall uncertainty scaling plot
+        - uncertainty_vs_events_by_function.png: Per-function uncertainty scaling  
+        - uncertainty_vs_events_fixed_x.png: Uncertainty at fixed x values
+        - uncertainty_scaling_analysis.txt: Statistical analysis of scaling behavior
+        
+    Example Usage:
+        # Test uncertainty scaling for simplified DIS
+        scaling_results = plot_uncertainty_vs_events(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=torch.tensor([2.0, 1.2, 2.0, 1.2]),
+            device=device,
+            event_counts=[1000, 5000, 10000, 50000, 100000],
+            n_bootstrap=30,
+            laplace_model=laplace_model,
+            problem='simplified_dis',
+            save_dir='./plots/scaling_analysis'
+        )
+        
+        # Test with specific x values and Q2 slices for realistic DIS
+        scaling_results = plot_uncertainty_vs_events(
+            model=model,
+            pointnet_model=pointnet_model, 
+            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
+            device=device,
+            event_counts=[5000, 25000, 100000, 500000],
+            n_bootstrap=25,
+            problem='realistic_dis',
+            save_dir='./plots/scaling_analysis',
+            Q2_slices=[2.0, 10.0, 50.0],
+            fixed_x_values=[0.01, 0.1, 0.5]
+        )
+    """
+    if save_dir is None:
+        raise ValueError("save_dir must be specified for saving uncertainty scaling plots")
+    
+    import os
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    # Default event counts spanning realistic range
+    if event_counts is None:
+        event_counts = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
+    
+    print(f"🔄 Testing uncertainty scaling across {len(event_counts)} event counts...")
+    print(f"   Event counts: {event_counts}")
+    print(f"   Bootstrap samples per count: {n_bootstrap}")
+    if laplace_model is not None:
+        print("   Using Laplace approximation for model uncertainty")
+    else:
+        print("   Using bootstrap-only uncertainty (no Laplace)")
+    
+    # Initialize simulator
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    
+    if problem == 'realistic_dis':
+        if RealisticDIS is None:
+            raise ImportError("RealisticDIS not available - please install required dependencies")
+        simulator = RealisticDIS(device=torch.device('cpu'))
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+    elif problem == 'simplified_dis':
+        if SimplifiedDIS is None:
+            raise ImportError("SimplifiedDIS not available - please install required dependencies")
+        simulator = SimplifiedDIS(device=torch.device('cpu'))
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'mceg':
+        if MCEGSimulator is None:
+            raise ImportError("MCEGSimulator not available - please install required dependencies")
+        simulator = MCEGSimulator(device=torch.device('cpu'))
+        param_names = [f'Param {i+1}' for i in range(len(true_params))]
+    else:
+        raise ValueError(f"Unknown problem type: {problem}")
+    
+    # Get feature engineering function
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
+    model.eval()
+    pointnet_model.eval()
+    true_params = true_params.to(device)
+    
+    # Storage for scaling analysis results
+    scaling_results = {
+        'event_counts': event_counts,
+        'problem': problem,
+        'n_bootstrap': n_bootstrap,
+        'true_params': true_params.cpu().numpy(),
+        'param_names': param_names,
+        'function_uncertainties': {},  # {function_name: [uncertainties_per_event_count]}
+        'parameter_uncertainties': [],  # [param_uncertainties_per_event_count]
+        'fixed_x_uncertainties': {},   # {x_value: {function: [uncertainties_per_event_count]}}
+        'laplace_available': laplace_model is not None
+    }
+    
+    # Set up fixed x values for tracking
+    if fixed_x_values is None:
+        fixed_x_values = [0.01, 0.1, 0.5] if problem == 'simplified_dis' else [0.01, 0.1, 0.5]
+    
+    for x_val in fixed_x_values:
+        scaling_results['fixed_x_uncertainties'][x_val] = {}
+    
+    print("Running uncertainty analysis for each event count...")
+    
+    for i, num_events in enumerate(tqdm(event_counts, desc="Event counts")):
+        print(f"\n  📊 Event count: {num_events:,}")
+        
+        # Storage for this event count
+        function_uncertainties_this_count = {}
+        param_uncertainties_this_count = []
+        fixed_x_uncertainties_this_count = {x: {} for x in fixed_x_values}
+        
+        # Run bootstrap analysis for this event count
+        bootstrap_params = []
+        bootstrap_pdfs = {}
+        
+        for j in tqdm(range(n_bootstrap), desc=f"Bootstrap (N={num_events})", leave=False):
+            # Generate events with this count
+            with torch.no_grad():
+                xs = simulator.sample(true_params.detach().cpu(), int(num_events))
+                xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+                
+                # Apply feature engineering based on problem type
+                if problem != 'mceg':
+                    xs_tensor = advanced_feature_engineering(xs_tensor)
+                
+                # Extract latent embedding
+                latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
+                
+                # Get parameter prediction
+                if laplace_model is not None:
+                    # Use analytic uncertainty (includes model uncertainty)
+                    mean_params, std_params = get_analytic_uncertainty(
+                        model, latent_embedding, laplace_model
+                    )
+                    predicted_params = mean_params.cpu().squeeze(0)  # [param_dim]
+                    param_std = std_params.cpu().squeeze(0)          # [param_dim]
+                else:
+                    # Fallback to model output only
+                    with torch.no_grad():
+                        output = model(latent_embedding)
+                    if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
+                        mean_params, logvars = output
+                        predicted_params = mean_params.cpu().squeeze(0)
+                        param_std = torch.exp(0.5 * logvars).cpu().squeeze(0)
+                    else:  # Deterministic
+                        predicted_params = output.cpu().squeeze(0)
+                        param_std = torch.zeros_like(predicted_params)
+                
+                bootstrap_params.append(predicted_params)
+                
+                # Compute PDFs for this parameter set
+                simulator.init(predicted_params.detach().cpu())
+                
+                if problem == 'simplified_dis':
+                    # Evaluate up and down PDFs
+                    x_vals = torch.linspace(1e-3, 1, 500)
+                    
+                    for fn_name in ['up', 'down']:
+                        fn = getattr(simulator, fn_name)
+                        pdf_vals = fn(x_vals).detach().cpu()
+                        
+                        if fn_name not in bootstrap_pdfs:
+                            bootstrap_pdfs[fn_name] = []
+                        bootstrap_pdfs[fn_name].append(pdf_vals)
+                        
+                        # Evaluate at fixed x values
+                        for x_fixed in fixed_x_values:
+                            x_tensor = torch.tensor([x_fixed])
+                            pdf_at_x = fn(x_tensor).item()
+                            if fn_name not in fixed_x_uncertainties_this_count[x_fixed]:
+                                fixed_x_uncertainties_this_count[x_fixed][fn_name] = []
+                            fixed_x_uncertainties_this_count[x_fixed][fn_name].append(pdf_at_x)
+                            
+                elif problem == 'realistic_dis':
+                    # Evaluate q PDFs at different Q2 slices
+                    Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+                    x_vals = torch.linspace(1e-3, 0.9, 500)
+                    
+                    for Q2_fixed in Q2_slices:
+                        Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                        q_vals = simulator.q(x_vals, Q2_vals).detach().cpu()
+                        
+                        q_key = f'q_Q2_{Q2_fixed}'
+                        if q_key not in bootstrap_pdfs:
+                            bootstrap_pdfs[q_key] = []
+                        bootstrap_pdfs[q_key].append(q_vals)
+                        
+                        # Evaluate at fixed x values
+                        for x_fixed in fixed_x_values:
+                            x_tensor = torch.tensor([x_fixed])
+                            Q2_tensor = torch.tensor([Q2_fixed])
+                            q_at_x = simulator.q(x_tensor, Q2_tensor).item()
+                            if q_key not in fixed_x_uncertainties_this_count[x_fixed]:
+                                fixed_x_uncertainties_this_count[x_fixed][q_key] = []
+                            fixed_x_uncertainties_this_count[x_fixed][q_key].append(q_at_x)
+        
+        # Convert bootstrap results to tensors and compute uncertainties
+        bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
+        
+        # Parameter-level uncertainty
+        param_uncertainties_this_count = torch.std(bootstrap_params, dim=0).numpy()
+        scaling_results['parameter_uncertainties'].append(param_uncertainties_this_count)
+        
+        # Function-level uncertainty  
+        for key in bootstrap_pdfs:
+            pdf_stack = torch.stack(bootstrap_pdfs[key])  # [n_bootstrap, n_points]
+            # Average standard deviation across x-points for this function
+            avg_std = torch.std(pdf_stack, dim=0).mean().item()
+            
+            if key not in function_uncertainties_this_count:
+                function_uncertainties_this_count[key] = avg_std
+            if key not in scaling_results['function_uncertainties']:
+                scaling_results['function_uncertainties'][key] = []
+            scaling_results['function_uncertainties'][key].append(avg_std)
+        
+        # Fixed x uncertainty
+        for x_val in fixed_x_values:
+            for func_key in fixed_x_uncertainties_this_count[x_val]:
+                values = fixed_x_uncertainties_this_count[x_val][func_key]
+                uncertainty = np.std(values)
+                
+                if func_key not in scaling_results['fixed_x_uncertainties'][x_val]:
+                    scaling_results['fixed_x_uncertainties'][x_val][func_key] = []
+                scaling_results['fixed_x_uncertainties'][x_val][func_key].append(uncertainty)
+        
+        print(f"    Parameter uncertainties: {param_uncertainties_this_count}")
+        print(f"    Function uncertainties: {function_uncertainties_this_count}")
+    
+    print("\n📈 Creating uncertainty scaling plots...")
+    
+    # Plot 1: Overall uncertainty scaling (log-log)
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
+    
+    # Parameter uncertainty scaling
+    param_uncertainties = np.array(scaling_results['parameter_uncertainties'])  # [n_event_counts, n_params]
+    
+    for i, param_name in enumerate(param_names):
+        uncertainties = param_uncertainties[:, i]
+        ax1.loglog(event_counts, uncertainties, 'o-', label=param_name, linewidth=2, markersize=6)
+    
+    # Add theoretical 1/sqrt(N) scaling line
+    theoretical_scaling = uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+    ax1.loglog(event_counts, theoretical_scaling, 'k--', alpha=0.7, linewidth=2, 
+               label=r'$\propto 1/\sqrt{N}$ (theoretical)')
+    
+    ax1.set_xlabel('Number of Events')
+    ax1.set_ylabel('Parameter Uncertainty (std)')
+    ax1.set_title('Parameter Uncertainty vs. Event Count')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend()
+    
+    # Function uncertainty scaling
+    colors = plt.cm.tab10(np.linspace(0, 1, len(scaling_results['function_uncertainties'])))
+    for i, (func_name, uncertainties) in enumerate(scaling_results['function_uncertainties'].items()):
+        ax2.loglog(event_counts, uncertainties, 'o-', color=colors[i], 
+                   label=func_name, linewidth=2, markersize=6)
+    
+    # Add theoretical scaling line for functions
+    if len(scaling_results['function_uncertainties']) > 0:
+        first_func_uncertainties = list(scaling_results['function_uncertainties'].values())[0]
+        theoretical_func_scaling = first_func_uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+        ax2.loglog(event_counts, theoretical_func_scaling, 'k--', alpha=0.7, linewidth=2,
+                   label=r'$\propto 1/\sqrt{N}$ (theoretical)')
+    
+    ax2.set_xlabel('Number of Events')
+    ax2.set_ylabel('Function Uncertainty (avg std)')
+    ax2.set_title('Function Uncertainty vs. Event Count')
+    ax2.grid(True, alpha=0.3)
+    ax2.legend()
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_vs_events_scaling.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot 2: Uncertainty at fixed x values
+    if fixed_x_values and scaling_results['fixed_x_uncertainties']:
+        n_x_vals = len(fixed_x_values)
+        fig, axes = plt.subplots(1, n_x_vals, figsize=(5 * n_x_vals, 5))
+        if n_x_vals == 1:
+            axes = [axes]
+        
+        for i, x_val in enumerate(fixed_x_values):
+            ax = axes[i]
+            
+            for func_name, uncertainties in scaling_results['fixed_x_uncertainties'][x_val].items():
+                if uncertainties:  # Check if we have data
+                    ax.loglog(event_counts, uncertainties, 'o-', label=func_name, 
+                             linewidth=2, markersize=6)
+            
+            # Add theoretical scaling
+            if scaling_results['fixed_x_uncertainties'][x_val]:
+                first_uncertainties = list(scaling_results['fixed_x_uncertainties'][x_val].values())[0]
+                if first_uncertainties:
+                    theoretical = first_uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+                    ax.loglog(event_counts, theoretical, 'k--', alpha=0.7, linewidth=2,
+                             label=r'$\propto 1/\sqrt{N}$')
+            
+            ax.set_xlabel('Number of Events')
+            ax.set_ylabel('Uncertainty at x')
+            ax.set_title(f'Uncertainty at x = {x_val}')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "uncertainty_vs_events_fixed_x.png"), dpi=300, bbox_inches='tight')
+        plt.close(fig)
+    
+    # Save detailed analysis
+    analysis_path = os.path.join(save_dir, "uncertainty_scaling_analysis.txt")
+    with open(analysis_path, 'w') as f:
+        f.write("Uncertainty Quantification Scaling Analysis\n")
+        f.write("=" * 50 + "\n\n")
+        f.write("This analysis demonstrates the consistency of uncertainty quantification\n")
+        f.write("by showing how uncertainty bands shrink as the number of events increases.\n\n")
+        f.write("THEORY: For well-behaved statistical estimators, uncertainty should scale\n")
+        f.write("approximately as 1/√N where N is the number of data points (events).\n\n")
+        f.write(f"Configuration:\n")
+        f.write(f"Problem: {problem}\n")
+        f.write(f"True parameters: {true_params.cpu().numpy()}\n")
+        f.write(f"Event counts tested: {event_counts}\n")
+        f.write(f"Bootstrap samples per count: {n_bootstrap}\n")
+        f.write(f"Laplace uncertainty: {'Available' if laplace_model is not None else 'Not available'}\n\n")
+        
+        f.write("Parameter Uncertainty Results:\n")
+        f.write("-" * 30 + "\n")
+        for i, param_name in enumerate(param_names):
+            f.write(f"{param_name}:\n")
+            uncertainties = param_uncertainties[:, i]
+            for j, (count, unc) in enumerate(zip(event_counts, uncertainties)):
+                f.write(f"  {count:>8,} events: {unc:.6f}\n")
+            
+            # Compute scaling exponent via linear regression in log space
+            log_counts = np.log(event_counts)
+            log_uncertainties = np.log(uncertainties)
+            slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+            f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
+            f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+        
+        f.write("Function Uncertainty Results:\n")
+        f.write("-" * 30 + "\n")
+        for func_name, uncertainties in scaling_results['function_uncertainties'].items():
+            f.write(f"{func_name}:\n")
+            for count, unc in zip(event_counts, uncertainties):
+                f.write(f"  {count:>8,} events: {unc:.6f}\n")
+            
+            # Compute scaling exponent
+            log_counts = np.log(event_counts)
+            log_uncertainties = np.log(uncertainties)
+            slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+            f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
+            f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+        
+        if fixed_x_values:
+            f.write("Fixed X-Value Uncertainty Results:\n")
+            f.write("-" * 35 + "\n")
+            for x_val in fixed_x_values:
+                f.write(f"At x = {x_val}:\n")
+                for func_name, uncertainties in scaling_results['fixed_x_uncertainties'][x_val].items():
+                    if uncertainties:
+                        f.write(f"  {func_name}:\n")
+                        for count, unc in zip(event_counts, uncertainties):
+                            f.write(f"    {count:>8,} events: {unc:.6f}\n")
+                        
+                        # Compute scaling exponent
+                        log_counts = np.log(event_counts)
+                        log_uncertainties = np.log(uncertainties)
+                        slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+                        f.write(f"    Scaling exponent: {slope:.3f} (ideal: -0.5)\n\n")
+        
+        f.write("INTERPRETATION:\n")
+        f.write("- Scaling exponents close to -0.5 indicate proper statistical behavior\n")
+        f.write("- R² values close to 1.0 indicate consistent power-law scaling\n") 
+        f.write("- Deviations may indicate systematic effects or insufficient bootstrap samples\n")
+        f.write("- This analysis validates the consistency of the uncertainty quantification method\n")
+    
+    print(f"✅ Uncertainty scaling analysis complete! Results saved to {save_dir}")
+    print(f"   📊 Main scaling plot: uncertainty_vs_events_scaling.png")
+    if fixed_x_values:
+        print(f"   📍 Fixed x analysis: uncertainty_vs_events_fixed_x.png")
+    print(f"   📄 Detailed analysis: uncertainty_scaling_analysis.txt")
+    
+    return scaling_results
+
+
+def plot_uncertainty_at_fixed_x(
+    scaling_results,
+    x_values=None,
+    save_dir=None,
+    comparison_functions=None
+):
+    """
+    Create detailed plots showing uncertainty at specific x values as a function 
+    of the number of events.
+    
+    This function takes the results from plot_uncertainty_vs_events and creates
+    focused visualizations of how uncertainty behaves at specific x-coordinates.
+    This is particularly useful for understanding if uncertainty scaling is 
+    consistent across different regions of the PDF.
+    
+    Args:
+        scaling_results: Results dictionary from plot_uncertainty_vs_events
+        x_values: List of x values to plot (uses those from scaling_results if None)
+        save_dir: Directory to save plots (uses scaling_results save_dir if None)
+        comparison_functions: List of function names to compare (optional)
+        
+    Returns:
+        None (saves plots to save_dir)
+        
+    Saves:
+        - uncertainty_fixed_x_comparison.png: Comparison across functions at each x
+        - uncertainty_fixed_x_scaling_quality.png: Quality metrics for scaling fits
+        
+    Example Usage:
+        # After running plot_uncertainty_vs_events
+        scaling_results = plot_uncertainty_vs_events(...)
+        
+        # Create detailed fixed-x analysis
+        plot_uncertainty_at_fixed_x(
+            scaling_results=scaling_results,
+            x_values=[0.01, 0.1, 0.5],
+            comparison_functions=['up', 'down']  # for simplified_dis
+        )
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    
+    if 'fixed_x_uncertainties' not in scaling_results:
+        print("⚠️  No fixed x uncertainty data found in scaling_results")
+        return
+    
+    if save_dir is None:
+        save_dir = "./plots/scaling_analysis"  # fallback
+    os.makedirs(save_dir, exist_ok=True)
+    
+    event_counts = scaling_results['event_counts']
+    fixed_x_data = scaling_results['fixed_x_uncertainties']
+    
+    if x_values is None:
+        x_values = list(fixed_x_data.keys())
+    
+    if not x_values:
+        print("⚠️  No x values to plot")
+        return
+    
+    # Determine functions to plot
+    all_functions = set()
+    for x_val in x_values:
+        if x_val in fixed_x_data:
+            all_functions.update(fixed_x_data[x_val].keys())
+    
+    if comparison_functions is not None:
+        all_functions = [f for f in comparison_functions if f in all_functions]
+    else:
+        all_functions = sorted(list(all_functions))
+    
+    print(f"📍 Creating fixed-x uncertainty plots for x = {x_values}")
+    print(f"   Functions: {all_functions}")
+    
+    # Plot 1: Uncertainty comparison at each x value
+    n_x = len(x_values)
+    fig, axes = plt.subplots(1, n_x, figsize=(5 * n_x, 5))
+    if n_x == 1:
+        axes = [axes]
+    
+    colors = plt.cm.tab10(np.linspace(0, 1, len(all_functions)))
+    
+    for i, x_val in enumerate(x_values):
+        ax = axes[i]
+        
+        if x_val in fixed_x_data:
+            for j, func_name in enumerate(all_functions):
+                if func_name in fixed_x_data[x_val]:
+                    uncertainties = fixed_x_data[x_val][func_name]
+                    if uncertainties:
+                        ax.loglog(event_counts, uncertainties, 'o-', 
+                                 color=colors[j], label=func_name,
+                                 linewidth=2, markersize=6)
+            
+            # Add theoretical 1/sqrt(N) line
+            if fixed_x_data[x_val] and all_functions:
+                first_func = all_functions[0]
+                if first_func in fixed_x_data[x_val] and fixed_x_data[x_val][first_func]:
+                    first_uncertainties = fixed_x_data[x_val][first_func]
+                    theoretical = first_uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+                    ax.loglog(event_counts, theoretical, 'k--', alpha=0.7, linewidth=2,
+                             label=r'$\propto 1/\sqrt{N}$')
+        
+        ax.set_xlabel('Number of Events')
+        ax.set_ylabel('Uncertainty')
+        ax.set_title(f'Uncertainty at x = {x_val}')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_fixed_x_comparison.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot 2: Scaling quality metrics
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Compute scaling exponents and R² values
+    scaling_exponents = {}
+    r_squared_values = {}
+    
+    for x_val in x_values:
+        if x_val in fixed_x_data:
+            scaling_exponents[x_val] = {}
+            r_squared_values[x_val] = {}
+            
+            for func_name in all_functions:
+                if func_name in fixed_x_data[x_val] and fixed_x_data[x_val][func_name]:
+                    uncertainties = fixed_x_data[x_val][func_name]
+                    
+                    # Linear regression in log space
+                    log_counts = np.log(event_counts)
+                    log_uncertainties = np.log(uncertainties)
+                    slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+                    r_squared = np.corrcoef(log_counts, log_uncertainties)[0, 1] ** 2
+                    
+                    scaling_exponents[x_val][func_name] = slope
+                    r_squared_values[x_val][func_name] = r_squared
+    
+    # Plot scaling exponents
+    x_positions = np.arange(len(x_values))
+    width = 0.8 / len(all_functions) if all_functions else 0.8
+    
+    for j, func_name in enumerate(all_functions):
+        exponents = [scaling_exponents.get(x_val, {}).get(func_name, np.nan) for x_val in x_values]
+        offset = (j - len(all_functions)/2 + 0.5) * width
+        ax1.bar(x_positions + offset, exponents, width, label=func_name, color=colors[j], alpha=0.7)
+    
+    ax1.axhline(-0.5, color='red', linestyle='--', alpha=0.7, linewidth=2, label='Ideal (-0.5)')
+    ax1.set_xlabel('x value')
+    ax1.set_ylabel('Scaling Exponent')
+    ax1.set_title('Uncertainty Scaling Exponents')
+    ax1.set_xticks(x_positions)
+    ax1.set_xticklabels([f'{x:.2f}' for x in x_values])
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Plot R² values
+    for j, func_name in enumerate(all_functions):
+        r_squared_vals = [r_squared_values.get(x_val, {}).get(func_name, np.nan) for x_val in x_values]
+        offset = (j - len(all_functions)/2 + 0.5) * width
+        ax2.bar(x_positions + offset, r_squared_vals, width, label=func_name, color=colors[j], alpha=0.7)
+    
+    ax2.axhline(1.0, color='red', linestyle='--', alpha=0.7, linewidth=2, label='Perfect (1.0)')
+    ax2.set_xlabel('x value')
+    ax2.set_ylabel('R² (Fit Quality)')
+    ax2.set_title('Scaling Fit Quality')
+    ax2.set_xticks(x_positions)
+    ax2.set_xticklabels([f'{x:.2f}' for x in x_values])
+    ax2.set_ylim(0, 1.1)
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_fixed_x_scaling_quality.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"✅ Fixed-x uncertainty analysis complete!")
+    print(f"   📊 Comparison plot: uncertainty_fixed_x_comparison.png") 
+    print(f"   📈 Quality metrics: uncertainty_fixed_x_scaling_quality.png")
+
+
+def plot_summary_uncertainty_scaling(
+    scaling_results,
+    save_dir=None,
+    include_theoretical_comparison=True,
+    aggregation_method='mean'
+):
+    """
+    Create a summary plot showing how average uncertainty decreases with 
+    increasing number of events, demonstrating consistency of uncertainty 
+    quantification.
+    
+    This function creates the key summary visualization requested in the problem 
+    statement: a line chart or log-log plot showing how average uncertainty 
+    decreases with increasing data, with annotations highlighting consistency.
+    
+    Args:
+        scaling_results: Results dictionary from plot_uncertainty_vs_events
+        save_dir: Directory to save plots (uses scaling_results info if None)
+        include_theoretical_comparison: Whether to overlay theoretical 1/√N scaling
+        aggregation_method: How to aggregate uncertainty across functions/parameters
+                           ('mean', 'median', 'max', 'rms')
+        
+    Returns:
+        Dict: Summary statistics and consistency metrics
+        
+    Saves:
+        - uncertainty_scaling_summary.png: Main summary plot (log-log)
+        - uncertainty_scaling_linear.png: Linear scale version  
+        - uncertainty_consistency_metrics.txt: Quantitative consistency analysis
+        
+    Example Usage:
+        # After running uncertainty vs events analysis
+        scaling_results = plot_uncertainty_vs_events(...)
+        
+        # Create summary plots
+        summary_metrics = plot_summary_uncertainty_scaling(
+            scaling_results=scaling_results,
+            include_theoretical_comparison=True,
+            aggregation_method='mean'
+        )
+        
+        print(f"Overall consistency score: {summary_metrics['consistency_score']:.3f}")
+    """
+    import os
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy import stats
+    
+    if save_dir is None:
+        save_dir = "./plots/scaling_analysis"  # fallback
+    os.makedirs(save_dir, exist_ok=True)
+    
+    event_counts = np.array(scaling_results['event_counts'])
+    
+    print(f"📈 Creating summary uncertainty scaling plots...")
+    print(f"   Aggregation method: {aggregation_method}")
+    print(f"   Theoretical comparison: {include_theoretical_comparison}")
+    
+    # Aggregate parameter uncertainties
+    param_uncertainties = np.array(scaling_results['parameter_uncertainties'])  # [n_counts, n_params]
+    
+    if aggregation_method == 'mean':
+        agg_param_uncertainty = np.mean(param_uncertainties, axis=1)
+    elif aggregation_method == 'median':
+        agg_param_uncertainty = np.median(param_uncertainties, axis=1)
+    elif aggregation_method == 'max':
+        agg_param_uncertainty = np.max(param_uncertainties, axis=1)
+    elif aggregation_method == 'rms':
+        agg_param_uncertainty = np.sqrt(np.mean(param_uncertainties**2, axis=1))
+    else:
+        agg_param_uncertainty = np.mean(param_uncertainties, axis=1)  # fallback
+    
+    # Aggregate function uncertainties
+    function_uncertainties = scaling_results['function_uncertainties']
+    if function_uncertainties:
+        func_unc_matrix = np.array(list(function_uncertainties.values())).T  # [n_counts, n_functions]
+        
+        if aggregation_method == 'mean':
+            agg_func_uncertainty = np.mean(func_unc_matrix, axis=1)
+        elif aggregation_method == 'median':
+            agg_func_uncertainty = np.median(func_unc_matrix, axis=1)
+        elif aggregation_method == 'max':
+            agg_func_uncertainty = np.max(func_unc_matrix, axis=1)
+        elif aggregation_method == 'rms':
+            agg_func_uncertainty = np.sqrt(np.mean(func_unc_matrix**2, axis=1))
+        else:
+            agg_func_uncertainty = np.mean(func_unc_matrix, axis=1)  # fallback
+    else:
+        agg_func_uncertainty = None
+    
+    # Theoretical 1/√N scaling
+    if include_theoretical_comparison:
+        # Normalize to first data point
+        param_theoretical = agg_param_uncertainty[0] * np.sqrt(event_counts[0] / event_counts)
+        if agg_func_uncertainty is not None:
+            func_theoretical = agg_func_uncertainty[0] * np.sqrt(event_counts[0] / event_counts)
+    
+    # Create main summary plot (log-log)
+    fig, ax = plt.subplots(figsize=(10, 7))
+    
+    # Plot aggregated uncertainties
+    ax.loglog(event_counts, agg_param_uncertainty, 'o-', color='royalblue', 
+              linewidth=3, markersize=8, label=f'{aggregation_method.title()} Parameter Uncertainty')
+    
+    if agg_func_uncertainty is not None:
+        ax.loglog(event_counts, agg_func_uncertainty, 's-', color='darkorange',
+                  linewidth=3, markersize=8, label=f'{aggregation_method.title()} Function Uncertainty')
+    
+    # Add theoretical scaling
+    if include_theoretical_comparison:
+        ax.loglog(event_counts, param_theoretical, '--', color='royalblue', alpha=0.7,
+                  linewidth=2, label=r'Parameter $\propto 1/\sqrt{N}$')
+        if agg_func_uncertainty is not None:
+            ax.loglog(event_counts, func_theoretical, '--', color='darkorange', alpha=0.7,
+                      linewidth=2, label=r'Function $\propto 1/\sqrt{N}$')
+    
+    ax.set_xlabel('Number of Events', fontsize=14)
+    ax.set_ylabel('Average Uncertainty', fontsize=14)
+    ax.set_title('Uncertainty Quantification Consistency:\nUncertainty Decreases with Increasing Data', 
+                 fontsize=16, pad=20)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=12)
+    
+    # Add consistency annotations
+    if include_theoretical_comparison:
+        # Compute how well data follows theoretical scaling
+        log_counts = np.log(event_counts)
+        
+        # Parameter scaling analysis
+        log_param_unc = np.log(agg_param_uncertainty)
+        param_slope, param_intercept = np.polyfit(log_counts, log_param_unc, 1)
+        param_r2 = np.corrcoef(log_counts, log_param_unc)[0, 1] ** 2
+        
+        # Function scaling analysis
+        if agg_func_uncertainty is not None:
+            log_func_unc = np.log(agg_func_uncertainty)
+            func_slope, func_intercept = np.polyfit(log_counts, log_func_unc, 1)
+            func_r2 = np.corrcoef(log_counts, log_func_unc)[0, 1] ** 2
+        else:
+            func_slope, func_r2 = np.nan, np.nan
+        
+        # Add text annotations
+        textstr = f'Parameter Scaling:\n  Exponent: {param_slope:.3f} (ideal: -0.5)\n  R²: {param_r2:.3f}'
+        if not np.isnan(func_slope):
+            textstr += f'\n\nFunction Scaling:\n  Exponent: {func_slope:.3f} (ideal: -0.5)\n  R²: {func_r2:.3f}'
+        
+        props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+        ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=11,
+                verticalalignment='top', bbox=props)
+        
+        # Add consistency indicator
+        param_consistency = max(0, 1 - abs(param_slope + 0.5) / 0.5)  # How close to -0.5
+        if not np.isnan(func_slope):
+            func_consistency = max(0, 1 - abs(func_slope + 0.5) / 0.5)
+            overall_consistency = (param_consistency + func_consistency) / 2
+        else:
+            overall_consistency = param_consistency
+        
+        # Color-coded consistency indicator
+        if overall_consistency > 0.8:
+            consistency_color = 'green'
+            consistency_text = 'EXCELLENT'
+        elif overall_consistency > 0.6:
+            consistency_color = 'orange'
+            consistency_text = 'GOOD'
+        else:
+            consistency_color = 'red'
+            consistency_text = 'POOR'
+        
+        ax.text(0.95, 0.05, f'Consistency: {consistency_text}\n({overall_consistency:.1%})', 
+                transform=ax.transAxes, fontsize=12, fontweight='bold',
+                horizontalalignment='right', verticalalignment='bottom',
+                color=consistency_color, bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_scaling_summary.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Create linear scale version
+    fig, ax = plt.subplots(figsize=(10, 7))
+    
+    ax.plot(event_counts, agg_param_uncertainty, 'o-', color='royalblue',
+            linewidth=3, markersize=8, label=f'{aggregation_method.title()} Parameter Uncertainty')
+    
+    if agg_func_uncertainty is not None:
+        ax.plot(event_counts, agg_func_uncertainty, 's-', color='darkorange',
+                linewidth=3, markersize=8, label=f'{aggregation_method.title()} Function Uncertainty')
+    
+    if include_theoretical_comparison:
+        ax.plot(event_counts, param_theoretical, '--', color='royalblue', alpha=0.7,
+                linewidth=2, label=r'Parameter $\propto 1/\sqrt{N}$')
+        if agg_func_uncertainty is not None:
+            ax.plot(event_counts, func_theoretical, '--', color='darkorange', alpha=0.7,
+                    linewidth=2, label=r'Function $\propto 1/\sqrt{N}$')
+    
+    ax.set_xlabel('Number of Events', fontsize=14)
+    ax.set_ylabel('Average Uncertainty', fontsize=14)
+    ax.set_title('Uncertainty Quantification Consistency (Linear Scale):\nUncertainty Decreases with Increasing Data', 
+                 fontsize=16, pad=20)
+    ax.grid(True, alpha=0.3)
+    ax.legend(fontsize=12)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_scaling_linear.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Save quantitative consistency analysis
+    consistency_path = os.path.join(save_dir, "uncertainty_consistency_metrics.txt")
+    with open(consistency_path, 'w') as f:
+        f.write("Uncertainty Quantification Consistency Metrics\n")
+        f.write("=" * 50 + "\n\n")
+        f.write("This analysis quantifies how well the uncertainty quantification method\n")
+        f.write("follows expected statistical scaling laws, demonstrating consistency.\n\n")
+        f.write("EXPECTED BEHAVIOR: Uncertainty should scale as 1/√N where N is the\n")
+        f.write("number of events (data points). This corresponds to a slope of -0.5\n")
+        f.write("in log-log space.\n\n")
+        
+        f.write(f"Configuration:\n")
+        f.write(f"Problem: {scaling_results['problem']}\n")
+        f.write(f"Event counts: {event_counts.tolist()}\n")
+        f.write(f"Aggregation method: {aggregation_method}\n")
+        f.write(f"Bootstrap samples: {scaling_results['n_bootstrap']}\n\n")
+        
+        if include_theoretical_comparison:
+            f.write("Parameter Uncertainty Analysis:\n")
+            f.write("-" * 30 + "\n")
+            f.write(f"Scaling exponent: {param_slope:.4f} (ideal: -0.5)\n")
+            f.write(f"Deviation from ideal: {abs(param_slope + 0.5):.4f}\n")
+            f.write(f"R² (fit quality): {param_r2:.4f}\n")
+            f.write(f"Consistency score: {param_consistency:.3f} (0=poor, 1=perfect)\n\n")
+            
+            if not np.isnan(func_slope):
+                f.write("Function Uncertainty Analysis:\n")
+                f.write("-" * 30 + "\n")
+                f.write(f"Scaling exponent: {func_slope:.4f} (ideal: -0.5)\n")
+                f.write(f"Deviation from ideal: {abs(func_slope + 0.5):.4f}\n")
+                f.write(f"R² (fit quality): {func_r2:.4f}\n")
+                f.write(f"Consistency score: {func_consistency:.3f} (0=poor, 1=perfect)\n\n")
+                
+                f.write(f"Overall Consistency Score: {overall_consistency:.3f}\n\n")
+            else:
+                f.write(f"Overall Consistency Score: {param_consistency:.3f}\n\n")
+        
+        f.write("Uncertainty Values by Event Count:\n")
+        f.write("-" * 35 + "\n")
+        f.write(f"{'Events':>10s} {'Param Unc':>12s}")
+        if agg_func_uncertainty is not None:
+            f.write(f" {'Func Unc':>12s}")
+        f.write("\n")
+        
+        for i, count in enumerate(event_counts):
+            f.write(f"{count:>10,} {agg_param_uncertainty[i]:>12.6f}")
+            if agg_func_uncertainty is not None:
+                f.write(f" {agg_func_uncertainty[i]:>12.6f}")
+            f.write("\n")
+        
+        f.write("\nINTERPRETATION:\n")
+        f.write("- Consistency scores > 0.8: Excellent scaling behavior\n")
+        f.write("- Consistency scores 0.6-0.8: Good scaling behavior\n")
+        f.write("- Consistency scores < 0.6: Poor scaling, may indicate issues\n")
+        f.write("- R² > 0.9 indicates strong linear relationship in log space\n")
+        f.write("- Scaling exponents close to -0.5 indicate proper statistical behavior\n")
+    
+    # Prepare return dictionary
+    summary_metrics = {
+        'event_counts': event_counts,
+        'aggregated_param_uncertainty': agg_param_uncertainty,
+        'aggregated_func_uncertainty': agg_func_uncertainty,
+        'aggregation_method': aggregation_method
+    }
+    
+    if include_theoretical_comparison:
+        summary_metrics.update({
+            'param_scaling_exponent': param_slope,
+            'param_r_squared': param_r2,
+            'param_consistency_score': param_consistency,
+            'overall_consistency_score': overall_consistency
+        })
+        
+        if not np.isnan(func_slope):
+            summary_metrics.update({
+                'func_scaling_exponent': func_slope,
+                'func_r_squared': func_r2,
+                'func_consistency_score': func_consistency
+            })
+    
+    print(f"✅ Summary uncertainty scaling analysis complete!")
+    print(f"   📊 Log-log summary: uncertainty_scaling_summary.png")
+    print(f"   📈 Linear summary: uncertainty_scaling_linear.png")
+    print(f"   📄 Consistency metrics: uncertainty_consistency_metrics.txt")
+    
+    if include_theoretical_comparison:
+        print(f"   🎯 Overall consistency score: {overall_consistency:.3f}")
+        if overall_consistency > 0.8:
+            print("   ✅ EXCELLENT: Uncertainty scaling follows expected statistical behavior")
+        elif overall_consistency > 0.6:
+            print("   ⚠️  GOOD: Uncertainty scaling is mostly consistent")
+        else:
+            print("   ❌ POOR: Uncertainty scaling deviates significantly from expected behavior")
+    
+    return summary_metrics
