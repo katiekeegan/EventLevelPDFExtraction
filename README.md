@@ -20,6 +20,15 @@ Training takes place in two stages. First, a PointNet-style embedding of simulat
 - Uses **pointwise uncertainty aggregation** where total_variance(x) = variance_bootstrap(x) + variance_laplace(x).
 - Automatically detects and uses Laplace models when available, falls back to Monte Carlo when not.
 
+### NEW: Uncertainty Scaling Analysis:
+- **Demonstrates UQ consistency** by showing how uncertainty bands shrink as the number of events increases
+- Run `python example_uncertainty_scaling.py --mock_mode` to see uncertainty scaling validation
+- **Key functions**: `plot_uncertainty_vs_events()`, `plot_summary_uncertainty_scaling()`, `plot_uncertainty_at_fixed_x()`
+- **Validates 1/√N scaling**: Shows uncertainty decreases appropriately with more data
+- **Comprehensive analysis**: Parameter uncertainties, function uncertainties, and fixed x-value tracking
+- **Quantitative metrics**: Consistency scores, scaling exponents, and R² quality measures
+- See `UNCERTAINTY_SCALING_README.md` for detailed documentation and usage examples
+
 **Function-Level Uncertainty Quantification:**
 - **What changed**: Instead of reporting uncertainty over parameters θ, the system now computes uncertainty over the induced PDF functions f(x|θ) at each x-point.
 - **Why this matters**: Function-level uncertainty is more interpretable for physics applications and directly quantifies prediction uncertainty for the PDFs themselves.
