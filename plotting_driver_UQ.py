@@ -245,6 +245,8 @@ Examples:
     parser.add_argument("--cl_model", type=str, default="final_model.pth", help="Path to pre-trained PointNetPMA model (assumes same experiment directory).")
     parser.add_argument("--checkpoint", type=str, default="", 
                 help="(Optional) Path to a flow/gaussian/multimodal .pth file or a directory containing them.")
+    parser.add_argument('--n_bootstrap', type=int, default=100,
+                    help='Number of bootstrap samples for uncertainty analysis')
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -342,6 +344,18 @@ Examples:
                 param_mean, param_std = get_analytic_uncertainty(model, latent_preview, laplace_model=laplace_model)
             print("Output parameter mean (preview):", param_mean.squeeze(0).cpu().numpy())
             print("Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy())
+
+        # Add to plotting workflow  
+        plot_bootstrap_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            n_bootstrap=args.n_bootstrap,
+            problem=args.problem,
+            save_dir=plot_dir
+        )
         # Run all plotting functions, passing laplace_model if available
         plot_params_distribution_single(
             model=model,

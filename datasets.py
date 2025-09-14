@@ -265,8 +265,12 @@ def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=None, dev
         raise ValueError(f"Unknown problem: {problem}")
 
     # 2) Sample thetas (floats)
+    # thetas = np.column_stack([
+    #     sample_skewed_uniform(float(low), float(high), num_samples, alpha=1.0, beta_param=2.0)
+    #     for (low, high) in ranges
+    # ]).astype(np.float32)
     thetas = np.column_stack([
-        sample_skewed_uniform(float(low), float(high), num_samples, alpha=1.0, beta_param=2.0)
+        np.random.uniform(float(low), float(high), size=num_samples)
         for (low, high) in ranges
     ]).astype(np.float32)
 

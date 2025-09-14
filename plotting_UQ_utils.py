@@ -2009,7 +2009,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1σ Bootstrap Uncertainty")
+                               label=fr"±1 sigma Bootstrap Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2059,7 +2059,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1σ Bootstrap Uncertainty")
+                               label=fr"±1 sigma Bootstrap Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
@@ -2067,7 +2067,7 @@ def plot_bootstrap_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Bootstrap PDF Distribution (Q²={Q2_fixed}, {n_bootstrap} samples)")
+                ax.set_title(f"Bootstrap PDF Distribution (Q square ={Q2_fixed}, {n_bootstrap} samples)")
                 
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_Q2_{Q2_fixed}.png"), dpi=300)
@@ -2080,5 +2080,3 @@ def plot_bootstrap_PDF_distribution(
         print(f"   - PDF plots: bootstrap_pdf_median_up.png, bootstrap_pdf_median_down.png")
     elif problem == 'realistic_dis':
         print(f"   - PDF plots: bootstrap_pdf_Q2_{{value}}.png for each Q² slice")
-
-    return theta
