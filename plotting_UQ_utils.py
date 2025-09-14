@@ -2427,7 +2427,7 @@ def plot_combined_uncertainty_PDF_distribution(
                 # Combined uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1σ Combined Uncertainty")
+                               label=fr"±1 sigma Combined Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2482,7 +2482,7 @@ def plot_combined_uncertainty_PDF_distribution(
                 # Combined uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1σ Combined Uncertainty")
+                               label=fr"±1 sigma Combined Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")

@@ -356,6 +356,18 @@ Examples:
             problem=args.problem,
             save_dir=plot_dir
         )
+        # Simplified DIS with combined uncertainty
+        plot_combined_uncertainty_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            n_bootstrap=args.n_bootstrap,
+            laplace_model=laplace_model,
+            problem=args.problem,
+            save_dir=plot_dir
+        )
         # Run all plotting functions, passing laplace_model if available
         plot_params_distribution_single(
             model=model,
