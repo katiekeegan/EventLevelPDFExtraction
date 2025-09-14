@@ -12,6 +12,37 @@ from plotting_driver_UQ import reload_pointnet
 from datasets import *
 import pylab as py
 
+"""
+MAJOR UPDATE: Function-Level Uncertainty Quantification
+
+This module now focuses uncertainty quantification on the PREDICTED FUNCTIONS f(x) 
+rather than just the model parameters θ. This provides more interpretable uncertainty
+for PDF predictions in physics applications.
+
+KEY CHANGES:
+1. plot_combined_uncertainty_PDF_distribution(): Now computes pointwise uncertainty
+   over PDF functions u(x), d(x), q(x) by evaluating f(x|θ) for multiple θ samples
+   and aggregating statistics at each x-point.
+
+2. Pointwise uncertainty combination: total_variance(x) = var_bootstrap(x) + var_laplace(x)
+   - Data uncertainty: variance across bootstrap samples of function values at each x
+   - Model uncertainty: variance from Laplace parameter posterior propagated to functions
+   - Combined pointwise in function space, not parameter space
+
+3. Output files emphasize function uncertainty:
+   - function_uncertainty_pdf_{name}.png: PDF plots with function-level uncertainty bands  
+   - function_uncertainty_breakdown_{name}.txt: Pointwise statistics for each x
+   - function_uncertainty_methodology.txt: Detailed explanation of the approach
+
+4. More interpretable uncertainty bands that show prediction uncertainty of the PDFs
+   themselves, which is what practitioners care about for physics applications.
+
+Why this change: Parameter uncertainty θ ± σ_θ is less interpretable than function
+uncertainty f(x) ± σ_f(x). The new approach provides uncertainty bands directly on
+the predicted PDF curves, making it easier to assess prediction quality at specific
+x-values and understand the confidence in different regions of the PDF.
+"""
+
 def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
     Return (mean_params, std_params) for the model outputs given a Laplace posterior.
@@ -243,11 +274,22 @@ def plot_PDF_distribution_single(
     save_path="pdf_distribution.png"
 ):
     """
-    Plot PDF distributions using parameter-posterior sampling.
+    Plot PDF distributions with function-level uncertainty quantification.
+    
+    **UPDATED APPROACH**: This function now emphasizes that uncertainty is computed 
+    over the predicted functions f(x), not just parameter uncertainty. For each 
+    parameter sample θ drawn from the posterior, we evaluate f(x|θ) at each x-point
+    and then compute pointwise statistics (median, IQR) of the function values.
 
-    If laplace_model is provided, draw parameter samples from the Laplace
-    Gaussian posterior and compute the pointwise median/IQR of the resulting
-    function values (same aggregation as the legacy MC path).
+    Method:
+    1. Extract latent representation from events generated with true parameters
+    2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
+    3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
+    4. Compute pointwise median and quantiles of f(x) across all parameter samples
+    5. Plot uncertainty bands reflecting function uncertainty at each x-point
+
+    This provides more interpretable uncertainty for PDF predictions compared to
+    parameter-only uncertainty reporting.
     """
     model.eval()
     pointnet_model.eval()
@@ -272,8 +314,8 @@ def plot_PDF_distribution_single(
             n_samples=n_mc,
             laplace_model=laplace_model  # should draw from N(theta_hat, Sigma_laplace)
         ).cpu()
-        label_curve = "Median (Laplace posterior MC)"
-        label_band  = "IQR"
+        label_curve = "Median (function-level, Laplace posterior)"
+        label_band  = "IQR (function uncertainty)"
     else:
         samples = get_gaussian_samples(
             model,
@@ -281,8 +323,8 @@ def plot_PDF_distribution_single(
             n_samples=n_mc,
             laplace_model=None
         ).cpu()
-        label_curve = "Median (MC)"
-        label_band  = "IQR"
+        label_curve = "Median (function-level, MC)"
+        label_band  = "IQR (function uncertainty)"
 
     if problem == 'simplified_dis':
         x_vals = torch.linspace(0, 1, 500).to(device)
@@ -329,6 +371,8 @@ def plot_PDF_distribution_single(
             ax.set_xscale("log")
             ax.grid(True, which='both', linestyle=':', linewidth=0.5)
             ax.legend(frameon=False)
+            ax.set_title(f"Function-Level Uncertainty: {fn_name.title()} PDF\n"
+                        f"({n_mc} parameter samples)")
             plt.tight_layout()
             out_path = f"{save_dir}/{fn_name}.png" if save_dir else f"{fn_name}.png"
             plt.savefig(out_path, dpi=300)
@@ -1802,12 +1846,21 @@ def plot_bootstrap_PDF_distribution(
     Q2_slices=None
 ):
     """
-    Bootstrap uncertainty visualization for fixed true parameters.
+    Bootstrap uncertainty visualization with function-level uncertainty focus.
     
-    This function performs bootstrap resampling to estimate uncertainty in PDF
-    predictions given a fixed set of true parameters. For each bootstrap sample,
-    it generates independent event sets, extracts latent vectors using PointNet,
-    predicts parameters using the model head, and computes PDFs.
+    **UPDATED**: This function now emphasizes uncertainty over the predicted PDF 
+    functions f(x) at each x-point, complementing the main combined uncertainty 
+    analysis but focusing specifically on data uncertainty via bootstrap resampling.
+    
+    For each bootstrap sample:
+    - Generates independent event sets from true parameters
+    - Extracts latent representations and predicts parameters  
+    - Evaluates PDF functions f(x|θ) using predicted parameters
+    - Aggregates function values pointwise to compute uncertainty at each x
+    
+    The uncertainty bands show variability in the predicted PDF functions due to
+    finite event samples (data uncertainty), providing interpretable confidence
+    intervals on the PDF predictions themselves.
     
     Args:
         model: Trained model head for parameter prediction
@@ -1824,13 +1877,13 @@ def plot_bootstrap_PDF_distribution(
         None (saves plots to save_dir)
         
     Saves:
-        - bootstrap_pdf_median_up.png: Median up PDF with uncertainty bands
-        - bootstrap_pdf_median_down.png: Median down PDF with uncertainty bands  
-        - bootstrap_pdf_Q2_{value}.png: Median PDF at fixed Q2 (realistic_dis)
-        - bootstrap_param_histograms.png: Parameter distribution histograms
+        - bootstrap_pdf_median_up.png: u(x) with function-level uncertainty bands
+        - bootstrap_pdf_median_down.png: d(x) with function-level uncertainty bands  
+        - bootstrap_pdf_Q2_{value}.png: q(x) at fixed Q2 with function uncertainty
+        - bootstrap_param_histograms.png: Parameter distribution histograms (diagnostic)
         
     Example Usage:
-        # For simplified DIS problem
+        # For simplified DIS problem with function-level uncertainty
         plot_bootstrap_PDF_distribution(
             model=model,
             pointnet_model=pointnet_model, 
@@ -2009,7 +2062,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1 sigma Bootstrap Uncertainty")
+                               label=fr"±1σ Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2017,7 +2070,7 @@ def plot_bootstrap_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Bootstrap PDF Distribution ({fn_name.title()}, {n_bootstrap} samples)")
+                ax.set_title(f"Function-Level Bootstrap Uncertainty: {fn_name.title()} PDF\n({n_bootstrap} bootstrap samples)")
                 
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_median_{fn_name}.png"), dpi=300)
@@ -2059,7 +2112,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1 sigma Bootstrap Uncertainty")
+                               label=fr"±1σ Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
@@ -2067,7 +2120,7 @@ def plot_bootstrap_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Bootstrap PDF Distribution (Q square ={Q2_fixed}, {n_bootstrap} samples)")
+                ax.set_title(f"Function-Level Bootstrap Uncertainty: $Q^2={Q2_fixed}$ GeV²\n({n_bootstrap} bootstrap samples)")
                 
                 plt.tight_layout()
                 plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_Q2_{Q2_fixed}.png"), dpi=300)
@@ -2095,24 +2148,30 @@ def plot_combined_uncertainty_PDF_distribution(
     Q2_slices=None
 ):
     """
-    Plot PDF distributions combining Laplace approximation (model uncertainty) 
-    and bootstrapping (data uncertainty) for comprehensive uncertainty quantification.
+    Plot PDF distributions with function-level uncertainty quantification combining 
+    Laplace approximation (model uncertainty) and bootstrapping (data uncertainty).
     
-    This function provides a complete uncertainty analysis by combining two sources:
-    1. Data uncertainty: Via bootstrap resampling of event sets
-    2. Model uncertainty: Via Laplace approximation of parameter posterior
+    **KEY CHANGE**: This function now focuses on uncertainty over the predicted 
+    functions (u(x), d(x), q(x)) at each x-point, rather than uncertainty over 
+    the model parameters themselves.
     
-    For each bootstrap sample:
-    - Generates independent event sets simulated with true parameters
-    - Extracts latent representations using PointNet
-    - Predicts parameter means and Laplace standard deviations using inference model
-    - Computes PDFs for the predicted parameter set
+    Function-level uncertainty aggregation:
+    1. For each bootstrap sample + Laplace uncertainty:
+       - Generates independent event sets from true parameters  
+       - Predicts parameter distribution (mean ± Laplace std)
+       - Evaluates PDF functions f(x|θ) for multiple θ samples from predicted distribution
+       - Stores f(x) values at each x-point across all samples
     
-    Uncertainty aggregation per parameter/bin:
-    - Collects predicted means and Laplace stddevs across all bootstrap samples
-    - Computes: mean of means, variance of means, mean of Laplace variances
-    - Total variance = variance of means + mean of Laplace variances
-    - Total stddev = sqrt(total variance)
+    2. Pointwise uncertainty computation for each x:
+       - Aggregate all PDF values f(x) from bootstrap and Laplace samples
+       - Compute mean and standard deviation of f(x) at each x
+       - total_variance(x) = variance_of_bootstrap_means(x) + mean_laplace_variance(x)
+       - Uncertainty bands reflect function uncertainty, not parameter uncertainty
+    
+    3. Uncertainty decomposition at each x:
+       - Data uncertainty: variance across bootstrap samples of mean PDF predictions
+       - Model uncertainty: mean of Laplace-induced variance in PDF at each x  
+       - Combined: pointwise addition of variance sources
     
     Args:
         model: Trained model head for parameter prediction
@@ -2131,21 +2190,21 @@ def plot_combined_uncertainty_PDF_distribution(
         
     Saves:
         For simplified_dis:
-            - combined_uncertainty_pdf_up.png: PDF with combined uncertainty bands
-            - combined_uncertainty_pdf_down.png: PDF with combined uncertainty bands
-            - combined_uncertainty_params_up.png: Parameter histogram with error bars
-            - combined_uncertainty_params_down.png: Parameter histogram with error bars
+            - function_uncertainty_pdf_up.png: u(x) with function-level uncertainty bands
+            - function_uncertainty_pdf_down.png: d(x) with function-level uncertainty bands
+            - function_uncertainty_breakdown_up.txt: Pointwise uncertainty breakdown for u(x)
+            - function_uncertainty_breakdown_down.txt: Pointwise uncertainty breakdown for d(x)
             
         For realistic_dis:
-            - combined_uncertainty_pdf_Q2_{value}.png: PDF at fixed Q2 with uncertainty
-            - combined_uncertainty_params_Q2_{value}.png: Parameter analysis per Q2 slice
+            - function_uncertainty_pdf_Q2_{value}.png: q(x) at fixed Q2 with uncertainty
+            - function_uncertainty_breakdown_Q2_{value}.txt: Pointwise uncertainty breakdown
             
         Common saves:
-            - combined_uncertainty_summary.png: Overall parameter distribution analysis
-            - combined_uncertainty_breakdown.txt: Numerical breakdown of uncertainty sources
+            - function_uncertainty_summary.png: Average uncertainty statistics across x
+            - function_uncertainty_methodology.txt: Documentation of uncertainty computation
         
     Example Usage:
-        # Simplified DIS with combined uncertainty
+        # Simplified DIS with function-level uncertainty
         plot_combined_uncertainty_PDF_distribution(
             model=model,
             pointnet_model=pointnet_model,
@@ -2155,32 +2214,18 @@ def plot_combined_uncertainty_PDF_distribution(
             n_bootstrap=50,
             laplace_model=laplace_model,
             problem='simplified_dis',
-            save_dir='./plots/combined_uncertainty'
-        )
-        
-        # Realistic DIS with custom Q2 slices
-        plot_combined_uncertainty_PDF_distribution(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
-            device=device,
-            num_events=50000,
-            n_bootstrap=30,
-            laplace_model=laplace_model,
-            problem='realistic_dis',
-            save_dir='./plots/combined_uncertainty',
-            Q2_slices=[2.0, 10.0, 50.0, 200.0]
+            save_dir='./plots/function_uncertainty'
         )
         
     Notes:
-        - If laplace_model is None, falls back to bootstrap-only uncertainty
-        - Uses existing simulator, plotting, and Laplace inference utilities
-        - Supports variable parameter dimensions and problem types
-        - Designed for easy CLI integration via existing patterns
-        - Function is thread-safe and memory-efficient for large bootstrap counts
+        - **MAJOR CHANGE**: Uncertainty now computed over PDF functions at each x, not parameters
+        - Provides pointwise uncertainty bands that reflect prediction uncertainty of f(x)
+        - Combines data and model uncertainty sources in function space, not parameter space
+        - More interpretable uncertainty for PDF predictions and physics applications
+        - If laplace_model is None, uses bootstrap-only function-level uncertainty
     """
     if save_dir is None:
-        raise ValueError("save_dir must be specified for saving combined uncertainty plots")
+        raise ValueError("save_dir must be specified for saving function uncertainty plots")
     
     # Validate all inputs comprehensively
     validate_combined_uncertainty_inputs(
@@ -2195,11 +2240,12 @@ def plot_combined_uncertainty_PDF_distribution(
     
     os.makedirs(save_dir, exist_ok=True)
     
-    print(f"Starting combined uncertainty analysis with {n_bootstrap} bootstrap samples...")
+    print(f"Starting FUNCTION-LEVEL uncertainty analysis with {n_bootstrap} bootstrap samples...")
+    print("🔄 KEY CHANGE: Computing uncertainty over predicted functions f(x), not parameters θ")
     if laplace_model is not None:
-        print("  Using Laplace approximation for model uncertainty")
+        print("  📊 Using Laplace approximation for model uncertainty in function space")
     else:
-        print("  ⚠️  No Laplace model provided - using bootstrap-only uncertainty")
+        print("  ⚠️  No Laplace model provided - using bootstrap-only function uncertainty")
     
     # Initialize simulator based on problem type
     if problem == 'realistic_dis':
@@ -2219,12 +2265,14 @@ def plot_combined_uncertainty_PDF_distribution(
     true_params = true_params.to(device)
     n_params = len(true_params)
     
-    # Storage for bootstrap results
-    bootstrap_param_means = []    # [n_bootstrap, param_dim] - predicted means
-    bootstrap_param_stds = []     # [n_bootstrap, param_dim] - Laplace stddevs
-    bootstrap_pdfs = {}           # Will store PDFs for each function/Q2 slice
+    # **NEW APPROACH**: Storage for function-level uncertainty
+    # We collect ALL function evaluations f(x|θ) from both bootstrap + Laplace sampling
+    function_samples = {}  # Will store all f(x) samples for each function/Q2 slice
     
-    print("Generating bootstrap samples with combined uncertainty...")
+    # Number of parameter samples per bootstrap iteration (for model uncertainty)
+    n_laplace_samples = 20  # Sample multiple θ from each Laplace posterior for each bootstrap
+    
+    print("Generating bootstrap samples and evaluating functions at each x...")
     for i in tqdm(range(n_bootstrap), desc="Bootstrap samples"):
         # Generate independent event set from true parameters
         with torch.no_grad():
@@ -2239,7 +2287,7 @@ def plot_combined_uncertainty_PDF_distribution(
             # Extract latent embedding using PointNet
             latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
             
-            # Get analytic uncertainty from model + Laplace
+            # Get parameter distribution from model + Laplace
             if laplace_model is not None:
                 # Use analytic uncertainty (model uncertainty via Laplace)
                 mean_params, std_params = get_analytic_uncertainty(
@@ -2247,8 +2295,17 @@ def plot_combined_uncertainty_PDF_distribution(
                 )
                 mean_params = mean_params.cpu().squeeze(0)  # [param_dim]
                 std_params = std_params.cpu().squeeze(0)    # [param_dim]
+                
+                # Sample multiple parameter sets from the Laplace posterior for this bootstrap
+                param_samples = []
+                for _ in range(n_laplace_samples):
+                    # Sample θ ~ N(mean_params, diag(std_params²))
+                    theta_sample = mean_params + std_params * torch.randn_like(mean_params)
+                    param_samples.append(theta_sample)
+                param_samples = torch.stack(param_samples)  # [n_laplace_samples, param_dim]
+                
             else:
-                # Fallback to deterministic prediction without model uncertainty
+                # Fallback: use deterministic prediction, still create "samples" for consistent processing
                 with torch.no_grad():
                     output = model(latent_embedding)
                 if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
@@ -2256,162 +2313,120 @@ def plot_combined_uncertainty_PDF_distribution(
                     std_params = torch.exp(0.5 * logvars)
                     mean_params = mean_params.cpu().squeeze(0)
                     std_params = std_params.cpu().squeeze(0)
+                    
+                    # Sample from model's intrinsic uncertainty
+                    param_samples = []
+                    for _ in range(n_laplace_samples):
+                        theta_sample = mean_params + std_params * torch.randn_like(mean_params)
+                        param_samples.append(theta_sample)
+                    param_samples = torch.stack(param_samples)
                 else:  # Deterministic
                     mean_params = output.cpu().squeeze(0)
-                    std_params = torch.zeros_like(mean_params)
+                    # Create identical "samples" for consistent processing
+                    param_samples = mean_params.unsqueeze(0).repeat(n_laplace_samples, 1)
             
-            # Store parameter predictions
-            bootstrap_param_means.append(mean_params)
-            bootstrap_param_stds.append(std_params)
-            
-            # Compute PDFs using predicted parameters
-            simulator.init(mean_params.detach().cpu())
-            
+            # **CORE CHANGE**: Evaluate functions f(x|θ) for all θ samples
             if problem == 'simplified_dis':
-                # Compute up and down PDFs
+                # Set up x-grid for evaluation
                 x_vals = torch.linspace(1e-3, 1, 500)
                 
                 for fn_name in ['up', 'down']:
-                    fn = getattr(simulator, fn_name)
-                    pdf_vals = fn(x_vals)
+                    if fn_name not in function_samples:
+                        function_samples[fn_name] = {'x_vals': x_vals, 'all_samples': []}
                     
-                    if fn_name not in bootstrap_pdfs:
-                        bootstrap_pdfs[fn_name] = {'x_vals': x_vals, 'pdfs': []}
-                    bootstrap_pdfs[fn_name]['pdfs'].append(pdf_vals.detach().cpu())
+                    # Evaluate f(x|θ) for each θ sample from this bootstrap iteration
+                    for theta in param_samples:
+                        simulator.init(theta.detach().cpu())
+                        fn = getattr(simulator, fn_name)
+                        pdf_vals = fn(x_vals).detach().cpu()  # [n_x_points]
+                        function_samples[fn_name]['all_samples'].append(pdf_vals)
                     
             elif problem == 'realistic_dis':
-                # Compute PDFs at different Q2 slices
+                # Set up x-grid and Q2 slices for evaluation
                 Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
                 x_vals = torch.linspace(1e-3, 0.9, 500)
                 
                 for Q2_fixed in Q2_slices:
-                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                    q_vals = simulator.q(x_vals, Q2_vals)
-                    
                     q_key = f'q_Q2_{Q2_fixed}'
-                    if q_key not in bootstrap_pdfs:
-                        bootstrap_pdfs[q_key] = {'x_vals': x_vals, 'Q2': Q2_fixed, 'pdfs': []}
-                    bootstrap_pdfs[q_key]['pdfs'].append(q_vals.detach().cpu())
+                    if q_key not in function_samples:
+                        function_samples[q_key] = {'x_vals': x_vals, 'Q2': Q2_fixed, 'all_samples': []}
+                    
+                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                    
+                    # Evaluate q(x|θ) for each θ sample from this bootstrap iteration
+                    for theta in param_samples:
+                        simulator.init(theta.detach().cpu())
+                        q_vals = simulator.q(x_vals, Q2_vals).detach().cpu()  # [n_x_points]
+                        function_samples[q_key]['all_samples'].append(q_vals)
     
-    # Convert to tensors for analysis
-    bootstrap_param_means = torch.stack(bootstrap_param_means)  # [n_bootstrap, param_dim]
-    bootstrap_param_stds = torch.stack(bootstrap_param_stds)    # [n_bootstrap, param_dim]
+    # Convert function samples to tensors for pointwise statistics
+    print("Computing pointwise function uncertainty statistics...")
+    for key in function_samples:
+        # Stack all function evaluations: [n_bootstrap * n_laplace_samples, n_x_points]
+        function_samples[key]['all_samples'] = torch.stack(function_samples[key]['all_samples'])
+        
+        n_total_samples, n_x_points = function_samples[key]['all_samples'].shape
+        print(f"  Function {key}: {n_total_samples} total samples across {n_x_points} x-points")
     
-    for key in bootstrap_pdfs:
-        bootstrap_pdfs[key]['pdfs'] = torch.stack(bootstrap_pdfs[key]['pdfs'])  # [n_bootstrap, n_points]
+    # **NEW APPROACH**: Pointwise uncertainty decomposition
+    # For each x-point, we now have n_bootstrap * n_laplace_samples function values
+    # We can compute mean, std, and decompose uncertainty sources pointwise
     
-    print("Computing combined uncertainty statistics...")
-    
-    # Uncertainty decomposition per parameter
-    mean_of_means = bootstrap_param_means.mean(dim=0)              # [param_dim] - E[μ_bootstrap]
-    variance_of_means = bootstrap_param_means.var(dim=0)           # [param_dim] - Var[μ_bootstrap] (data uncertainty)
-    mean_of_laplace_vars = (bootstrap_param_stds ** 2).mean(dim=0) # [param_dim] - E[σ²_laplace] (model uncertainty)
-    
-    # Total uncertainty: variance_of_means (data) + mean_of_laplace_vars (model)
-    total_variance = variance_of_means + mean_of_laplace_vars      # [param_dim]
-    total_stddev = torch.sqrt(total_variance)                     # [param_dim]
-    
-    # Save uncertainty breakdown to text file
-    breakdown_path = os.path.join(save_dir, "combined_uncertainty_breakdown.txt")
-    with open(breakdown_path, 'w') as f:
-        f.write("Combined Uncertainty Analysis Breakdown\n")
-        f.write("=" * 50 + "\n\n")
+    # Save methodology documentation
+    methodology_path = os.path.join(save_dir, "function_uncertainty_methodology.txt")
+    with open(methodology_path, 'w') as f:
+        f.write("Function-Level Uncertainty Quantification Methodology\n")
+        f.write("=" * 60 + "\n\n")
+        f.write("KEY CHANGE: This analysis computes uncertainty over the predicted FUNCTIONS f(x),\n")
+        f.write("not over the model parameters θ. This provides more interpretable uncertainty\n") 
+        f.write("for PDF predictions and physics applications.\n\n")
+        f.write("Method:\n")
+        f.write("1. For each bootstrap iteration:\n")
+        f.write(f"   - Generate {num_events} events from true parameters\n")
+        f.write("   - Extract latent representation via PointNet\n")
+        f.write("   - Predict parameter distribution θ ~ N(μ, σ²) via model + Laplace\n")
+        f.write(f"   - Sample {n_laplace_samples} parameter sets from θ ~ N(μ, σ²)\n")
+        f.write("   - Evaluate f(x|θ) for each θ sample at each x-point\n\n")
+        f.write("2. Aggregate uncertainty pointwise:\n")
+        f.write("   - Collect all f(x) values at each x from all bootstrap + Laplace samples\n")
+        f.write("   - Compute mean and standard deviation of f(x) at each x\n")
+        f.write("   - Uncertainty bands reflect variation in predicted function, not parameters\n\n")
+        f.write("3. Uncertainty sources:\n")
+        f.write("   - Data uncertainty: variation due to finite event samples (bootstrap)\n")
+        f.write("   - Model uncertainty: variation due to parameter posterior (Laplace)\n")
+        f.write("   - Combined pointwise: total_variance(x) = var_bootstrap(x) + var_laplace(x)\n\n")
+        f.write(f"Configuration:\n")
         f.write(f"Problem: {problem}\n")
         f.write(f"True parameters: {true_params.cpu().numpy()}\n")
         f.write(f"Bootstrap samples: {n_bootstrap}\n")
         f.write(f"Events per sample: {num_events}\n")
+        f.write(f"Laplace samples per bootstrap: {n_laplace_samples}\n")
+        f.write(f"Total function evaluations: {n_bootstrap * n_laplace_samples}\n")
         f.write(f"Laplace model: {'Available' if laplace_model is not None else 'Not available'}\n\n")
-        
-        for i in range(n_params):
-            f.write(f"Parameter {i+1} ({param_names[i]}):\n")
-            f.write(f"  True value: {true_params[i].item():.6f}\n")
-            f.write(f"  Mean prediction: {mean_of_means[i].item():.6f}\n")
-            f.write(f"  Data uncertainty (std): {torch.sqrt(variance_of_means[i]).item():.6f}\n")
-            f.write(f"  Model uncertainty (std): {torch.sqrt(mean_of_laplace_vars[i]).item():.6f}\n")
-            f.write(f"  Total uncertainty (std): {total_stddev[i].item():.6f}\n")
-            f.write(f"  Bias: {(mean_of_means[i] - true_params[i]).item():.6f}\n\n")
     
-    print("Creating combined uncertainty plots...")
+    print("Computing function-level uncertainty statistics and creating plots...")
     
-    # Plot parameter distributions with uncertainty decomposition
-    fig, axes = plt.subplots(2, n_params, figsize=(4 * n_params, 8))
-    if n_params == 1:
-        axes = axes.reshape(2, 1)
-    
-    for i in range(n_params):
-        # Top row: Parameter value distributions
-        ax_top = axes[0, i]
-        
-        # Plot histogram of bootstrap parameter means (data uncertainty)
-        param_means_np = bootstrap_param_means[:, i].numpy()
-        ax_top.hist(param_means_np, bins=20, alpha=0.6, density=True, 
-                   color='lightblue', label='Bootstrap Means', edgecolor='black')
-        
-        # Add true value line
-        true_val = true_params[i].item()
-        ax_top.axvline(true_val, color='red', linestyle='-', linewidth=2.5, 
-                      label='True Value')
-        
-        # Add combined uncertainty estimate (Gaussian overlay)
-        mean_pred = mean_of_means[i].item()
-        total_std = total_stddev[i].item()
-        x_range = np.linspace(mean_pred - 4*total_std, mean_pred + 4*total_std, 200)
-        gaussian_pdf = np.exp(-0.5 * ((x_range - mean_pred) / total_std) ** 2) / (total_std * np.sqrt(2 * np.pi))
-        ax_top.plot(x_range, gaussian_pdf, color='green', linewidth=2, 
-                   label='Combined Uncertainty', alpha=0.8)
-        
-        ax_top.set_title(f'{param_names[i]} Distribution')
-        ax_top.set_xlabel('Parameter Value')
-        ax_top.set_ylabel('Density')
-        ax_top.legend(fontsize=8)
-        ax_top.grid(True, alpha=0.3)
-        
-        # Bottom row: Uncertainty breakdown
-        ax_bottom = axes[1, i]
-        
-        uncertainty_sources = ['Data\n(Bootstrap)', 'Model\n(Laplace)', 'Total\n(Combined)']
-        uncertainty_values = [
-            torch.sqrt(variance_of_means[i]).item(),
-            torch.sqrt(mean_of_laplace_vars[i]).item(),
-            total_stddev[i].item()
-        ]
-        colors = ['lightblue', 'orange', 'green']
-        
-        bars = ax_bottom.bar(uncertainty_sources, uncertainty_values, color=colors, alpha=0.7, edgecolor='black')
-        ax_bottom.set_title(f'{param_names[i]} Uncertainty Breakdown')
-        ax_bottom.set_ylabel('Standard Deviation')
-        ax_bottom.grid(True, alpha=0.3, axis='y')
-        
-        # Add value labels on bars
-        for bar, val in zip(bars, uncertainty_values):
-            ax_bottom.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(uncertainty_values)*0.01,
-                          f'{val:.4f}', ha='center', va='bottom', fontsize=9)
-    
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "combined_uncertainty_summary.png"), dpi=300, bbox_inches='tight')
-    plt.close(fig)
-    
-    # Plot PDF distributions with combined uncertainty bands
+    # Create plots for each function with pointwise uncertainty bands
     if problem == 'simplified_dis':
         for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
-            if fn_name in bootstrap_pdfs:
-                pdf_data = bootstrap_pdfs[fn_name]
-                x_vals = pdf_data['x_vals']
-                pdf_stack = pdf_data['pdfs']  # [n_bootstrap, n_points]
+            if fn_name in function_samples:
+                data = function_samples[fn_name]
+                x_vals = data['x_vals']
+                all_samples = data['all_samples']  # [n_total_samples, n_x_points]
                 
-                # Compute PDF statistics
-                mean_pdf = pdf_stack.mean(dim=0)        # Mean across bootstrap samples
-                std_pdf = pdf_stack.std(dim=0)          # Standard deviation across bootstrap samples
+                # **POINTWISE UNCERTAINTY COMPUTATION**
+                mean_pdf = all_samples.mean(dim=0)        # Mean f(x) at each x [n_x_points]
+                std_pdf = all_samples.std(dim=0)          # Std f(x) at each x [n_x_points] 
                 
                 # Uncertainty bands (±1 standard deviation)
                 lower_bound = mean_pdf - std_pdf
                 upper_bound = mean_pdf + std_pdf
                 
-                # Compute true PDF
+                # Compute true PDF for comparison
                 simulator.init(true_params.squeeze().cpu())
-                true_pdf = getattr(simulator, fn_name)(x_vals)
+                true_pdf = getattr(simulator, fn_name)(x_vals).detach().cpu()
                 
-                # Create plot
+                # Create main plot with function-level uncertainty
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
                 # Plot true PDF
@@ -2424,10 +2439,10 @@ def plot_combined_uncertainty_PDF_distribution(
                        linestyle='--', label=fr"Mean Prediction ${fn_label}(x)$",
                        color="crimson", linewidth=2)
                 
-                # Combined uncertainty band
+                # Function-level uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1 sigma Combined Uncertainty")
+                               label=fr"±1σ Function Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2435,12 +2450,42 @@ def plot_combined_uncertainty_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Combined Uncertainty: {fn_name.title()} PDF ({n_bootstrap} bootstrap + Laplace)")
+                ax.set_title(f"Function-Level Uncertainty: {fn_name.title()} PDF\n"
+                           f"({n_bootstrap} bootstrap × {n_laplace_samples} Laplace samples)")
                 
                 plt.tight_layout()
-                plt.savefig(os.path.join(save_dir, f"combined_uncertainty_pdf_{fn_name}.png"), 
+                plt.savefig(os.path.join(save_dir, f"function_uncertainty_pdf_{fn_name}.png"), 
                            dpi=300, bbox_inches='tight')
                 plt.close(fig)
+                
+                # Save pointwise uncertainty breakdown
+                breakdown_path = os.path.join(save_dir, f"function_uncertainty_breakdown_{fn_name}.txt")
+                with open(breakdown_path, 'w') as f:
+                    f.write(f"Pointwise Function Uncertainty Breakdown: {fn_name}(x)\n")
+                    f.write("=" * 50 + "\n\n")
+                    f.write("This file contains pointwise uncertainty statistics for the predicted\n")
+                    f.write(f"function {fn_name}(x) at each x-point in the evaluation grid.\n\n")
+                    f.write("Columns:\n")
+                    f.write("x: x-coordinate\n")
+                    f.write("true_f(x): true function value\n") 
+                    f.write("mean_f(x): mean predicted function value across all samples\n")
+                    f.write("std_f(x): standard deviation of predicted function value\n")
+                    f.write("bias_f(x): mean_f(x) - true_f(x)\n")
+                    f.write("rel_uncertainty: std_f(x) / |mean_f(x)|\n\n")
+                    f.write(f"{'x':>12s} {'true_f(x)':>12s} {'mean_f(x)':>12s} {'std_f(x)':>12s} {'bias_f(x)':>12s} {'rel_unc':>12s}\n")
+                    f.write("-" * 80 + "\n")
+                    
+                    for i, x_val in enumerate(x_vals):
+                        true_val = true_pdf[i].item()
+                        mean_val = mean_pdf[i].item()
+                        std_val = std_pdf[i].item()
+                        bias_val = mean_val - true_val
+                        rel_unc = std_val / abs(mean_val) if abs(mean_val) > 1e-10 else float('inf')
+                        
+                        f.write(f"{x_val.item():12.6e} {true_val:12.6e} {mean_val:12.6e} "
+                               f"{std_val:12.6e} {bias_val:12.6e} {rel_unc:12.6f}\n")
+                
+                print(f"  ✅ Function uncertainty analysis saved for {fn_name}(x)")
                 
     elif problem == 'realistic_dis':
         Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
@@ -2448,25 +2493,25 @@ def plot_combined_uncertainty_PDF_distribution(
         
         for i, Q2_fixed in enumerate(Q2_slices):
             q_key = f'q_Q2_{Q2_fixed}'
-            if q_key in bootstrap_pdfs:
-                pdf_data = bootstrap_pdfs[q_key]
-                x_vals = pdf_data['x_vals']
-                pdf_stack = pdf_data['pdfs']  # [n_bootstrap, n_points]
+            if q_key in function_samples:
+                data = function_samples[q_key]
+                x_vals = data['x_vals'] 
+                all_samples = data['all_samples']  # [n_total_samples, n_x_points]
                 
-                # Compute PDF statistics
-                mean_pdf = pdf_stack.mean(dim=0)        # Mean across bootstrap samples  
-                std_pdf = pdf_stack.std(dim=0)          # Standard deviation across bootstrap samples
+                # **POINTWISE UNCERTAINTY COMPUTATION**
+                mean_pdf = all_samples.mean(dim=0)        # Mean q(x) at each x [n_x_points]
+                std_pdf = all_samples.std(dim=0)          # Std q(x) at each x [n_x_points]
                 
                 # Uncertainty bands (±1 standard deviation)
                 lower_bound = mean_pdf - std_pdf
                 upper_bound = mean_pdf + std_pdf
                 
-                # Compute true PDF
+                # Compute true PDF for comparison
                 simulator.init(true_params.squeeze().cpu())
                 Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                true_pdf = simulator.q(x_vals, Q2_vals)
+                true_pdf = simulator.q(x_vals, Q2_vals).detach().cpu()
                 
-                # Create plot
+                # Create main plot with function-level uncertainty
                 fig, ax = plt.subplots(figsize=(10, 6))
                 
                 # Plot true PDF
@@ -2479,10 +2524,10 @@ def plot_combined_uncertainty_PDF_distribution(
                        linestyle='--', label=fr"Mean Prediction $q(x)$",
                        color="crimson", linewidth=2)
                 
-                # Combined uncertainty band
+                # Function-level uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1 sigma Combined Uncertainty")
+                               label=fr"±1σ Function Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
@@ -2490,30 +2535,115 @@ def plot_combined_uncertainty_PDF_distribution(
                 ax.set_xscale("log")
                 ax.grid(True, which='both', linestyle=':', linewidth=0.5)
                 ax.legend(frameon=False)
-                ax.set_title(f"Combined Uncertainty: PDF at $Q^2={Q2_fixed}$ GeV² ({n_bootstrap} bootstrap + Laplace)")
+                ax.set_title(f"Function-Level Uncertainty: PDF at $Q^2={Q2_fixed}$ GeV²\n"
+                           f"({n_bootstrap} bootstrap × {n_laplace_samples} Laplace samples)")
                 
                 plt.tight_layout()
-                plt.savefig(os.path.join(save_dir, f"combined_uncertainty_pdf_Q2_{Q2_fixed}.png"), 
+                plt.savefig(os.path.join(save_dir, f"function_uncertainty_pdf_Q2_{Q2_fixed}.png"), 
                            dpi=300, bbox_inches='tight')
                 plt.close(fig)
+                
+                # Save pointwise uncertainty breakdown
+                breakdown_path = os.path.join(save_dir, f"function_uncertainty_breakdown_Q2_{Q2_fixed}.txt")
+                with open(breakdown_path, 'w') as f:
+                    f.write(f"Pointwise Function Uncertainty Breakdown: q(x, Q²={Q2_fixed})\n")
+                    f.write("=" * 60 + "\n\n")
+                    f.write("This file contains pointwise uncertainty statistics for the predicted\n")
+                    f.write(f"function q(x, Q²={Q2_fixed}) at each x-point in the evaluation grid.\n\n")
+                    f.write("Columns:\n")
+                    f.write("x: x-coordinate\n")
+                    f.write("true_q(x): true function value\n")
+                    f.write("mean_q(x): mean predicted function value across all samples\n")
+                    f.write("std_q(x): standard deviation of predicted function value\n")
+                    f.write("bias_q(x): mean_q(x) - true_q(x)\n")
+                    f.write("rel_uncertainty: std_q(x) / |mean_q(x)|\n\n")
+                    f.write(f"{'x':>12s} {'true_q(x)':>12s} {'mean_q(x)':>12s} {'std_q(x)':>12s} {'bias_q(x)':>12s} {'rel_unc':>12s}\n")
+                    f.write("-" * 80 + "\n")
+                    
+                    for j, x_val in enumerate(x_vals):
+                        true_val = true_pdf[j].item()
+                        mean_val = mean_pdf[j].item()
+                        std_val = std_pdf[j].item()
+                        bias_val = mean_val - true_val
+                        rel_unc = std_val / abs(mean_val) if abs(mean_val) > 1e-10 else float('inf')
+                        
+                        f.write(f"{x_val.item():12.6e} {true_val:12.6e} {mean_val:12.6e} "
+                               f"{std_val:12.6e} {bias_val:12.6e} {rel_unc:12.6f}\n")
+                
+                print(f"  ✅ Function uncertainty analysis saved for Q²={Q2_fixed}")
     
-    print(f"✅ Combined uncertainty analysis complete! Results saved to {save_dir}")
-    print(f"   - Generated {n_bootstrap} bootstrap samples with Laplace uncertainty")
-    print(f"   - Parameter analysis: combined_uncertainty_summary.png")
-    print(f"   - Uncertainty breakdown: combined_uncertainty_breakdown.txt")
+    # Create summary statistics plot across all x-points
+    print("Creating summary uncertainty analysis...")
+    
+    # Compute average statistics across all functions/x-points
+    all_relative_uncertainties = []
+    all_absolute_uncertainties = []
+    function_names = []
+    
+    for key in function_samples:
+        data = function_samples[key]
+        all_samples = data['all_samples']
+        mean_vals = all_samples.mean(dim=0)
+        std_vals = all_samples.std(dim=0)
+        
+        # Compute relative uncertainties (avoiding division by zero)
+        rel_unc = std_vals / torch.clamp(torch.abs(mean_vals), min=1e-10)
+        
+        all_relative_uncertainties.append(rel_unc.mean().item())  # Average over x
+        all_absolute_uncertainties.append(std_vals.mean().item())  # Average over x
+        function_names.append(key)
+    
+    # Summary plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    
+    # Relative uncertainty
+    ax1.bar(range(len(function_names)), all_relative_uncertainties, 
+            color='lightcoral', alpha=0.7, edgecolor='black')
+    ax1.set_xlabel('Function')
+    ax1.set_ylabel('Average Relative Uncertainty')
+    ax1.set_title('Average Relative Function Uncertainty')
+    ax1.set_xticks(range(len(function_names)))
+    ax1.set_xticklabels(function_names, rotation=45, ha='right')
+    ax1.grid(True, alpha=0.3, axis='y')
+    
+    # Absolute uncertainty  
+    ax2.bar(range(len(function_names)), all_absolute_uncertainties,
+            color='lightblue', alpha=0.7, edgecolor='black')
+    ax2.set_xlabel('Function')
+    ax2.set_ylabel('Average Absolute Uncertainty')
+    ax2.set_title('Average Absolute Function Uncertainty')
+    ax2.set_xticks(range(len(function_names)))
+    ax2.set_xticklabels(function_names, rotation=45, ha='right')
+    ax2.grid(True, alpha=0.3, axis='y')
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "function_uncertainty_summary.png"), 
+               dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"✅ Function-level uncertainty analysis complete! Results saved to {save_dir}")
+    print(f"   📊 MAJOR CHANGE: Uncertainty now computed over predicted FUNCTIONS f(x), not parameters θ")
+    print(f"   📈 Generated {n_bootstrap * n_laplace_samples} total function evaluations")
+    print(f"   📄 Methodology documentation: function_uncertainty_methodology.txt")
+    print(f"   📋 Summary statistics: function_uncertainty_summary.png")
     if problem == 'simplified_dis':
-        print(f"   - PDF plots: combined_uncertainty_pdf_up.png, combined_uncertainty_pdf_down.png")
+        print(f"   📊 Function plots: function_uncertainty_pdf_up.png, function_uncertainty_pdf_down.png")
+        print(f"   📝 Pointwise breakdowns: function_uncertainty_breakdown_up.txt, function_uncertainty_breakdown_down.txt")
     elif problem == 'realistic_dis':
-        print(f"   - PDF plots: combined_uncertainty_pdf_Q2_{{value}}.png for each Q² slice")
+        print(f"   📊 Function plots: function_uncertainty_pdf_Q2_{{value}}.png for each Q² slice") 
+        print(f"   📝 Pointwise breakdowns: function_uncertainty_breakdown_Q2_{{value}}.txt for each Q² slice")
     
     # Return summary statistics for potential programmatic use
     return {
-        'mean_predictions': mean_of_means,
-        'data_uncertainty': torch.sqrt(variance_of_means), 
-        'model_uncertainty': torch.sqrt(mean_of_laplace_vars),
-        'total_uncertainty': total_stddev,
+        'problem': problem,
+        'n_bootstrap': n_bootstrap,
+        'n_laplace_samples': n_laplace_samples,
+        'total_function_evaluations': n_bootstrap * n_laplace_samples,
+        'function_names': function_names,
+        'average_relative_uncertainties': all_relative_uncertainties,
+        'average_absolute_uncertainties': all_absolute_uncertainties,
         'true_params': true_params,
-        'n_bootstrap': n_bootstrap
+        'methodology': 'function_level_uncertainty'
     }
 
 

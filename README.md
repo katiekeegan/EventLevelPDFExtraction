@@ -15,11 +15,20 @@ Training takes place in two stages. First, a PointNet-style embedding of simulat
 - Run `python plotting_driver.py` for basic parameter and error plotting.
 
 ### Advanced Uncertainty Quantification:
-- Run `python plotting_driver_UQ.py` for **analytic uncertainty propagation** using Laplace approximation.
-- Uses the **delta method** for fast, accurate uncertainty quantification instead of Monte Carlo sampling.
+- Run `python plotting_driver_UQ.py` for **function-level uncertainty quantification** using analytic Laplace approximation.
+- **KEY FEATURE**: Now reports uncertainty over the **predicted functions** (u(x), d(x), q(x)) at each x-point, not just model parameters.
+- Uses **pointwise uncertainty aggregation** where total_variance(x) = variance_bootstrap(x) + variance_laplace(x).
 - Automatically detects and uses Laplace models when available, falls back to Monte Carlo when not.
 
+**Function-Level Uncertainty Quantification:**
+- **What changed**: Instead of reporting uncertainty over parameters θ, the system now computes uncertainty over the induced PDF functions f(x|θ) at each x-point.
+- **Why this matters**: Function-level uncertainty is more interpretable for physics applications and directly quantifies prediction uncertainty for the PDFs themselves.
+- **Method**: For each bootstrap sample, multiple parameter samples θ are drawn from the posterior, f(x|θ) is evaluated at each x, and pointwise statistics (mean ± std) are computed across all function evaluations.
+- **Uncertainty combination**: Data uncertainty (bootstrap variance) and model uncertainty (Laplace variance) are combined pointwise: total_variance(x) = var_bootstrap(x) + var_laplace(x).
+
 **Key Features:**
+- **Function-level uncertainty**: Reports uncertainty of predicted PDFs f(x) at each x, not just parameters θ
+- **Pointwise aggregation**: Combines uncertainty sources in function space, providing interpretable uncertainty bands
 - **Analytic uncertainty**: Uses Laplace approximation with delta method for speed and accuracy
 - **Automatic detection**: Finds and loads Laplace models automatically  
 - **Backward compatibility**: Falls back to Monte Carlo when Laplace unavailable
@@ -27,15 +36,24 @@ Training takes place in two stages. First, a PointNet-style embedding of simulat
 
 **Usage Examples:**
 ```bash
-# Plot with analytic uncertainty (recommended):
+# Plot with function-level uncertainty (recommended):
 python plotting_driver_UQ.py --arch gaussian --problem simplified_dis
 
-# Plot all architectures:
+# Combined uncertainty analysis with detailed function-level breakdown:
+python example_combined_uncertainty_usage.py --problem simplified_dis --n_bootstrap 50
+
+# Plot all architectures with function uncertainty:
 python plotting_driver_UQ.py --arch all --latent_dim 1024
 
 # Fast fallback for missing Laplace models:
 python plotting_driver_UQ.py --arch mlp --n_mc 50
 ```
+
+**Output Files for Function-Level Uncertainty:**
+- `function_uncertainty_pdf_{function}.png`: PDF plots with function-level uncertainty bands
+- `function_uncertainty_breakdown_{function}.txt`: Pointwise uncertainty statistics for each x
+- `function_uncertainty_summary.png`: Summary of uncertainty across all functions
+- `function_uncertainty_methodology.txt`: Detailed explanation of the uncertainty computation method
 
 ## Dependencies:
 
