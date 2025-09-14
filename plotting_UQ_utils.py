@@ -1788,3 +1788,297 @@ def cnf_sample_theta_SimpleCNF(
         theta = torch.cat(out_list, dim=1)              # [B, n_samples, D]
 
     return theta
+
+
+def plot_bootstrap_PDF_distribution(
+    model,
+    pointnet_model,
+    true_params,
+    device,
+    num_events,
+    n_bootstrap,
+    problem='simplified_dis',
+    save_dir=None,
+    Q2_slices=None
+):
+    """
+    Bootstrap uncertainty visualization for fixed true parameters.
+    
+    This function performs bootstrap resampling to estimate uncertainty in PDF
+    predictions given a fixed set of true parameters. For each bootstrap sample,
+    it generates independent event sets, extracts latent vectors using PointNet,
+    predicts parameters using the model head, and computes PDFs.
+    
+    Args:
+        model: Trained model head for parameter prediction
+        pointnet_model: Trained PointNet model for latent extraction
+        true_params: Fixed true parameter values [tensor of shape (param_dim,)]
+        device: Device to run computations on
+        num_events: Number of events per bootstrap sample
+        n_bootstrap: Number of bootstrap samples to generate
+        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        save_dir: Directory to save plots (required)
+        Q2_slices: List of Q2 values for realistic_dis problem
+        
+    Returns:
+        None (saves plots to save_dir)
+        
+    Saves:
+        - bootstrap_pdf_median_up.png: Median up PDF with uncertainty bands
+        - bootstrap_pdf_median_down.png: Median down PDF with uncertainty bands  
+        - bootstrap_pdf_Q2_{value}.png: Median PDF at fixed Q2 (realistic_dis)
+        - bootstrap_param_histograms.png: Parameter distribution histograms
+        
+    Example Usage:
+        # For simplified DIS problem
+        plot_bootstrap_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model, 
+            true_params=torch.tensor([2.0, 1.2, 2.0, 1.2]),
+            device=device,
+            num_events=100000,
+            n_bootstrap=50,
+            problem='simplified_dis',
+            save_dir='./plots/bootstrap'
+        )
+        
+        # For realistic DIS with custom Q2 slices
+        plot_bootstrap_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
+            device=device, 
+            num_events=50000,
+            n_bootstrap=30,
+            problem='realistic_dis',
+            save_dir='./plots/bootstrap',
+            Q2_slices=[2.0, 10.0, 50.0]
+        )
+    """
+    if save_dir is None:
+        raise ValueError("save_dir must be specified for saving bootstrap plots")
+    
+    import os
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print(f"Starting bootstrap PDF analysis with {n_bootstrap} samples...")
+    
+    # Initialize simulator based on problem type
+    if problem == 'realistic_dis':
+        simulator = RealisticDIS(device=torch.device('cpu'))
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+    elif problem == 'simplified_dis':
+        simulator = SimplifiedDIS(device=torch.device('cpu'))
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(device=torch.device('cpu'))
+        param_names = [f'Param {i+1}' for i in range(len(true_params))]
+    else:
+        raise ValueError(f"Unknown problem type: {problem}")
+    
+    model.eval()
+    pointnet_model.eval()
+    true_params = true_params.to(device)
+    
+    # Storage for bootstrap results
+    bootstrap_params = []
+    bootstrap_pdfs = {}  # Will store PDFs for each function/Q2 slice
+    
+    print("Generating bootstrap samples...")
+    for i in range(n_bootstrap):
+        if (i + 1) % 10 == 0:
+            print(f"  Bootstrap sample {i+1}/{n_bootstrap}")
+        
+        # Generate independent event set
+        with torch.no_grad():
+            # Use make_latent_from_true_params to get latent from events
+            latent = make_latent_from_true_params(
+                simulator=simulator,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                num_events=num_events,
+                device=device,
+                feature_fn=advanced_feature_engineering if problem != 'mceg' else lambda x: x
+            )
+            
+            # Predict parameters from latent
+            predicted_params = model(latent).cpu().squeeze(0)  # [param_dim]
+            bootstrap_params.append(predicted_params)
+            
+            # Compute PDFs for this parameter set
+            simulator.init(predicted_params.detach().cpu())
+            
+            if problem == 'simplified_dis':
+                # Compute up and down PDFs
+                x_vals = torch.linspace(1e-3, 1, 500)
+                
+                for fn_name in ['up', 'down']:
+                    fn = getattr(simulator, fn_name)
+                    pdf_vals = fn(x_vals)
+                    
+                    if fn_name not in bootstrap_pdfs:
+                        bootstrap_pdfs[fn_name] = []
+                    bootstrap_pdfs[fn_name].append(pdf_vals.detach().cpu())
+                    
+            elif problem == 'realistic_dis':
+                # Compute PDFs at different Q2 slices
+                Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+                x_vals = torch.linspace(1e-3, 0.9, 500)
+                
+                for Q2_fixed in Q2_slices:
+                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                    q_vals = simulator.q(x_vals, Q2_vals)
+                    
+                    q_key = f'q_Q2_{Q2_fixed}'
+                    if q_key not in bootstrap_pdfs:
+                        bootstrap_pdfs[q_key] = []
+                    bootstrap_pdfs[q_key].append(q_vals.detach().cpu())
+    
+    # Convert to tensors for easier manipulation
+    bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
+    
+    for key in bootstrap_pdfs:
+        bootstrap_pdfs[key] = torch.stack(bootstrap_pdfs[key])  # [n_bootstrap, n_points]
+    
+    print("Computing statistics and creating plots...")
+    
+    # Plot parameter histograms
+    n_params = bootstrap_params.shape[1]
+    fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
+    if n_params == 1:
+        axes = [axes]
+    
+    for i in range(n_params):
+        predicted_vals = bootstrap_params[:, i].numpy()
+        
+        # Plot histogram of predicted parameters
+        axes[i].hist(predicted_vals, bins=20, alpha=0.6, density=True, 
+                    color='skyblue', label=f'Bootstrap Predictions')
+        
+        # Add true value line
+        true_val = true_params[i].item()
+        axes[i].axvline(true_val, color='red', linestyle='--', linewidth=2, 
+                       label='True Value')
+        
+        # Add statistics
+        mean_pred = np.mean(predicted_vals)
+        std_pred = np.std(predicted_vals)
+        axes[i].axvline(mean_pred, color='green', linestyle=':', linewidth=1.5,
+                       label=f'Mean: {mean_pred:.3f}')
+        
+        axes[i].set_title(f'{param_names[i]}\nBias: {mean_pred - true_val:.3f}, Std: {std_pred:.3f}')
+        axes[i].set_xlabel('Parameter Value')
+        axes[i].set_ylabel('Density')
+        axes[i].legend(fontsize=8)
+        axes[i].grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "bootstrap_param_histograms.png"), dpi=300)
+    plt.close(fig)
+    
+    # Plot PDF distributions with uncertainty
+    if problem == 'simplified_dis':
+        x_vals = torch.linspace(1e-3, 1, 500)
+        
+        for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
+            if fn_name in bootstrap_pdfs:
+                pdf_stack = bootstrap_pdfs[fn_name]  # [n_bootstrap, n_points]
+                
+                # Compute statistics
+                median_vals = torch.median(pdf_stack, dim=0).values
+                std_vals = torch.std(pdf_stack, dim=0)
+                lower_bounds = median_vals - std_vals
+                upper_bounds = median_vals + std_vals
+                
+                # Compute true PDF
+                simulator.init(true_params.squeeze().cpu())
+                true_vals = getattr(simulator, fn_name)(x_vals)
+                
+                # Create plot
+                fig, ax = plt.subplots(figsize=(8, 6))
+                
+                # Plot true PDF
+                ax.plot(x_vals.numpy(), true_vals.numpy(), 
+                       label=fr"True ${fn_label}(x|\theta^*)$", 
+                       color=color, linewidth=2.5)
+                
+                # Plot bootstrap median and uncertainty
+                ax.plot(x_vals.numpy(), median_vals.numpy(),
+                       linestyle='--', label=fr"Bootstrap Median ${fn_label}(x)$",
+                       color="crimson", linewidth=2)
+                
+                ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
+                               color="crimson", alpha=0.3, 
+                               label=fr"±1σ Bootstrap Uncertainty")
+                
+                ax.set_xlabel(r"$x$")
+                ax.set_ylabel(fr"${fn_label}(x|\theta)$")
+                ax.set_xlim(1e-3, 1)
+                ax.set_xscale("log")
+                ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+                ax.legend(frameon=False)
+                ax.set_title(f"Bootstrap PDF Distribution ({fn_name.title()}, {n_bootstrap} samples)")
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_median_{fn_name}.png"), dpi=300)
+                plt.close(fig)
+                
+    elif problem == 'realistic_dis':
+        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+        x_vals = torch.linspace(1e-3, 0.9, 500)
+        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
+        
+        for i, Q2_fixed in enumerate(Q2_slices):
+            q_key = f'q_Q2_{Q2_fixed}'
+            if q_key in bootstrap_pdfs:
+                pdf_stack = bootstrap_pdfs[q_key]  # [n_bootstrap, n_points]
+                
+                # Compute statistics
+                median_vals = torch.median(pdf_stack, dim=0).values
+                std_vals = torch.std(pdf_stack, dim=0)
+                lower_bounds = median_vals - std_vals
+                upper_bounds = median_vals + std_vals
+                
+                # Compute true PDF
+                simulator.init(true_params.squeeze().cpu())
+                Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                true_vals = simulator.q(x_vals, Q2_vals)
+                
+                # Create plot
+                fig, ax = plt.subplots(figsize=(8, 6))
+                
+                # Plot true PDF
+                ax.plot(x_vals.numpy(), true_vals.numpy(),
+                       color=color_palette[i], linewidth=2.5,
+                       label=fr"True $q(x,\ Q^2={Q2_fixed})$")
+                
+                # Plot bootstrap median and uncertainty
+                ax.plot(x_vals.numpy(), median_vals.numpy(),
+                       linestyle='--', label=fr"Bootstrap Median $q(x)$",
+                       color="crimson", linewidth=2)
+                
+                ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
+                               color="crimson", alpha=0.3,
+                               label=fr"±1σ Bootstrap Uncertainty")
+                
+                ax.set_xlabel(r"$x$")
+                ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
+                ax.set_xlim(1e-3, 0.9)
+                ax.set_xscale("log")
+                ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+                ax.legend(frameon=False)
+                ax.set_title(f"Bootstrap PDF Distribution (Q²={Q2_fixed}, {n_bootstrap} samples)")
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, f"bootstrap_pdf_Q2_{Q2_fixed}.png"), dpi=300)
+                plt.close(fig)
+    
+    print(f"✅ Bootstrap analysis complete! Results saved to {save_dir}")
+    print(f"   - Generated {n_bootstrap} bootstrap samples")
+    print(f"   - Parameter histograms: bootstrap_param_histograms.png")
+    if problem == 'simplified_dis':
+        print(f"   - PDF plots: bootstrap_pdf_median_up.png, bootstrap_pdf_median_down.png")
+    elif problem == 'realistic_dis':
+        print(f"   - PDF plots: bootstrap_pdf_Q2_{{value}}.png for each Q² slice")
+
+    return theta
