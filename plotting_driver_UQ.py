@@ -51,113 +51,6 @@ def build_head(arch, latent_dim, param_dim, device, nmodes=None):
 
 def _ensure_dir(path): Path(path).mkdir(parents=True, exist_ok=True)
 
-def plot_1d_marginals(samples, outdir, prefix, theta_gt=None):
-    """
-    samples: [S, D] tensor/cpu-np
-    theta_gt: [D] or None
-    """
-    X = samples.detach().cpu().numpy() if torch.is_tensor(samples) else samples
-    S, D = X.shape
-    cols = min(4, D)
-    rows = int(math.ceil(D / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(3.0*cols, 2.4*rows), squeeze=False)
-    for d in range(D):
-        r, c = divmod(d, cols)
-        ax = axes[r][c]
-        ax.hist(X[:, d], bins=60, density=True)
-        ax.set_title(f"$\\theta_{d}$")
-        if theta_gt is not None:
-            g = theta_gt[d].item() if torch.is_tensor(theta_gt) else float(theta_gt[d])
-            ax.axvline(g, linestyle="--")
-    # hide empties
-    for k in range(D, rows*cols):
-        r, c = divmod(k, cols)
-        axes[r][c].axis("off")
-    fig.tight_layout()
-    plt.savefig(os.path.join(outdir, f"{prefix}_1d_marginals.png"), dpi=200)
-    plt.close(fig)
-
-def plot_pairwise_2d(samples, outdir, prefix, max_pairs=6, theta_gt=None):
-    """
-    samples: [S, D]
-    Plots up to max_pairs unique 2D pairs.
-    """
-    X = samples.detach().cpu().numpy() if torch.is_tensor(samples) else samples
-    S, D = X.shape
-    pairs = []
-    for i in range(D):
-        for j in range(i+1, D):
-            pairs.append((i, j))
-    pairs = pairs[:max_pairs]
-    cols = min(3, len(pairs)) or 1
-    rows = int(math.ceil(len(pairs) / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(3.2*cols, 3.2*rows), squeeze=False)
-    for k, (i, j) in enumerate(pairs):
-        r, c = divmod(k, cols)
-        ax = axes[r][c]
-        ax.scatter(X[:, i], X[:, j], s=4, alpha=0.25)
-        ax.set_xlabel(f"$\\theta_{i}$")
-        ax.set_ylabel(f"$\\theta_{j}$")
-        if theta_gt is not None:
-            ax.scatter([theta_gt[i].item() if torch.is_tensor(theta_gt) else float(theta_gt[i])],
-                       [theta_gt[j].item() if torch.is_tensor(theta_gt) else float(theta_gt[j])],
-                       s=40, marker="x")
-    # hide empties
-    for k in range(len(pairs), rows*cols):
-        r, c = divmod(k, cols)
-        axes[r][c].axis("off")
-    fig.tight_layout()
-    plt.savefig(os.path.join(outdir, f"{prefix}_pairs2d.png"), dpi=200)
-    plt.close(fig)
-
-def plot_corner(samples, outpath, labels=None, max_dim=6):
-    """
-    Quick corner-like plot for up to max_dim dims.
-    """
-    X = samples.detach().cpu().numpy() if torch.is_tensor(samples) else samples
-    S, D = X.shape
-    Dv = min(D, max_dim)
-    fig, axes = plt.subplots(Dv, Dv, figsize=(2.2*Dv, 2.2*Dv))
-    for i in range(Dv):
-        for j in range(Dv):
-            ax = axes[i, j]
-            if i == j:
-                ax.hist(X[:, j], bins=50, density=True)
-                if labels: ax.set_xlabel(labels[j])
-            elif i > j:
-                ax.scatter(X[:, j], X[:, i], s=2, alpha=0.2)
-                if labels and i == Dv-1: ax.set_xlabel(labels[j])
-                if labels and j == 0:    ax.set_ylabel(labels[i])
-            else:
-                ax.axis('off')
-    fig.tight_layout()
-    plt.savefig(outpath, dpi=200)
-    plt.close(fig)
-
-def _flow_checkpoint_present(path_or_dir: str) -> bool:
-    """
-    Return True if a flow checkpoint exists at the exact path OR anywhere in the directory.
-    """
-    if not FLOW_CLASS_OK:
-        return False
-    if not path_or_dir:
-        return False
-    if os.path.isfile(path_or_dir):
-        return ("flow" in os.path.basename(path_or_dir).lower()) or path_or_dir.endswith(".pth")
-    if os.path.isdir(path_or_dir):
-        matches = glob.glob(os.path.join(path_or_dir, "*flow*.pth")) + \
-                  glob.glob(os.path.join(path_or_dir, "*flow*/*.pth"))
-        return len(matches) > 0
-    # path doesn’t exist yet; conservatively return False
-    return False
-
-def load_latents_and_optional_theta(args, device):
-    z = None; theta = None
-    if args.latent_npy:
-        z = torch.from_numpy(np.load(args.latent_npy)).float().to(device)
-    if args.theta_npy:
-        theta = torch.from_numpy(np.load(args.theta_npy)).float().to(device)
-    return z, theta
 HEAD_PTH = {
     "mlp": "mlp_head_final.pth",
     "transformer": "transformer_head_final.pth",
@@ -200,37 +93,6 @@ def _finalize_device_eval(la, device):
         la.model.to(device).eval()
     return la
 
-def load_model(arch, checkpoint, latent_dim, param_dim, device):
-    if arch == "gaussian":
-        model = GaussianHead(latent_dim, param_dim, multimodal=False).to(device)
-    elif arch == "multimodal":
-        # nmodes was set during training; the head stores its layers, so loading works
-        model = GaussianHead(latent_dim, param_dim, multimodal=True).to(device)
-    elif arch == "flow":
-        model = ConditionalRealNVP(z_dim=latent_dim, param_dim=param_dim,
-                                   n_layers=8, hidden=256, scale_clamp=5.0).to(device)
-    else:
-        raise ValueError(f"Unknown arch {arch}")
-    state = torch.load(checkpoint, map_location=device)
-    model.load_state_dict(state)
-    model.eval()
-    return model
-
-@torch.no_grad()
-def draw_posterior_samples(model, arch, z, nsamples):
-    """
-    z: [B, Dz]  -> returns [B, nsamples, Dtheta]
-    """
-    if arch in ("gaussian", "multimodal"):
-        return sample_gaussian_posterior(model, z, nsamples=nsamples,
-                                         multimodal=(arch == "multimodal"))
-    elif arch == "flow":
-        # flow forward() already does conditional sampling
-        return model(z, n_samples=nsamples)   # [B, S, D]
-    else:
-        raise ValueError(arch)
-
-    
 def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal=False, nmodes=2):
     """
     Reloads model from checkpoint for the specified architecture.
@@ -340,49 +202,6 @@ try:
 except Exception:
     _FLOW_CLASS_OK = False
 
-def _flow_ckpt_present(path_or_dir: str) -> bool:
-    if not _FLOW_CLASS_OK or not path_or_dir:
-        return False
-    if os.path.isfile(path_or_dir):
-        # accept any .pth; prefer names containing 'flow'
-        return path_or_dir.endswith(".pth")
-    if os.path.isdir(path_or_dir):
-        cands = glob.glob(os.path.join(path_or_dir, "*flow*.pth")) or \
-                glob.glob(os.path.join(path_or_dir, "*.pth"))
-        return len(cands) > 0
-    return False
-
-def _pick_ckpt_for_arch(arch: str, path_or_dir: str) -> str:
-    if os.path.isfile(path_or_dir):  # user passed an exact file
-        return path_or_dir
-    if not os.path.isdir(path_or_dir):
-        return path_or_dir  # may be empty; your loader can handle
-    patt = {
-        "flow":       "*flow*.pth",
-        "multimodal": "*multimodal*.pth",
-        "gaussian":   "*gaussian*.pth",
-    }.get(arch, "*.pth")
-    cands = glob.glob(os.path.join(path_or_dir, patt)) or \
-            glob.glob(os.path.join(path_or_dir, "*.pth"))
-    if not cands:
-        return path_or_dir
-    cands.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-    return cands[0]
-
-def sample_theta_from_flow(flow, emb, n_samples=100):
-    B = emb.shape[0]
-    theta_dim = flow.theta_dim
-    base_mean = flow.base_mean
-    base_logstd = flow.base_logstd
-
-    z = torch.randn(B, n_samples, theta_dim, device=emb.device) * base_logstd.exp() + base_mean
-    context = emb.unsqueeze(1).expand(-1, n_samples, -1)
-    context = context.reshape(B * n_samples, -1)
-    z = z.reshape(B * n_samples, theta_dim)
-    theta_samples, _ = flow.inverse(z, context)
-    theta_samples = theta_samples.view(B, n_samples, theta_dim)
-    return theta_samples
-
 def main():
     import argparse
     parser = argparse.ArgumentParser(
@@ -465,165 +284,89 @@ Examples:
     plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
     for arch in archs:
         print(f"\n=== Arch: {arch} ===")
-        if arch == "flow":
-            # look for a flow_model checkpoint in the experiment directory
-            exp_dir = experiment_dir   # or however you’re already pointing to the directory
-            ckpt = os.path.join(exp_dir, "final_params_model.pth")
-           
-            if _FLOW_CLASS_OK and os.path.isfile(ckpt):
-                plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
-                os.makedirs(plot_dir, exist_ok=True)
-                print(f"[flow] Loading flow model from {ckpt}")
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-                flow = SimpleCNF(theta_dim=args.param_dim, context_dim=args.latent_dim, hidden_dim=256, num_layers=6).to(device)
-                state = torch.load(ckpt, map_location=device)
-                flow.load_state_dict({k.replace('module.', ''): v for k, v in state.items()})
-                flow.eval()
+        print(f"\n==== Plotting for architecture: {arch.upper()} ====")
+        multimodal = (arch == "multimodal")
+        model = reload_model(arch, args.latent_dim, args.param_dim, experiment_dir, device,
+                            multimodal=multimodal, nmodes=args.nmodes)
+        if model is None:
+            print(f"Model for architecture '{arch}' not found, skipping.")
+            continue
+        plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
+        os.makedirs(plot_dir, exist_ok=True)
+        # Attempt to load Laplace approximation
+        laplace_model = load_laplace_if_available(experiment_dir, arch, device,args)
+        # --- Fallback: Fit Laplace if not found ---
+        if laplace_model is None and arch in ("mlp", "transformer"):
+            print(f"ℹ️ No Laplace checkpoint found for {arch}, fitting Laplace from model weights...")
 
-                # your existing z-loading logic
-                # z = torch.from_numpy(np.load(args.latent_npy)).float().to(device)
-                z = torch.tensor(latents).to(device)
-                if args.problem == 'mceg':
-                    simulator = MCEGSimulator(torch.device('cpu'))
-                elif args.problem == 'realistic_dis':
-                    simulator = RealisticDIS(torch.device('cpu'))
-                elif args.problem == 'simplified_dis':
-                    simulator = SimplifiedDIS(torch.device('cpu'))
-                # simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
+            fit_z = torch.tensor(latents[:500], dtype=torch.float32, device=device)
+            test_out = model(fit_z)
+            print("Model output shape:", test_out.shape)
+            fit_theta = torch.tensor(thetas[:500], dtype=torch.float32, device=device)
+            print(f"fit_z.shape: {fit_z.shape}, fit_theta.shape: {fit_theta.shape}")
+            # For multi-output regression, Laplace expects targets of shape [N, D]
+            # If fit_theta shape is [N], expand dims
+            if fit_theta.ndim == 1:
+                fit_theta = fit_theta.unsqueeze(1)
+            # If fit_theta shape is [N, D], it's fine
 
-                # Make sure params live on correct device
-                true_params = true_params.to(device)
-                # -------- sample events for the reconstructed histogram ----------
-                with torch.no_grad():
-                    xs = simulator.sample(true_params.detach().cpu(), args.num_events)  # expected shape (N, 2) = [x, Q2]
-                xs_tensor = torch.tensor(xs, dtype=torch.float32).to(device)
-                if args.problem != 'mceg':
-                    xs_featurized = advanced_feature_engineering(xs_tensor)
-                else:
-                    xs_featurized = xs_tensor
-                latent_samples = pointnet_model(xs_featurized.unsqueeze(0)).to(device)  # [N, Dz]
-                z = latent_samples
-                theta_samples = sample_theta_from_flow(flow, z, n_samples=100)
-
-                agg = theta_samples.reshape(-1, theta_samples.shape[-1]).cpu().detach().numpy()
-                plot_1d_marginals(agg, plot_dir, "flow")
-                plot_pairwise_2d(agg, plot_dir, "flow")
-                plot_corner(agg, os.path.join(plot_dir, "flow_corner.png"),
-                            labels=[f"$\\theta_{i}$" for i in range(min(args.param_dim,6))], max_dim=6)
-                # Build posterior bands over PDF(x) using SimplifiedDIS
-                if args.problem == 'simplified_dis':
-                    plot_PDF_distribution_single_same_plot_from_theta_samples(
-                        simulator=simulator,                         # SimplifiedDIS(torch.device('cpu')) per your code
-                        theta_samples=theta_samples,                 # [B,S,D] is fine
-                        true_params=true_params,                     # tensor [D] or None
-                        device=device,
-                        num_events_per_theta=max(2000, args.num_events // 2),  # tune for speed/quality
-                        x_range=(0.0, 1.0),
-                        bins=100,
-                        quantiles=(5, 25, 50, 75, 95),
-                        overlay_point_estimate=True,
-                        point_estimate="mean",
-                        save_path=os.path.join(plot_dir, "pdf_overlay_flow.png"),
-                        title="Posterior PDF bands"
-                    )
-                    evaluate_over_n_parameters_CNF(
-                         flow, pointnet_model, num_events=args.num_events, device=device, simulator=simulator, feature_fn=advanced_feature_engineering, save_dir=plot_dir, n_theta_per_case=100)
-                    plot_PDF_distribution_single_CNF(flow, pointnet_model, true_params=true_params, device=device, feature_fn=advanced_feature_engineering, simulator=simulator, save_dir=plot_dir, n_events_for_latent=args.num_events, n_theta=100)
-                print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
-        else:
-            print(f"\n==== Plotting for architecture: {arch.upper()} ====")
-            multimodal = (arch == "multimodal")
-            model = reload_model(arch, args.latent_dim, args.param_dim, experiment_dir, device,
-                                multimodal=multimodal, nmodes=args.nmodes)
-            if model is None:
-                print(f"Model for architecture '{arch}' not found, skipping.")
-                continue
-            plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
-            os.makedirs(plot_dir, exist_ok=True)
-            # Attempt to load Laplace approximation
-            laplace_model = load_laplace_if_available(experiment_dir, arch, device,args)
-            # --- Fallback: Fit Laplace if not found ---
-            if laplace_model is None and arch in ("mlp", "transformer"):
-                print(f"ℹ️ No Laplace checkpoint found for {arch}, fitting Laplace from model weights...")
-
-                fit_z = torch.tensor(latents[:500], dtype=torch.float32, device=device)
-                test_out = model(fit_z)
-                print("Model output shape:", test_out.shape)
-                fit_theta = torch.tensor(thetas[:500], dtype=torch.float32, device=device)
-                print(f"fit_z.shape: {fit_z.shape}, fit_theta.shape: {fit_theta.shape}")
-                # For multi-output regression, Laplace expects targets of shape [N, D]
-                # If fit_theta shape is [N], expand dims
-                if fit_theta.ndim == 1:
-                    fit_theta = fit_theta.unsqueeze(1)
-                # If fit_theta shape is [N, D], it's fine
-
+            try:
+                from laplace import Laplace
+                laplace_model = Laplace(
+                    model, 
+                    likelihood='regression', 
+                    subset_of_weights='last_layer', 
+                    hessian_structure='kron'
+                )
+                import traceback
                 try:
-                    from laplace import Laplace
-                    laplace_model = Laplace(
-                        model, 
-                        likelihood='regression', 
-                        subset_of_weights='last_layer', 
-                        hessian_structure='kron'
-                    )
-                    import traceback
-                    try:
-                        # Create a dataset of pairs
-                        train_dataset = TensorDataset(fit_z, fit_theta)
+                    # Create a dataset of pairs
+                    train_dataset = TensorDataset(fit_z, fit_theta)
 
-                        # Create a DataLoader (mini-batch size of 64 is typical; adjust as needed)
-                        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+                    # Create a DataLoader (mini-batch size of 64 is typical; adjust as needed)
+                    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
 
-                        laplace_model.fit(train_loader)
-                        print(f"✓ Fitted Laplace approximation for {arch} using {fit_z.shape[0]} samples.")
-                    except Exception as e:
-                        print("❌ Could not fit Laplace approximation:", e)
-                        traceback.print_exc()
-                        laplace_model = None
+                    laplace_model.fit(train_loader)
+                    print(f"✓ Fitted Laplace approximation for {arch} using {fit_z.shape[0]} samples.")
                 except Exception as e:
                     print("❌ Could not fit Laplace approximation:", e)
+                    traceback.print_exc()
                     laplace_model = None
-            if laplace_model is not None:
-                # quick preview latent (batch=1)
-                latent_preview = torch.zeros(1, args.latent_dim, device=device)
-                with torch.no_grad():
-                    param_mean, param_std = get_analytic_uncertainty(model, latent_preview, laplace_model=laplace_model)
-                print("Output parameter mean (preview):", param_mean.squeeze(0).cpu().numpy())
-                print("Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy())
-            # Run all plotting functions, passing laplace_model if available
-            plot_params_distribution_single(
+            except Exception as e:
+                print("❌ Could not fit Laplace approximation:", e)
+                laplace_model = None
+        if laplace_model is not None:
+            # quick preview latent (batch=1)
+            latent_preview = torch.zeros(1, args.latent_dim, device=device)
+            with torch.no_grad():
+                param_mean, param_std = get_analytic_uncertainty(model, latent_preview, laplace_model=laplace_model)
+            print("Output parameter mean (preview):", param_mean.squeeze(0).cpu().numpy())
+            print("Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy())
+        # Run all plotting functions, passing laplace_model if available
+        plot_params_distribution_single(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            n_mc=args.n_mc,
+            laplace_model=laplace_model,
+            compare_with_sbi=False,
+            problem=args.problem,
+            save_path=os.path.join(plot_dir, "params_distribution.png")
+        )
+        if args.problem != 'mceg':
+            plot_PDF_distribution_single_same_plot(
                 model=model,
                 pointnet_model=pointnet_model,
                 true_params=true_params,
                 device=device,
                 n_mc=args.n_mc,
                 laplace_model=laplace_model,
-                compare_with_sbi=False,
                 problem=args.problem,
-                save_path=os.path.join(plot_dir, "params_distribution.png")
+                save_path=os.path.join(plot_dir, "pdf_overlay.png")
             )
-            if args.problem != 'mceg':
-                plot_PDF_distribution_single_same_plot(
-                    model=model,
-                    pointnet_model=pointnet_model,
-                    true_params=true_params,
-                    device=device,
-                    n_mc=args.n_mc,
-                    laplace_model=laplace_model,
-                    problem=args.problem,
-                    save_path=os.path.join(plot_dir, "pdf_overlay.png")
-                )
-            elif args.problem == 'mceg':
-                plot_PDF_distribution_single_same_plot_mceg(
-                    model=model,
-                    pointnet_model=pointnet_model,
-                    true_params=true_params,
-                    device=device,
-                    n_mc=args.n_mc,
-                    laplace_model=laplace_model,
-                    problem=args.problem,
-                    save_dir=plot_dir
-                )
-            plot_PDF_distribution_single(
+        elif args.problem == 'mceg':
+            plot_PDF_distribution_single_same_plot_mceg(
                 model=model,
                 pointnet_model=pointnet_model,
                 true_params=true_params,
@@ -631,21 +374,31 @@ Examples:
                 n_mc=args.n_mc,
                 laplace_model=laplace_model,
                 problem=args.problem,
-                Q2_slices=[0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0],
                 save_dir=plot_dir
             )
-            if args.problem == 'simplified_dis':
-                plot_event_histogram_simplified_DIS(
-                    model=model,
-                    pointnet_model=pointnet_model,
-                    true_params=true_params,
-                    device=device,
-                    n_mc=args.n_mc,
-                    laplace_model=laplace_model,
-                    num_events=args.num_events,
-                    save_path=os.path.join(plot_dir, "event_histogram_simplified.png")
-                )
-            print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
+        plot_PDF_distribution_single(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            n_mc=args.n_mc,
+            laplace_model=laplace_model,
+            problem=args.problem,
+            Q2_slices=[0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0],
+            save_dir=plot_dir
+        )
+        if args.problem == 'simplified_dis':
+            plot_event_histogram_simplified_DIS(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                n_mc=args.n_mc,
+                laplace_model=laplace_model,
+                num_events=args.num_events,
+                save_path=os.path.join(plot_dir, "event_histogram_simplified.png")
+            )
+        print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
 
 if __name__ == "__main__":
     main()
