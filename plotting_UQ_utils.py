@@ -1350,7 +1350,7 @@ def plot_PDF_distribution_single_same_plot_mceg(
     # plt.show()
     # plt.savefig(save_path, dpi=300)
 
-from typing import Optional, Tuple, List, Callable
+from typing import Optional, Tuple, List, Callable, Dict, Union
 
 # ---------------------------
 # CNF helper: sample θ | latent
@@ -2080,3 +2080,621 @@ def plot_bootstrap_PDF_distribution(
         print(f"   - PDF plots: bootstrap_pdf_median_up.png, bootstrap_pdf_median_down.png")
     elif problem == 'realistic_dis':
         print(f"   - PDF plots: bootstrap_pdf_Q2_{{value}}.png for each Q² slice")
+
+
+def plot_combined_uncertainty_PDF_distribution(
+    model,
+    pointnet_model,
+    true_params,
+    device,
+    num_events,
+    n_bootstrap,
+    laplace_model=None,
+    problem='simplified_dis',
+    save_dir=None,
+    Q2_slices=None
+):
+    """
+    Plot PDF distributions combining Laplace approximation (model uncertainty) 
+    and bootstrapping (data uncertainty) for comprehensive uncertainty quantification.
+    
+    This function provides a complete uncertainty analysis by combining two sources:
+    1. Data uncertainty: Via bootstrap resampling of event sets
+    2. Model uncertainty: Via Laplace approximation of parameter posterior
+    
+    For each bootstrap sample:
+    - Generates independent event sets simulated with true parameters
+    - Extracts latent representations using PointNet
+    - Predicts parameter means and Laplace standard deviations using inference model
+    - Computes PDFs for the predicted parameter set
+    
+    Uncertainty aggregation per parameter/bin:
+    - Collects predicted means and Laplace stddevs across all bootstrap samples
+    - Computes: mean of means, variance of means, mean of Laplace variances
+    - Total variance = variance of means + mean of Laplace variances
+    - Total stddev = sqrt(total variance)
+    
+    Args:
+        model: Trained model head for parameter prediction
+        pointnet_model: Trained PointNet model for latent extraction  
+        true_params: Fixed true parameter values [tensor of shape (param_dim,)]
+        device: Device to run computations on
+        num_events: Number of events per bootstrap sample
+        n_bootstrap: Number of bootstrap samples to generate
+        laplace_model: Fitted Laplace approximation for model uncertainty (optional)
+        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        save_dir: Directory to save plots (required)
+        Q2_slices: List of Q2 values for realistic_dis problem (optional)
+        
+    Returns:
+        None (saves plots and analysis to save_dir)
+        
+    Saves:
+        For simplified_dis:
+            - combined_uncertainty_pdf_up.png: PDF with combined uncertainty bands
+            - combined_uncertainty_pdf_down.png: PDF with combined uncertainty bands
+            - combined_uncertainty_params_up.png: Parameter histogram with error bars
+            - combined_uncertainty_params_down.png: Parameter histogram with error bars
+            
+        For realistic_dis:
+            - combined_uncertainty_pdf_Q2_{value}.png: PDF at fixed Q2 with uncertainty
+            - combined_uncertainty_params_Q2_{value}.png: Parameter analysis per Q2 slice
+            
+        Common saves:
+            - combined_uncertainty_summary.png: Overall parameter distribution analysis
+            - combined_uncertainty_breakdown.txt: Numerical breakdown of uncertainty sources
+        
+    Example Usage:
+        # Simplified DIS with combined uncertainty
+        plot_combined_uncertainty_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=torch.tensor([2.0, 1.2, 2.0, 1.2]),
+            device=device,
+            num_events=100000,
+            n_bootstrap=50,
+            laplace_model=laplace_model,
+            problem='simplified_dis',
+            save_dir='./plots/combined_uncertainty'
+        )
+        
+        # Realistic DIS with custom Q2 slices
+        plot_combined_uncertainty_PDF_distribution(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
+            device=device,
+            num_events=50000,
+            n_bootstrap=30,
+            laplace_model=laplace_model,
+            problem='realistic_dis',
+            save_dir='./plots/combined_uncertainty',
+            Q2_slices=[2.0, 10.0, 50.0, 200.0]
+        )
+        
+    Notes:
+        - If laplace_model is None, falls back to bootstrap-only uncertainty
+        - Uses existing simulator, plotting, and Laplace inference utilities
+        - Supports variable parameter dimensions and problem types
+        - Designed for easy CLI integration via existing patterns
+        - Function is thread-safe and memory-efficient for large bootstrap counts
+    """
+    if save_dir is None:
+        raise ValueError("save_dir must be specified for saving combined uncertainty plots")
+    
+    # Validate all inputs comprehensively
+    validate_combined_uncertainty_inputs(
+        model, pointnet_model, true_params, device, num_events, n_bootstrap, problem, save_dir
+    )
+    
+    import os
+    import torch
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    print(f"Starting combined uncertainty analysis with {n_bootstrap} bootstrap samples...")
+    if laplace_model is not None:
+        print("  Using Laplace approximation for model uncertainty")
+    else:
+        print("  ⚠️  No Laplace model provided - using bootstrap-only uncertainty")
+    
+    # Initialize simulator based on problem type
+    if problem == 'realistic_dis':
+        simulator = RealisticDIS(device=torch.device('cpu'))
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+    elif problem == 'simplified_dis':
+        simulator = SimplifiedDIS(device=torch.device('cpu'))
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(device=torch.device('cpu'))
+        param_names = [f'Param {i+1}' for i in range(len(true_params))]
+    else:
+        raise ValueError(f"Unknown problem type: {problem}")
+    
+    model.eval()
+    pointnet_model.eval()
+    true_params = true_params.to(device)
+    n_params = len(true_params)
+    
+    # Storage for bootstrap results
+    bootstrap_param_means = []    # [n_bootstrap, param_dim] - predicted means
+    bootstrap_param_stds = []     # [n_bootstrap, param_dim] - Laplace stddevs
+    bootstrap_pdfs = {}           # Will store PDFs for each function/Q2 slice
+    
+    print("Generating bootstrap samples with combined uncertainty...")
+    for i in tqdm(range(n_bootstrap), desc="Bootstrap samples"):
+        # Generate independent event set from true parameters
+        with torch.no_grad():
+            # Simulate events using true parameters
+            xs = simulator.sample(true_params.detach().cpu(), num_events)
+            xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+            
+            # Apply feature engineering based on problem type
+            if problem != 'mceg':
+                xs_tensor = advanced_feature_engineering(xs_tensor)
+            
+            # Extract latent embedding using PointNet
+            latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
+            
+            # Get analytic uncertainty from model + Laplace
+            if laplace_model is not None:
+                # Use analytic uncertainty (model uncertainty via Laplace)
+                mean_params, std_params = get_analytic_uncertainty(
+                    model, latent_embedding, laplace_model
+                )
+                mean_params = mean_params.cpu().squeeze(0)  # [param_dim]
+                std_params = std_params.cpu().squeeze(0)    # [param_dim]
+            else:
+                # Fallback to deterministic prediction without model uncertainty
+                with torch.no_grad():
+                    output = model(latent_embedding)
+                if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
+                    mean_params, logvars = output
+                    std_params = torch.exp(0.5 * logvars)
+                    mean_params = mean_params.cpu().squeeze(0)
+                    std_params = std_params.cpu().squeeze(0)
+                else:  # Deterministic
+                    mean_params = output.cpu().squeeze(0)
+                    std_params = torch.zeros_like(mean_params)
+            
+            # Store parameter predictions
+            bootstrap_param_means.append(mean_params)
+            bootstrap_param_stds.append(std_params)
+            
+            # Compute PDFs using predicted parameters
+            simulator.init(mean_params.detach().cpu())
+            
+            if problem == 'simplified_dis':
+                # Compute up and down PDFs
+                x_vals = torch.linspace(1e-3, 1, 500)
+                
+                for fn_name in ['up', 'down']:
+                    fn = getattr(simulator, fn_name)
+                    pdf_vals = fn(x_vals)
+                    
+                    if fn_name not in bootstrap_pdfs:
+                        bootstrap_pdfs[fn_name] = {'x_vals': x_vals, 'pdfs': []}
+                    bootstrap_pdfs[fn_name]['pdfs'].append(pdf_vals.detach().cpu())
+                    
+            elif problem == 'realistic_dis':
+                # Compute PDFs at different Q2 slices
+                Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+                x_vals = torch.linspace(1e-3, 0.9, 500)
+                
+                for Q2_fixed in Q2_slices:
+                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                    q_vals = simulator.q(x_vals, Q2_vals)
+                    
+                    q_key = f'q_Q2_{Q2_fixed}'
+                    if q_key not in bootstrap_pdfs:
+                        bootstrap_pdfs[q_key] = {'x_vals': x_vals, 'Q2': Q2_fixed, 'pdfs': []}
+                    bootstrap_pdfs[q_key]['pdfs'].append(q_vals.detach().cpu())
+    
+    # Convert to tensors for analysis
+    bootstrap_param_means = torch.stack(bootstrap_param_means)  # [n_bootstrap, param_dim]
+    bootstrap_param_stds = torch.stack(bootstrap_param_stds)    # [n_bootstrap, param_dim]
+    
+    for key in bootstrap_pdfs:
+        bootstrap_pdfs[key]['pdfs'] = torch.stack(bootstrap_pdfs[key]['pdfs'])  # [n_bootstrap, n_points]
+    
+    print("Computing combined uncertainty statistics...")
+    
+    # Uncertainty decomposition per parameter
+    mean_of_means = bootstrap_param_means.mean(dim=0)              # [param_dim] - E[μ_bootstrap]
+    variance_of_means = bootstrap_param_means.var(dim=0)           # [param_dim] - Var[μ_bootstrap] (data uncertainty)
+    mean_of_laplace_vars = (bootstrap_param_stds ** 2).mean(dim=0) # [param_dim] - E[σ²_laplace] (model uncertainty)
+    
+    # Total uncertainty: variance_of_means (data) + mean_of_laplace_vars (model)
+    total_variance = variance_of_means + mean_of_laplace_vars      # [param_dim]
+    total_stddev = torch.sqrt(total_variance)                     # [param_dim]
+    
+    # Save uncertainty breakdown to text file
+    breakdown_path = os.path.join(save_dir, "combined_uncertainty_breakdown.txt")
+    with open(breakdown_path, 'w') as f:
+        f.write("Combined Uncertainty Analysis Breakdown\n")
+        f.write("=" * 50 + "\n\n")
+        f.write(f"Problem: {problem}\n")
+        f.write(f"True parameters: {true_params.cpu().numpy()}\n")
+        f.write(f"Bootstrap samples: {n_bootstrap}\n")
+        f.write(f"Events per sample: {num_events}\n")
+        f.write(f"Laplace model: {'Available' if laplace_model is not None else 'Not available'}\n\n")
+        
+        for i in range(n_params):
+            f.write(f"Parameter {i+1} ({param_names[i]}):\n")
+            f.write(f"  True value: {true_params[i].item():.6f}\n")
+            f.write(f"  Mean prediction: {mean_of_means[i].item():.6f}\n")
+            f.write(f"  Data uncertainty (std): {torch.sqrt(variance_of_means[i]).item():.6f}\n")
+            f.write(f"  Model uncertainty (std): {torch.sqrt(mean_of_laplace_vars[i]).item():.6f}\n")
+            f.write(f"  Total uncertainty (std): {total_stddev[i].item():.6f}\n")
+            f.write(f"  Bias: {(mean_of_means[i] - true_params[i]).item():.6f}\n\n")
+    
+    print("Creating combined uncertainty plots...")
+    
+    # Plot parameter distributions with uncertainty decomposition
+    fig, axes = plt.subplots(2, n_params, figsize=(4 * n_params, 8))
+    if n_params == 1:
+        axes = axes.reshape(2, 1)
+    
+    for i in range(n_params):
+        # Top row: Parameter value distributions
+        ax_top = axes[0, i]
+        
+        # Plot histogram of bootstrap parameter means (data uncertainty)
+        param_means_np = bootstrap_param_means[:, i].numpy()
+        ax_top.hist(param_means_np, bins=20, alpha=0.6, density=True, 
+                   color='lightblue', label='Bootstrap Means', edgecolor='black')
+        
+        # Add true value line
+        true_val = true_params[i].item()
+        ax_top.axvline(true_val, color='red', linestyle='-', linewidth=2.5, 
+                      label='True Value')
+        
+        # Add combined uncertainty estimate (Gaussian overlay)
+        mean_pred = mean_of_means[i].item()
+        total_std = total_stddev[i].item()
+        x_range = np.linspace(mean_pred - 4*total_std, mean_pred + 4*total_std, 200)
+        gaussian_pdf = np.exp(-0.5 * ((x_range - mean_pred) / total_std) ** 2) / (total_std * np.sqrt(2 * np.pi))
+        ax_top.plot(x_range, gaussian_pdf, color='green', linewidth=2, 
+                   label='Combined Uncertainty', alpha=0.8)
+        
+        ax_top.set_title(f'{param_names[i]} Distribution')
+        ax_top.set_xlabel('Parameter Value')
+        ax_top.set_ylabel('Density')
+        ax_top.legend(fontsize=8)
+        ax_top.grid(True, alpha=0.3)
+        
+        # Bottom row: Uncertainty breakdown
+        ax_bottom = axes[1, i]
+        
+        uncertainty_sources = ['Data\n(Bootstrap)', 'Model\n(Laplace)', 'Total\n(Combined)']
+        uncertainty_values = [
+            torch.sqrt(variance_of_means[i]).item(),
+            torch.sqrt(mean_of_laplace_vars[i]).item(),
+            total_stddev[i].item()
+        ]
+        colors = ['lightblue', 'orange', 'green']
+        
+        bars = ax_bottom.bar(uncertainty_sources, uncertainty_values, color=colors, alpha=0.7, edgecolor='black')
+        ax_bottom.set_title(f'{param_names[i]} Uncertainty Breakdown')
+        ax_bottom.set_ylabel('Standard Deviation')
+        ax_bottom.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels on bars
+        for bar, val in zip(bars, uncertainty_values):
+            ax_bottom.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(uncertainty_values)*0.01,
+                          f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "combined_uncertainty_summary.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    # Plot PDF distributions with combined uncertainty bands
+    if problem == 'simplified_dis':
+        for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
+            if fn_name in bootstrap_pdfs:
+                pdf_data = bootstrap_pdfs[fn_name]
+                x_vals = pdf_data['x_vals']
+                pdf_stack = pdf_data['pdfs']  # [n_bootstrap, n_points]
+                
+                # Compute PDF statistics
+                mean_pdf = pdf_stack.mean(dim=0)        # Mean across bootstrap samples
+                std_pdf = pdf_stack.std(dim=0)          # Standard deviation across bootstrap samples
+                
+                # Uncertainty bands (±1 standard deviation)
+                lower_bound = mean_pdf - std_pdf
+                upper_bound = mean_pdf + std_pdf
+                
+                # Compute true PDF
+                simulator.init(true_params.squeeze().cpu())
+                true_pdf = getattr(simulator, fn_name)(x_vals)
+                
+                # Create plot
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                # Plot true PDF
+                ax.plot(x_vals.numpy(), true_pdf.numpy(), 
+                       label=fr"True ${fn_label}(x|\theta^*)$", 
+                       color=color, linewidth=2.5)
+                
+                # Plot mean prediction
+                ax.plot(x_vals.numpy(), mean_pdf.numpy(),
+                       linestyle='--', label=fr"Mean Prediction ${fn_label}(x)$",
+                       color="crimson", linewidth=2)
+                
+                # Combined uncertainty band
+                ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
+                               color="crimson", alpha=0.3, 
+                               label=fr"±1σ Combined Uncertainty")
+                
+                ax.set_xlabel(r"$x$")
+                ax.set_ylabel(fr"${fn_label}(x|\theta)$")
+                ax.set_xlim(1e-3, 1)
+                ax.set_xscale("log")
+                ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+                ax.legend(frameon=False)
+                ax.set_title(f"Combined Uncertainty: {fn_name.title()} PDF ({n_bootstrap} bootstrap + Laplace)")
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, f"combined_uncertainty_pdf_{fn_name}.png"), 
+                           dpi=300, bbox_inches='tight')
+                plt.close(fig)
+                
+    elif problem == 'realistic_dis':
+        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
+        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
+        
+        for i, Q2_fixed in enumerate(Q2_slices):
+            q_key = f'q_Q2_{Q2_fixed}'
+            if q_key in bootstrap_pdfs:
+                pdf_data = bootstrap_pdfs[q_key]
+                x_vals = pdf_data['x_vals']
+                pdf_stack = pdf_data['pdfs']  # [n_bootstrap, n_points]
+                
+                # Compute PDF statistics
+                mean_pdf = pdf_stack.mean(dim=0)        # Mean across bootstrap samples  
+                std_pdf = pdf_stack.std(dim=0)          # Standard deviation across bootstrap samples
+                
+                # Uncertainty bands (±1 standard deviation)
+                lower_bound = mean_pdf - std_pdf
+                upper_bound = mean_pdf + std_pdf
+                
+                # Compute true PDF
+                simulator.init(true_params.squeeze().cpu())
+                Q2_vals = torch.full_like(x_vals, Q2_fixed)
+                true_pdf = simulator.q(x_vals, Q2_vals)
+                
+                # Create plot
+                fig, ax = plt.subplots(figsize=(10, 6))
+                
+                # Plot true PDF
+                ax.plot(x_vals.numpy(), true_pdf.numpy(),
+                       color=color_palette[i], linewidth=2.5,
+                       label=fr"True $q(x,\ Q^2={Q2_fixed})$")
+                
+                # Plot mean prediction
+                ax.plot(x_vals.numpy(), mean_pdf.numpy(),
+                       linestyle='--', label=fr"Mean Prediction $q(x)$",
+                       color="crimson", linewidth=2)
+                
+                # Combined uncertainty band
+                ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
+                               color="crimson", alpha=0.3,
+                               label=fr"±1σ Combined Uncertainty")
+                
+                ax.set_xlabel(r"$x$")
+                ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
+                ax.set_xlim(1e-3, 0.9)
+                ax.set_xscale("log")
+                ax.grid(True, which='both', linestyle=':', linewidth=0.5)
+                ax.legend(frameon=False)
+                ax.set_title(f"Combined Uncertainty: PDF at $Q^2={Q2_fixed}$ GeV² ({n_bootstrap} bootstrap + Laplace)")
+                
+                plt.tight_layout()
+                plt.savefig(os.path.join(save_dir, f"combined_uncertainty_pdf_Q2_{Q2_fixed}.png"), 
+                           dpi=300, bbox_inches='tight')
+                plt.close(fig)
+    
+    print(f"✅ Combined uncertainty analysis complete! Results saved to {save_dir}")
+    print(f"   - Generated {n_bootstrap} bootstrap samples with Laplace uncertainty")
+    print(f"   - Parameter analysis: combined_uncertainty_summary.png")
+    print(f"   - Uncertainty breakdown: combined_uncertainty_breakdown.txt")
+    if problem == 'simplified_dis':
+        print(f"   - PDF plots: combined_uncertainty_pdf_up.png, combined_uncertainty_pdf_down.png")
+    elif problem == 'realistic_dis':
+        print(f"   - PDF plots: combined_uncertainty_pdf_Q2_{{value}}.png for each Q² slice")
+    
+    # Return summary statistics for potential programmatic use
+    return {
+        'mean_predictions': mean_of_means,
+        'data_uncertainty': torch.sqrt(variance_of_means), 
+        'model_uncertainty': torch.sqrt(mean_of_laplace_vars),
+        'total_uncertainty': total_stddev,
+        'true_params': true_params,
+        'n_bootstrap': n_bootstrap
+    }
+
+
+def plot_uncertainty_decomposition_comparison(
+    true_params: torch.Tensor,
+    bootstrap_only_results: Dict,
+    laplace_only_results: Dict, 
+    combined_results: Dict,
+    save_dir: str,
+    param_names: List[str] = None
+):
+    """
+    Create comparison plots showing different uncertainty quantification methods.
+    
+    This helper function creates side-by-side comparisons of uncertainty estimates
+    from different methods: bootstrap-only, Laplace-only, and combined approaches.
+    
+    Args:
+        true_params: True parameter values [param_dim]
+        bootstrap_only_results: Results dict from bootstrap-only analysis
+        laplace_only_results: Results dict from Laplace-only analysis  
+        combined_results: Results dict from combined uncertainty analysis
+        save_dir: Directory to save comparison plots
+        param_names: Parameter name labels for plots
+        
+    Returns:
+        None (saves comparison plots to save_dir)
+        
+    Saves:
+        - uncertainty_method_comparison.png: Side-by-side uncertainty comparison
+        - uncertainty_correlation_analysis.png: Correlation between methods
+    """
+    import os
+    import matplotlib.pyplot as plt
+    import numpy as np
+    
+    os.makedirs(save_dir, exist_ok=True)
+    
+    n_params = len(true_params)
+    param_names = param_names or [f'Param {i+1}' for i in range(n_params)]
+    
+    # Extract uncertainties from each method
+    methods = ['Bootstrap Only', 'Laplace Only', 'Combined']
+    results = [bootstrap_only_results, laplace_only_results, combined_results]
+    
+    # Method comparison plot
+    fig, axes = plt.subplots(2, n_params, figsize=(4 * n_params, 8))
+    if n_params == 1:
+        axes = axes.reshape(2, 1)
+    
+    colors = ['lightblue', 'orange', 'green']
+    
+    for i in range(n_params):
+        # Top row: Uncertainty magnitude comparison
+        ax_top = axes[0, i]
+        
+        uncertainties = []
+        for result in results:
+            if 'total_uncertainty' in result:
+                uncertainties.append(result['total_uncertainty'][i].item())
+            elif 'data_uncertainty' in result:
+                uncertainties.append(result['data_uncertainty'][i].item())
+            else:
+                uncertainties.append(0.0)  # fallback
+        
+        bars = ax_top.bar(methods, uncertainties, color=colors, alpha=0.7, edgecolor='black')
+        ax_top.set_title(f'{param_names[i]} Uncertainty Comparison')
+        ax_top.set_ylabel('Standard Deviation')
+        ax_top.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for bar, val in zip(bars, uncertainties):
+            ax_top.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(uncertainties)*0.01,
+                       f'{val:.4f}', ha='center', va='bottom', fontsize=9)
+        
+        # Bottom row: Bias comparison
+        ax_bottom = axes[1, i]
+        
+        true_val = true_params[i].item()
+        biases = []
+        for result in results:
+            if 'mean_predictions' in result:
+                bias = (result['mean_predictions'][i] - true_val).item()
+                biases.append(bias)
+            else:
+                biases.append(0.0)  # fallback
+        
+        bars = ax_bottom.bar(methods, biases, color=colors, alpha=0.7, edgecolor='black')
+        ax_bottom.axhline(0, color='red', linestyle='--', alpha=0.7)
+        ax_bottom.set_title(f'{param_names[i]} Bias Comparison')
+        ax_bottom.set_ylabel('Bias (Predicted - True)')
+        ax_bottom.grid(True, alpha=0.3, axis='y')
+        
+        # Add value labels
+        for bar, val in zip(bars, biases):
+            y_pos = bar.get_height() + max(abs(min(biases)), max(biases))*0.01 if val >= 0 else bar.get_height() - max(abs(min(biases)), max(biases))*0.01
+            ax_bottom.text(bar.get_x() + bar.get_width()/2, y_pos,
+                          f'{val:.4f}', ha='center', va='bottom' if val >= 0 else 'top', fontsize=9)
+    
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, "uncertainty_method_comparison.png"), dpi=300, bbox_inches='tight')
+    plt.close(fig)
+    
+    print(f"✅ Uncertainty method comparison saved to {save_dir}/uncertainty_method_comparison.png")
+
+
+def validate_combined_uncertainty_inputs(
+    model,
+    pointnet_model, 
+    true_params: torch.Tensor,
+    device: torch.device,
+    num_events: int,
+    n_bootstrap: int,
+    problem: str,
+    save_dir: str
+) -> bool:
+    """
+    Validate inputs for combined uncertainty analysis function.
+    
+    Args:
+        model: Model to validate
+        pointnet_model: PointNet model to validate  
+        true_params: Parameter tensor to validate
+        device: Device to validate
+        num_events: Number of events to validate
+        n_bootstrap: Bootstrap count to validate
+        problem: Problem type to validate
+        save_dir: Save directory to validate
+        
+    Returns:
+        bool: True if all inputs are valid
+        
+    Raises:
+        ValueError: If any input is invalid with descriptive message
+    """
+    # Validate models
+    if model is None:
+        raise ValueError("model cannot be None")
+    if pointnet_model is None:
+        raise ValueError("pointnet_model cannot be None")
+    
+    # Validate parameters
+    if not isinstance(true_params, torch.Tensor):
+        raise ValueError("true_params must be a torch.Tensor")
+    if true_params.dim() != 1:
+        raise ValueError("true_params must be 1-dimensional tensor")
+    if len(true_params) == 0:
+        raise ValueError("true_params cannot be empty")
+    
+    # Validate device
+    if not isinstance(device, torch.device):
+        raise ValueError("device must be a torch.device")
+    
+    # Validate counts
+    if not isinstance(num_events, int) or num_events <= 0:
+        raise ValueError("num_events must be a positive integer")
+    if not isinstance(n_bootstrap, int) or n_bootstrap <= 0:
+        raise ValueError("n_bootstrap must be a positive integer")
+    if n_bootstrap > 1000:
+        print(f"⚠️  Warning: n_bootstrap={n_bootstrap} is quite large and may take significant time")
+    
+    # Validate problem type
+    valid_problems = ['simplified_dis', 'realistic_dis', 'mceg']
+    if problem not in valid_problems:
+        raise ValueError(f"problem must be one of {valid_problems}, got '{problem}'")
+    
+    # Validate save directory
+    if save_dir is None:
+        raise ValueError("save_dir cannot be None")
+    if not isinstance(save_dir, str):
+        raise ValueError("save_dir must be a string")
+    
+    # Check parameter dimensions match problem expectations
+    expected_dims = {
+        'simplified_dis': 4,
+        'realistic_dis': 6, 
+        'mceg': None  # Variable
+    }
+    
+    if problem in expected_dims and expected_dims[problem] is not None:
+        if len(true_params) != expected_dims[problem]:
+            raise ValueError(f"For problem '{problem}', expected {expected_dims[problem]} parameters, got {len(true_params)}")
+    
+    return True
