@@ -80,3 +80,8 @@ sbi-logs/
 *.out
 simformer/
 mceg4dis/
+
+# Precomputed data files - exclude large datasets
+# Keep demo files for testing, exclude large production datasets  
+precomputed_data/*_ns[0-9][0-9][0-9][0-9]*.npz
+precomputed_data/*_ns[0-9][0-9][0-9][0-9][0-9]*.npz
