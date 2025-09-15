@@ -4,7 +4,38 @@ This repository contains code for an AI-driven approach for learning parameters 
 
 Training takes place in two stages. First, a PointNet-style embedding of simulated data is learned through contrastive learning. The idea here is to learn an embedding which preserves distances in the space of event data. Then, an embedding-to-parameters network is trained.
 
+## NEW: Precomputed Data Pipeline
+
+The repository now supports **precomputed datasets** for faster, more reproducible training:
+
+```bash
+# Generate precomputed datasets
+python generate_precomputed_data.py --problems gaussian simplified_dis --num_samples 10000
+
+# Train with precomputed data (faster, reproducible)
+python end_to_end.py --problem gaussian --use_precomputed --precomputed_data_dir precomputed_data
+
+# Train with on-the-fly generation (original method, still supported)
+python end_to_end.py --problem gaussian --num_samples 10000 --num_events 1000
+```
+
+**Benefits of precomputed data:**
+- ✅ **Faster training**: No simulation overhead during training iterations
+- ✅ **Reproducible**: Identical datasets across experiments
+- ✅ **Debuggable**: Fixed data enables easier debugging
+- ✅ **All problems supported**: gaussian, simplified_dis, realistic_dis, mceg
+- ✅ **Distributed training**: Automatic data splitting across ranks
+
+See [PRECOMPUTED_DATA_README.md](PRECOMPUTED_DATA_README.md) for detailed documentation.
+
 ## How to train:
+
+### Option 1: With Precomputed Data (Recommended)
+
+1. **Generate datasets**: `python generate_precomputed_data.py --problems gaussian simplified_dis --num_samples 10000`
+2. **Train models**: `python end_to_end.py --problem gaussian --use_precomputed`
+
+### Option 2: Original On-the-Fly Method
 
 1. Run `python cl.py`. This will automatically save the PointNet embedding model.
 2. Run `python PDF_learning.py` (basic) or `python PDF_learning_UQ.py` (with Laplace uncertainty). This will automatically save the embedding-to-parameters model.

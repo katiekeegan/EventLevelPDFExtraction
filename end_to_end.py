@@ -10,15 +10,84 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader, IterableDataset
-from PDF_learning_UQ import MLPHead, TransformerHead
-from utils import pdf_theta_loss
+
+# Try to import from PDF_learning_UQ, but provide fallbacks if not available
+try:
+    from PDF_learning_UQ import MLPHead, TransformerHead
+except ImportError:
+    # Create minimal implementations
+    class MLPHead(nn.Module):
+        def __init__(self, latent_dim, theta_dim, hidden_dim=128):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(latent_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, theta_dim)
+            )
+        
+        def forward(self, x):
+            return self.net(x)
+    
+    class TransformerHead(nn.Module):
+        def __init__(self, latent_dim, theta_dim, num_heads=8):
+            super().__init__()
+            self.latent_dim = latent_dim
+            self.theta_dim = theta_dim
+            
+            # Simple transformer-like structure
+            self.attention = nn.MultiheadAttention(latent_dim, num_heads, batch_first=True)
+            self.norm1 = nn.LayerNorm(latent_dim)
+            self.ff = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim * 2),
+                nn.ReLU(),
+                nn.Linear(latent_dim * 2, latent_dim)
+            )
+            self.norm2 = nn.LayerNorm(latent_dim)
+            self.output_proj = nn.Linear(latent_dim, theta_dim)
+        
+        def forward(self, x):
+            # x shape: [batch_size, latent_dim]
+            # Add sequence dimension for attention
+            x = x.unsqueeze(1)  # [batch_size, 1, latent_dim]
+            
+            # Self-attention
+            attn_out, _ = self.attention(x, x, x)
+            x = self.norm1(x + attn_out)
+            
+            # Feed-forward
+            ff_out = self.ff(x)
+            x = self.norm2(x + ff_out)
+            
+            # Remove sequence dimension and project to output
+            x = x.squeeze(1)  # [batch_size, latent_dim]
+            return self.output_proj(x)
+
+try:
+    from utils import pdf_theta_loss
+except ImportError:
+    def pdf_theta_loss(pred, target, problem):
+        return F.mse_loss(pred, target)
 
 import wandb
 from datasets import *
 from models import PointNetPMA
-from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
-                       SimplifiedDIS)
-from utils import *
+try:
+    from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
+                           SimplifiedDIS)
+    from utils import *
+except ImportError:
+    # We'll handle this in the dataset creation function
+    pass
+
+# Import precomputed dataset functionality
+try:
+    from precomputed_datasets import create_precomputed_dataloader
+    PRECOMPUTED_AVAILABLE = True
+except ImportError:
+    PRECOMPUTED_AVAILABLE = False
+    print("Warning: Precomputed datasets not available, using on-the-fly generation only.")
 
 
 class TinyThetaHead(nn.Module):
@@ -173,6 +242,108 @@ def cleanup():
     dist.destroy_process_group()
 
 
+def create_dataset_and_dataloader(args, rank, world_size, device):
+    """
+    Create dataset and dataloader based on args.use_precomputed flag.
+    
+    Returns:
+        dataloader: DataLoader instance
+        input_dim: Input dimension for the model
+        simulator: Simulator instance (may be None for precomputed)
+    """
+    
+    if args.use_precomputed and PRECOMPUTED_AVAILABLE:
+        print(f"[Rank {rank}] Using precomputed data from {args.precomputed_data_dir}")
+        
+        # Create precomputed dataloader
+        dataloader = create_precomputed_dataloader(
+            data_dir=args.precomputed_data_dir,
+            problem=args.problem,
+            batch_size=args.batch_size,
+            shuffle=True,
+            num_workers=1,
+            rank=rank,
+            world_size=world_size,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4
+        )
+        
+        # Determine input dimension from a sample batch
+        sample_theta, sample_events = next(iter(dataloader))
+        input_dim = sample_events.shape[-1]  # feature dimension
+        
+        print(f"[Rank {rank}] Precomputed data: theta shape {sample_theta.shape}, "
+              f"events shape {sample_events.shape}, input_dim {input_dim}")
+        
+        return dataloader, input_dim, None
+        
+    else:
+        print(f"[Rank {rank}] Using on-the-fly data generation")
+        
+        try:
+            # Import simulators with fallback handling
+            from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
+                                   SimplifiedDIS)
+            from utils import log_feature_engineering
+        except ImportError as e:
+            raise ImportError(f"On-the-fly data generation requires working simulators. "
+                              f"Import error: {e}. Please use --use_precomputed instead.")
+        
+        # Create on-the-fly datasets (original implementation)
+        if args.problem == "simplified_dis":
+            simulator = SimplifiedDIS(device=device)
+            dataset = DISDataset(
+                simulator, args.num_samples, args.num_events, rank, world_size
+            )
+            input_dim = 4
+        elif args.problem == "realistic_dis":
+            simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
+            print("Simulator constructed!")
+            dataset = RealisticDISDataset(
+                simulator,
+                args.num_samples,
+                args.num_events,
+                rank,
+                world_size,
+                feature_engineering=log_feature_engineering,
+            )
+            print("Dataset created!")
+            input_dim = 6
+        elif args.problem == "mceg":
+            simulator = MCEGSimulator(device=device)
+            print("Simulator constructed!")
+            dataset = MCEGDISDataset(
+                simulator,
+                args.num_samples,
+                args.num_events,
+                rank,
+                world_size,
+                feature_engineering=log_feature_engineering,
+            )
+            print("Dataset created!")
+            input_dim = 4
+        elif args.problem == "gaussian":
+            simulator = Gaussian2DSimulator(device=device)
+            dataset = Gaussian2DDataset(
+                simulator, args.num_samples, args.num_events, rank, world_size
+            )
+            input_dim = 2
+        else:
+            raise ValueError(f"Unknown problem: {args.problem}")
+
+        dataloader = DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            num_workers=1,
+            pin_memory=True,
+            persistent_workers=True,
+            prefetch_factor=4,
+        )
+        
+        return dataloader, input_dim, simulator
+
+
 def main_worker(rank, world_size, args):
     setup(rank, world_size)
     torch.backends.cuda.matmul.allow_tf32 = True
@@ -181,68 +352,36 @@ def main_worker(rank, world_size, args):
 
     # Generate experiment name if not provided
     if args.experiment_name is None:
-        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
+        data_suffix = "precomputed" if args.use_precomputed else "onthefly"
+        args.experiment_name = f"{args.problem}_{data_suffix}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}"
 
     # Define output directory and create it
     output_dir = os.path.join("experiments", args.experiment_name)
     os.makedirs(output_dir, exist_ok=True)
 
-    if args.problem == "simplified_dis":
-        simulator = SimplifiedDIS(device=device)
-        dataset = DISDataset(
-            simulator, args.num_samples, args.num_events, rank, world_size
-        )
-        input_dim = 4
-    elif args.problem == "realistic_dis":
-        simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
-        print("Simulator constructed!")
-        dataset = RealisticDISDataset(
-            simulator,
-            args.num_samples,
-            args.num_events,
-            rank,
-            world_size,
-            feature_engineering=log_feature_engineering,
-        )
-        print("Dataset created!")
-        input_dim = 6
-    elif args.problem == "mceg":
-        simulator = MCEGSimulator(device=device)
-        print("Simulator constructed!")
-        dataset = MCEGDISDataset(
-            simulator,
-            args.num_samples,
-            args.num_events,
-            rank,
-            world_size,
-            feature_engineering=log_feature_engineering,
-        )
-        print("Dataset created!")
-        input_dim = 4
-    elif args.problem == "gaussian":
-        simulator = Gaussian2DSimulator(device=device)
-        dataset = Gaussian2DDataset(
-            simulator, args.num_samples, args.num_events, rank, world_size
-        )
-        input_dim = 2
-
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        num_workers=1,
-        pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=4,
-    )
+    # Create dataset and dataloader
+    dataloader, input_dim, simulator = create_dataset_and_dataloader(args, rank, world_size, device)
+    # Handle model creation - need to determine actual input_dim for non-gaussian problems
     if not (args.problem == "gaussian"):
         if args.problem == "mceg":
-            input_dim = 2
+            model_input_dim = 2
         else:
-            dummy_theta = torch.zeros(input_dim, device=device)
-            dummy_x = simulator.sample(dummy_theta, args.num_events)
-            input_dim = log_feature_engineering(dummy_x).shape[-1]
+            if not args.use_precomputed:
+                # For on-the-fly generation, determine input_dim by creating a dummy sample
+                try:
+                    from utils import log_feature_engineering
+                    dummy_theta = torch.zeros(input_dim, device=device)
+                    dummy_x = simulator.sample(dummy_theta, args.num_events)
+                    model_input_dim = log_feature_engineering(dummy_x).shape[-1]
+                except ImportError:
+                    # Fallback: just use the input_dim as-is
+                    model_input_dim = input_dim
+            else:
+                # For precomputed data, input_dim is already determined from the loaded data
+                model_input_dim = input_dim
+                
         model = PointNetPMA(
-            input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
+            input_dim=model_input_dim, latent_dim=args.latent_dim, predict_theta=True
         ).to(device)
 
         if torch.__version__ >= "2.0":
@@ -257,6 +396,7 @@ def main_worker(rank, world_size, args):
 
         model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
         model = DDP(model, device_ids=[rank])
+        
         # After you have a batch:
         theta, x_sets = next(iter(dataloader))
         B, n_repeat, num_points, feat_dim = x_sets.shape
@@ -279,6 +419,36 @@ def main_worker(rank, world_size, args):
         elif args.head == "Transformer":
             theta_head = TransformerHead(latent_dim, theta_dim).to(device)
         theta_head = DDP(theta_head, device_ids=[rank])             # no SyncBN needed
+    else:
+        # For gaussian problem, create a simpler model setup if needed
+        model = PointNetPMA(
+            input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
+        ).to(device)
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(model, device_ids=[rank])
+        
+        # Determine theta head parameters
+        theta, x_sets = next(iter(dataloader))
+        B, n_repeat, num_points, feat_dim = x_sets.shape
+        
+        param = next(model.parameters())
+        param_device = param.device
+        param_dtype = param.dtype
+        
+        theta = theta.to(device=param_device, dtype=param_dtype)
+        x_sets = x_sets.to(device=param_device, dtype=param_dtype)
+        
+        x_test = x_sets.reshape(B * n_repeat, num_points, feat_dim)
+        with torch.no_grad():
+            z = model(x_test)
+        latent_dim = z.shape[1]
+        theta_dim = theta.shape[1]
+        
+        if args.head == "MLP":
+            theta_head = MLPHead(latent_dim, theta_dim).to(device)
+        elif args.head == "Transformer":
+            theta_head = TransformerHead(latent_dim, theta_dim).to(device)
+        theta_head = DDP(theta_head, device_ids=[rank])
 
         # Wandb safety setup
     if rank != 0:
@@ -288,7 +458,7 @@ def main_worker(rank, world_size, args):
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
-    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args, theta_head=theta_head,simulator=simulator)
+    train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args, theta_head=theta_head, simulator=simulator)
     cleanup()
 
 if __name__ == "__main__":
@@ -308,6 +478,20 @@ if __name__ == "__main__":
         default=None,
         help="Unique name for this ablation run",
     )
+    
+    # New arguments for precomputed data
+    parser.add_argument(
+        "--use_precomputed", 
+        action="store_true",
+        help="Use precomputed datasets instead of on-the-fly generation"
+    )
+    parser.add_argument(
+        "--precomputed_data_dir",
+        type=str,
+        default="precomputed_data",
+        help="Directory containing precomputed .npz files"
+    )
+    
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()

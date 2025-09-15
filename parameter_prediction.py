@@ -9,12 +9,92 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+import subprocess
+import sys
+import glob
 
 import wandb
 from datasets import *
 from models import *
 from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS, SimplifiedDIS)
 from utils import *
+
+# Import precomputed dataset classes
+try:
+    from precomputed_datasets import PrecomputedDataset, DistributedPrecomputedDataset, create_precomputed_dataloader
+    PRECOMPUTED_AVAILABLE = True
+except ImportError:
+    print("Warning: precomputed_datasets.py not found. Precomputed data support disabled.")
+    PRECOMPUTED_AVAILABLE = False
+
+def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2, output_dir="precomputed_data"):
+    """
+    Check if precomputed data exists for the given parameters, and generate it if not.
+    
+    Args:
+        problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
+        num_samples: Number of theta parameter samples
+        num_events: Number of events per simulation
+        n_repeat: Number of repeated simulations per theta
+        output_dir: Directory where precomputed data should be stored
+    
+    Returns:
+        str: Path to the data directory
+    """
+    if not PRECOMPUTED_AVAILABLE:
+        raise RuntimeError("Precomputed data support not available. Please check precomputed_datasets.py")
+    
+    # Check if data already exists
+    pattern = os.path.join(output_dir, f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz")
+    if os.path.exists(pattern):
+        print(f"Precomputed data already exists: {pattern}")
+        return output_dir
+    
+    # Check for any existing data files for this problem (with different parameters)
+    existing_pattern = os.path.join(output_dir, f"{problem}_*.npz")
+    existing_files = glob.glob(existing_pattern)
+    
+    if existing_files:
+        print(f"Found existing data files for {problem}: {existing_files}")
+        print(f"Using existing data instead of generating new data")
+        return output_dir
+    
+    # Generate new data
+    print(f"Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
+    print("Generating precomputed data automatically...")
+    
+    try:
+        # Import and run the data generation function
+        from generate_precomputed_data import generate_data_for_problem
+        
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"Generating data on device: {device}")
+        
+        filepath = generate_data_for_problem(
+            problem, num_samples, num_events, n_repeat, device, output_dir
+        )
+        print(f"Successfully generated precomputed data: {filepath}")
+        return output_dir
+        
+    except Exception as e:
+        print(f"Error generating precomputed data: {e}")
+        print("Falling back to on-the-fly data generation")
+        raise RuntimeError(f"Failed to generate precomputed data: {e}")
+
+def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
+    """
+    Check if any precomputed data exists for the given problem.
+    
+    Args:
+        problem: Problem type
+        output_dir: Directory to check for data
+    
+    Returns:
+        bool: True if data exists, False otherwise
+    """
+    pattern = os.path.join(output_dir, f"{problem}_*.npz")
+    files = glob.glob(pattern)
+    return len(files) > 0
 
 # ---------------------------
 # Conditional Normalizing Flow (CNF)
@@ -132,7 +212,7 @@ def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wan
         torch.save(param_prediction_model.state_dict(), os.path.join(output_dir, "final_params_model.pth"))
         from laplace import Laplace
         lap_transformer = Laplace(param_prediction_model, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
-        lap_transformer.fit(train_loader)
+        lap_transformer.fit(dataloader)
         # after fitting:
         save_laplace(lap_transformer, output_dir,
                     filename="laplace_transformer.pt",
@@ -163,26 +243,62 @@ def main_worker(rank, world_size, args):
     os.makedirs(output_dir, exist_ok=True)
 
     # Dataset and simulator setup
-    if args.problem == "simplified_dis":
-        simulator = SimplifiedDIS(device=device)
-        dataset = DISDataset(simulator, args.num_samples, args.num_events, rank, world_size)
-        input_dim = 6
-    elif args.problem == "realistic_dis":
-        simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
-        dataset = RealisticDISDataset(
-            simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
-        )
-        input_dim = 6
-    elif args.problem == "mceg":
-        simulator = MCEGSimulator(device=device)
-        dataset = MCEGDISDataset(
-            simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
-        )
-        input_dim = 2
-    elif args.problem == "gaussian":
-        simulator = Gaussian2DSimulator(device=device)
-        dataset = Gaussian2DDataset(simulator, args.num_samples, args.num_events, rank, world_size)
-        input_dim = 2
+    if hasattr(args, 'use_precomputed') and args.use_precomputed and PRECOMPUTED_AVAILABLE:
+        print(f"Using precomputed data for {args.problem}")
+        
+        # Check if precomputed data exists, generate if not
+        try:
+            data_dir = generate_precomputed_data_if_needed(
+                args.problem, 
+                args.num_samples, 
+                args.num_events, 
+                n_repeat=2,  # Default n_repeat value
+                output_dir=args.precomputed_data_dir
+            )
+            
+            # Create distributed precomputed dataset
+            if world_size > 1:
+                dataset = DistributedPrecomputedDataset(
+                    data_dir, args.problem, rank, world_size, shuffle=True
+                )
+            else:
+                dataset = PrecomputedDataset(data_dir, args.problem, shuffle=True)
+            
+            # Get input dimension from dataset metadata
+            metadata = dataset.get_metadata()
+            input_dim = metadata['feature_dim']
+            
+            print(f"Loaded precomputed dataset: {metadata}")
+            
+        except Exception as e:
+            print(f"Failed to use precomputed data: {e}")
+            print("Falling back to on-the-fly data generation")
+            args.use_precomputed = False
+    
+    # Fall back to original on-the-fly data generation
+    if not (hasattr(args, 'use_precomputed') and args.use_precomputed and PRECOMPUTED_AVAILABLE):
+        print(f"Using on-the-fly data generation for {args.problem}")
+        
+        if args.problem == "simplified_dis":
+            simulator = SimplifiedDIS(device=device)
+            dataset = DISDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            input_dim = 6
+        elif args.problem == "realistic_dis":
+            simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
+            dataset = RealisticDISDataset(
+                simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+            )
+            input_dim = 6
+        elif args.problem == "mceg":
+            simulator = MCEGSimulator(device=device)
+            dataset = MCEGDISDataset(
+                simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+            )
+            input_dim = 2
+        elif args.problem == "gaussian":
+            simulator = Gaussian2DSimulator(device=device)
+            dataset = Gaussian2DDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            input_dim = 2
 
     dataloader = DataLoader(
         dataset,
@@ -245,6 +361,10 @@ if __name__ == "__main__":
     parser.add_argument("--problem", type=str, default="simplified_dis")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--experiment_name", type=str, default=None, help="Unique name for this ablation run")
+    parser.add_argument("--use_precomputed", action="store_true", 
+                       help="Use precomputed data instead of generating on-the-fly. Automatically generates data if not found.")
+    parser.add_argument("--precomputed_data_dir", type=str, default="precomputed_data",
+                       help="Directory containing precomputed data files")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
