@@ -239,18 +239,66 @@ def plot_params_distribution_single(
     problem='simplified_dis'
 ):
     """
-    Plot parameter distributions using analytic Laplace uncertainty propagation.
+    Create publication-ready parameter distribution plots with analytic Laplace uncertainty propagation.
     
+    This function generates beautiful, clear distribution plots showing posterior uncertainty
+    over model parameters, with optional comparison to simulation-based inference (SBI) methods.
+    
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module  
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values for comparison
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples (ignored when using analytic uncertainty)
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    compare_with_sbi : bool
+        Whether to include SBI posterior comparisons
+    sbi_posteriors : list of torch.Tensor, optional
+        SBI posterior samples for comparison
+    sbi_labels : list of str, optional
+        Labels for SBI methods
+    save_path : str
+        Path to save the plot
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        
+    Returns:
+    --------
+    None
+        Saves the publication-ready plot to save_path
+        
+    Notes:
+    ------
     When laplace_model is provided, uses analytic uncertainty propagation via 
     delta method instead of Monte Carlo sampling for improved speed and accuracy.
+    The resulting plots feature:
+    - Colorblind-friendly color palette
+    - Clear mathematical notation in labels
+    - Professional typography and layout
+    - Proper uncertainty visualization with filled regions
+    - Comparison with true parameter values
     """
     model.eval()
     pointnet_model.eval()
+    
+    # Get simulators with fallback
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
     if problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
     else:
         simulator = SimplifiedDIS(torch.device('cpu'))
 
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -266,79 +314,155 @@ def plot_params_distribution_single(
         mean_params = mean_params.cpu().squeeze(0)
         std_params = std_params.cpu().squeeze(0)
         use_analytic = True
+        uncertainty_label = "Analytic (Laplace)"
     else:
         # Fallback to MC sampling for backward compatibility
         samples = get_gaussian_samples(model, latent_embedding, n_samples=n_mc, laplace_model=laplace_model).cpu()
+        mean_params = torch.mean(samples, dim=0)
+        std_params = torch.std(samples, dim=0)
         use_analytic = False
+        uncertainty_label = "Monte Carlo"
 
     n_params = true_params.size(0)
-    fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
+    
+    # Set parameter names with proper mathematical notation
+    if problem == 'simplified_dis':
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'realistic_dis':
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+    elif problem == 'mceg':
+        param_names = [r'$\mu_1$', r'$\mu_2$', r'$\sigma_1$', r'$\sigma_2$']
+    else:
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
+    
+    # Set up color palette
+    base_colors = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple'],
+                   COLORBLIND_COLORS['brown'], COLORBLIND_COLORS['pink']]
+    
+    # Create subplots with proper sizing
+    cols = min(n_params, 4)  # Max 4 columns
+    rows = (n_params + cols - 1) // cols  # Ceiling division
+    figsize = (5 * cols, 4 * rows)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
     if n_params == 1:
         axes = [axes]
+    elif rows == 1:
+        axes = list(axes)
+    else:
+        axes = axes.flatten()
+    
+    # Hide extra subplots if needed
+    for i in range(n_params, len(axes)):
+        axes[i].set_visible(False)
 
-    colors = ['skyblue', 'orange', 'green', 'purple', 'gray']
-    param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$'] if problem == 'simplified_dis' else [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
-
-    # Prepare data for plotting
-    all_samples = []
-    if not use_analytic:
-        all_samples = [samples]
+    # Prepare SBI data for proper color cycling
+    all_samples = [samples] if not use_analytic else []
+    all_labels = [uncertainty_label]
+    
     if compare_with_sbi and sbi_posteriors is not None:
-        all_samples.extend([s.detach().cpu() for s in sbi_posteriors])
+        all_samples.extend(sbi_posteriors)
+        if sbi_labels is not None:
+            all_labels.extend(sbi_labels)
+        else:
+            all_labels.extend([f'SBI Method {i+1}' for i in range(len(sbi_posteriors))])
 
     for i in range(n_params):
+        ax = axes[i]
+        
         if use_analytic:
-            # Plot analytic Gaussian distribution
+            # Plot analytic Gaussian distribution with enhanced aesthetics
             mu = mean_params[i].item()
             sigma = std_params[i].item()
             
-            # Create x range around the mean
-            x_range = 4 * sigma  # Show ±4 standard deviations
+            # Create x range around the mean (show ±4 standard deviations)
+            x_range = max(4 * sigma, 0.1 * abs(mu))  # Ensure minimum range
             x_vals = torch.linspace(mu - x_range, mu + x_range, 1000)
             
             # Compute Gaussian PDF
             gaussian_pdf = torch.exp(-0.5 * ((x_vals - mu) / sigma) ** 2) / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))
             
-            # Plot the analytic Gaussian
-            axes[i].plot(x_vals.numpy(), gaussian_pdf.numpy(), color=colors[0], linewidth=2, 
-                        label='Analytic Posterior (Laplace)', alpha=0.8)
-            axes[i].fill_between(x_vals.numpy(), 0, gaussian_pdf.numpy(), color=colors[0], alpha=0.3)
+            # Plot the analytic Gaussian with enhanced styling
+            ax.plot(x_vals.numpy(), gaussian_pdf.numpy(), color=base_colors[0], linewidth=2.5, 
+                   label=f'Posterior ({uncertainty_label})', alpha=0.9, zorder=3)
+            ax.fill_between(x_vals.numpy(), 0, gaussian_pdf.numpy(), 
+                          color=base_colors[0], alpha=0.25, zorder=2)
+            
+            # Add confidence intervals
+            for n_sigma, alpha, label in [(1, 0.4, r'$\pm 1\sigma$'), (2, 0.2, r'$\pm 2\sigma$')]:
+                lower, upper = mu - n_sigma * sigma, mu + n_sigma * sigma
+                ax.axvspan(lower, upper, alpha=alpha, color=base_colors[0], zorder=1, 
+                          label=label if i == 0 else "")
             
             # Set appropriate x limits
-            axes[i].set_xlim(mu - x_range, mu + x_range)
+            ax.set_xlim(mu - x_range, mu + x_range)
+            
         else:
-            # Plot histogram from MC samples (legacy approach)
+            # Plot histogram from MC samples with enhanced styling
             param_vals = [s[:, i].numpy() for s in all_samples]
             xmin = min([v.min() for v in param_vals])
             xmax = max([v.max() for v in param_vals])
-            padding = 0.05 * (xmax - xmin)
+            padding = 0.1 * (xmax - xmin)
             xmin -= padding
             xmax += padding
             
-            axes[i].hist(samples[:, i].numpy(), bins=20, alpha=0.6, density=True, 
-                        color=colors[0], label='MC Posterior Samples')
-            axes[i].set_xlim(xmin, xmax)
+            # Plot main posterior
+            n, bins, patches = ax.hist(samples[:, i].numpy(), bins=30, alpha=0.7, density=True, 
+                                     color=base_colors[0], label=uncertainty_label,
+                                     edgecolor='white', linewidth=0.5)
+            ax.set_xlim(xmin, xmax)
 
         # Add SBI comparison if requested
         if compare_with_sbi and sbi_posteriors is not None and sbi_labels is not None:
             for j, sbi_samples in enumerate(sbi_posteriors):
-                label = sbi_labels[j] if j < len(sbi_labels) else f"SBI {j}"
-                axes[i].hist(
+                color_idx = (j + 1) % len(base_colors)
+                label = sbi_labels[j] if j < len(sbi_labels) else f"SBI {j+1}"
+                ax.hist(
                     sbi_samples[:, i].detach().cpu().numpy(),
-                    bins=20, alpha=0.4, density=True,
-                    color=colors[(j + 1) % len(colors)],
-                    label=label
+                    bins=30, alpha=0.6, density=True,
+                    color=base_colors[color_idx],
+                    label=label,
+                    edgecolor='white',
+                    linewidth=0.5
                 )
         
-        # Add true value line
-        axes[i].axvline(true_params[i].item(), color='red', linestyle='dashed', linewidth=2, label='True Value')
-        axes[i].set_title(f'{param_names[i]}')
-        axes[i].set_ylabel('Density')
+        # Add true value line with enhanced styling
+        true_val = true_params[i].item()
+        ax.axvline(true_val, color=COLORBLIND_COLORS['red'], linestyle='--', 
+                  linewidth=2.5, label='True Value', alpha=0.9, zorder=4)
+        
+        # Enhanced axis styling
+        ax.set_title(f'Parameter {param_names[i]}', fontsize=14, pad=15, fontweight='bold')
+        ax.set_xlabel(f'{param_names[i]}', fontsize=12)
+        ax.set_ylabel('Probability Density', fontsize=12)
+        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+        ax.tick_params(which='both', direction='in', labelsize=10)
+        
+        # Add legend only to first subplot to avoid clutter
         if i == 0: 
-            axes[i].legend()
+            ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=10)
+        
+        # Add statistics text box
+        if use_analytic:
+            stats_text = f'μ = {mu:.3f}\nσ = {sigma:.3f}'
+        else:
+            sample_mean = torch.mean(samples[:, i]).item()
+            sample_std = torch.std(samples[:, i]).item()
+            stats_text = f'μ = {sample_mean:.3f}\nσ = {sample_std:.3f}'
+            
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+               verticalalignment='top', fontsize=9,
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
+    # Add overall title
+    method_str = "Analytic Laplace" if use_analytic else "Monte Carlo"
+    fig.suptitle(f'Parameter Posterior Distributions ({method_str} Uncertainty)', 
+                fontsize=16, y=0.98, fontweight='bold')
+    
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.subplots_adjust(top=0.93)  # Make room for suptitle
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_PDF_distribution_single(
@@ -354,27 +478,73 @@ def plot_PDF_distribution_single(
     save_path="pdf_distribution.png"
 ):
     """
-    Plot PDF distributions with function-level uncertainty quantification.
+    Create publication-ready PDF distribution plots with function-level uncertainty quantification.
     
-    **UPDATED APPROACH**: This function now emphasizes that uncertainty is computed 
-    over the predicted functions f(x), not just parameter uncertainty. For each 
-    parameter sample θ drawn from the posterior, we evaluate f(x|θ) at each x-point
-    and then compute pointwise statistics (median, IQR) of the function values.
+    This function generates beautiful, clear plots showing posterior uncertainty over predicted 
+    functions (PDFs), providing more interpretable uncertainty visualization than parameter-only plots.
+    
+    **ENHANCED APPROACH**: Uncertainty is computed over the predicted functions f(x), not just 
+    parameter uncertainty. For each parameter sample θ drawn from the posterior, we evaluate 
+    f(x|θ) at each x-point and then compute pointwise statistics (median, IQR) of the function values.
 
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values for comparison
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples for uncertainty estimation
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+    Q2_slices : list of float, optional
+        Q² values for realistic_dis problem (ignored for simplified_dis)
+    save_dir : str, optional
+        Directory to save plots (if None, uses current directory)
+    save_path : str
+        Base name for saved plots
+        
+    Returns:
+    --------
+    None
+        Saves publication-ready plots to specified paths
+        
     Method:
+    -------
     1. Extract latent representation from events generated with true parameters
     2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
     3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
     4. Compute pointwise median and quantiles of f(x) across all parameter samples
     5. Plot uncertainty bands reflecting function uncertainty at each x-point
 
-    This provides more interpretable uncertainty for PDF predictions compared to
-    parameter-only uncertainty reporting.
+    Features:
+    ---------
+    - Colorblind-friendly color palette
+    - Professional mathematical notation
+    - Clear uncertainty bands with IQR visualization
+    - Proper log-scale handling
+    - Statistical annotations and legends
     """
     model.eval()
     pointnet_model.eval()
-    simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
+    
+    # Get simulators with fallback
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    if problem == 'realistic_dis':
+        simulator = RealisticDIS(torch.device('cpu'))
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
+    else:
+        simulator = SimplifiedDIS(torch.device('cpu'))
 
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -384,18 +554,17 @@ def plot_PDF_distribution_single(
         xs_tensor = xs_tensor
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
-    # --- Sampling strategy ---
-    # If Laplace is available, sample parameters from its Gaussian posterior.
-    # Otherwise, fall back to your legacy get_gaussian_samples behavior.
+    # --- Enhanced Sampling Strategy ---
     if laplace_model is not None:
         samples = get_gaussian_samples(
             model,
             latent_embedding,
             n_samples=n_mc,
-            laplace_model=laplace_model  # should draw from N(theta_hat, Sigma_laplace)
+            laplace_model=laplace_model
         ).cpu()
-        label_curve = "Median (function-level, Laplace posterior)"
-        label_band  = "IQR (function uncertainty)"
+        uncertainty_method = "Laplace Posterior"
+        label_curve = "Median (Analytic Uncertainty)"
+        label_band  = "IQR (Function Uncertainty)"
     else:
         samples = get_gaussian_samples(
             model,
@@ -403,12 +572,22 @@ def plot_PDF_distribution_single(
             n_samples=n_mc,
             laplace_model=None
         ).cpu()
-        label_curve = "Median (function-level, MC)"
-        label_band  = "IQR (function uncertainty)"
+        uncertainty_method = "Monte Carlo"
+        label_curve = "Median (MC Uncertainty)"
+        label_band  = "IQR (Function Uncertainty)"
 
     if problem == 'simplified_dis':
-        x_vals = torch.linspace(0, 1, 500).to(device)
-        for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
+        x_vals = torch.linspace(0.001, 1, 500).to(device)  # Start slightly above 0 for log scale
+        
+        # Enhanced color scheme
+        function_colors = {
+            'up': COLORBLIND_COLORS['blue'],
+            'down': COLORBLIND_COLORS['orange']
+        }
+        
+        for fn_name, fn_label, _ in [("up", "u", None), ("down", "d", None)]:
+            color = function_colors[fn_name]
+            
             # Evaluate function for each sampled parameter vector
             fn_vals_all = []
             for i in range(samples.shape[0]):
@@ -420,42 +599,86 @@ def plot_PDF_distribution_single(
             median_vals = fn_stack.median(dim=0).values.detach().cpu()
             lower_bounds = torch.quantile(fn_stack, 0.25, dim=0).detach().cpu()
             upper_bounds = torch.quantile(fn_stack, 0.75, dim=0).detach().cpu()
+            
+            # Additional confidence levels
+            p05_bounds = torch.quantile(fn_stack, 0.05, dim=0).detach().cpu()
+            p95_bounds = torch.quantile(fn_stack, 0.95, dim=0).detach().cpu()
 
             # True curve
             simulator.init(true_params.squeeze())
             true_vals = getattr(simulator, fn_name)(x_vals).detach().cpu()
 
-            # Plot
-            fig, ax = plt.subplots(figsize=(7, 5))
-            ax.plot(x_vals.detach().cpu(), true_vals, label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
+            # Create enhanced plot
+            fig, ax = plt.subplots(figsize=(10, 7))
+            
+            # Plot true function with enhanced styling
+            ax.plot(x_vals.detach().cpu(), true_vals, 
+                   label=fr"True ${fn_label}(x|\theta^*)$", 
+                   color=COLORBLIND_COLORS['dark_green'], 
+                   linewidth=3, alpha=0.9, zorder=3)
+            
+            # Plot predicted median with enhanced styling
             ax.plot(
                 x_vals.detach().cpu(),
                 median_vals,
-                linestyle='--',
+                linestyle='-',
                 label=fr"{label_curve} ${fn_label}(x)$",
-                color="crimson",
-                linewidth=2
+                color=color,
+                linewidth=2.5,
+                alpha=0.9,
+                zorder=2
             )
+            
+            # Plot uncertainty bands with multiple confidence levels
+            ax.fill_between(
+                x_vals.detach().cpu(),
+                p05_bounds,
+                p95_bounds,
+                color=color,
+                alpha=0.15,
+                label="90% Confidence",
+                zorder=0
+            )
+            
             ax.fill_between(
                 x_vals.detach().cpu(),
                 lower_bounds,
                 upper_bounds,
-                color="crimson",
+                color=color,
                 alpha=0.3,
-                label=label_band
+                label="IQR (25%-75%)",
+                zorder=1
             )
 
-            ax.set_xlabel(r"$x$")
-            ax.set_ylabel(fr"${fn_label}(x|\theta)$")
+            # Enhanced axis styling
+            ax.set_xlabel(r"$x$", fontsize=14)
+            ax.set_ylabel(fr"${fn_label}(x|\theta)$", fontsize=14)
             ax.set_xlim(1e-3, 1)
             ax.set_xscale("log")
-            ax.grid(True, which='both', linestyle=':', linewidth=0.5)
-            ax.legend(frameon=False)
-            ax.set_title(f"Function-Level Uncertainty: {fn_name.title()} PDF\n"
-                        f"({n_mc} parameter samples)")
+            ax.set_yscale("log")
+            ax.grid(True, which='both', linestyle=':', linewidth=0.5, alpha=0.3)
+            ax.tick_params(which='both', direction='in', labelsize=11)
+            
+            # Enhanced legend
+            ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=11, loc='best')
+            
+            # Enhanced title with method information
+            ax.set_title(f"PDF Function Uncertainty: {fn_name.title()} Distribution\n"
+                        f"Method: {uncertainty_method} ({n_mc} samples)", 
+                        fontsize=14, pad=20, fontweight='bold')
+            
+            # Add statistical information box
+            mean_error = torch.mean(torch.abs(median_vals - true_vals)).item()
+            max_error = torch.max(torch.abs(median_vals - true_vals)).item()
+            stats_text = f'Mean |Error|: {mean_error:.4f}\nMax |Error|: {max_error:.4f}'
+            
+            ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, 
+                   verticalalignment='bottom', fontsize=10,
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8))
+            
             plt.tight_layout()
-            out_path = f"{save_dir}/{fn_name}.png" if save_dir else f"{fn_name}.png"
-            plt.savefig(out_path, dpi=300)
+            out_path = f"{save_dir}/{fn_name}_enhanced.png" if save_dir else f"{fn_name}_enhanced.png"
+            plt.savefig(out_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
     elif problem == 'realistic_dis':
