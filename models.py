@@ -535,14 +535,63 @@ class LatentToParamsNN(nn.Module):
         # log_var = torch.tanh(self.fc_logvar(x)) * 5  # Keep within a reasonable range
         return mean, variance
 
+# class TransformerHead(nn.Module):
+#     def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
+#         super().__init__()
+#         self.embedding = nn.Linear(embedding_dim, 128)
+#         encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout)
+#         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+#         self.fc = nn.Linear(128, out_dim)
+#     def forward(self, x):
+#         x = self.embedding(x).unsqueeze(0)
+#         x = self.transformer(x).squeeze(0)
+#         return self.fc(x)
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
 class TransformerHead(nn.Module):
-    def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
+    def __init__(self, embedding_dim, out_dim, ranges=None, nhead=4, num_layers=2, dropout=0.1, eps=1e-8):
+        """
+        ranges: Optional tensor-like (out_dim, 2), each row [low, high].
+                If None, outputs are unconstrained (original behavior).
+        eps: small positive constant added inside softplus for stability.
+        """
         super().__init__()
+        self.out_dim = out_dim
+        self.use_scaling = ranges is not None
+        self.eps = float(eps)
+
+        if self.use_scaling:
+            ranges_t = torch.as_tensor(ranges, dtype=torch.float32)
+            if ranges_t.shape != (out_dim, 2):
+                raise ValueError(f"ranges must be (out_dim,2); got {ranges_t.shape}")
+
+            low, high = ranges_t[:, 0], ranges_t[:, 1]
+            # smooth positive width with softplus (differentiable, no clamp)
+            width = F.softplus(high - low) + self.eps
+
+            self.register_buffer("low", low)     # (out_dim,)
+            self.register_buffer("width", width) # (out_dim,)
+        else:
+            self.low = None
+            self.width = None
+
         self.embedding = nn.Linear(embedding_dim, 128)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout)
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        enc_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout, batch_first=False)
+        self.transformer = nn.TransformerEncoder(enc_layer, num_layers)
         self.fc = nn.Linear(128, out_dim)
+
     def forward(self, x):
-        x = self.embedding(x).unsqueeze(0)
-        x = self.transformer(x).squeeze(0)
-        return self.fc(x)
+        # Input: (S, E) where S=sequence length
+        x = self.embedding(x)                     # (S,128)
+        x = self.transformer(x.unsqueeze(1))      # (S,1,128)
+        x = x.squeeze(1)                          # (S,128)
+        z = self.fc(x)                            # (S,out_dim)
+
+        if not self.use_scaling:
+            return z  # unconstrained outputs (original behavior)
+
+        # Sigmoid scaling into [low, high]
+        return self.low + self.width * torch.sigmoid(z)

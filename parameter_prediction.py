@@ -211,8 +211,16 @@ def main_worker(rank, world_size, args):
 
     model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
     model = DDP(model, device_ids=[rank])
-
-    param_prediction_model = TransformerHead(latent_dim, theta_dim)
+    if args.problem == 'mceg':
+        theta_bounds = torch.tensor([
+                [-1.0, 10.0],
+                [0.0, 10.0],
+                [-10.0, 10.0],
+                [-10.0, 10.0],
+            ])
+    else
+        theta_bounds = None
+    param_prediction_model = TransformerHead(latent_dim, theta_dim, ranges=theta_bounds))
     param_prediction_model = param_prediction_model.to(device)
     param_prediction_model = DDP(param_prediction_model, device_ids=[rank])
 

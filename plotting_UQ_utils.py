@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import pylab as py
+from datasets import *
 
 # Import optional dependencies with fallbacks
 try:
@@ -2106,7 +2107,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1σ Function Uncertainty (Bootstrap)")
+                               label=fr"±1STD Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2156,7 +2157,7 @@ def plot_bootstrap_PDF_distribution(
                 
                 ax.fill_between(x_vals.numpy(), lower_bounds.numpy(), upper_bounds.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1σ Function Uncertainty (Bootstrap)")
+                               label=fr"±1STD Function Uncertainty (Bootstrap)")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")
@@ -2439,8 +2440,8 @@ def plot_combined_uncertainty_PDF_distribution(
         f.write("1. For each bootstrap iteration:\n")
         f.write(f"   - Generate {num_events} events from true parameters\n")
         f.write("   - Extract latent representation via PointNet\n")
-        f.write("   - Predict parameter distribution θ ~ N(μ, σ²) via model + Laplace\n")
-        f.write(f"   - Sample {n_laplace_samples} parameter sets from θ ~ N(μ, σ²)\n")
+        f.write("   - Predict parameter distribution θ ~ N(mean, STD²) via model + Laplace\n")
+        f.write(f"   - Sample {n_laplace_samples} parameter sets from θ ~ N(mean, STD²)\n")
         f.write("   - Evaluate f(x|θ) for each θ sample at each x-point\n\n")
         f.write("2. Aggregate uncertainty pointwise:\n")
         f.write("   - Collect all f(x) values at each x from all bootstrap + Laplace samples\n")
@@ -2497,7 +2498,7 @@ def plot_combined_uncertainty_PDF_distribution(
                 # Function-level uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3, 
-                               label=fr"±1σ Function Uncertainty")
+                               label=fr"±1STD Function Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"${fn_label}(x|\theta)$")
@@ -2582,7 +2583,7 @@ def plot_combined_uncertainty_PDF_distribution(
                 # Function-level uncertainty band
                 ax.fill_between(x_vals.numpy(), lower_bound.numpy(), upper_bound.numpy(),
                                color="crimson", alpha=0.3,
-                               label=fr"±1σ Function Uncertainty")
+                               label=fr"±1STD Function Uncertainty")
                 
                 ax.set_xlabel(r"$x$")
                 ax.set_ylabel(fr"$q(x, Q^2={Q2_fixed})$")

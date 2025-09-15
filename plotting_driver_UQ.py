@@ -368,6 +368,16 @@ Examples:
             problem=args.problem,
             save_dir=plot_dir
         )
+        scaling_results = plot_uncertainty_vs_events(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            event_counts=[1000, 5000, 10000, 50000, 100000],
+            n_bootstrap=args.n_bootstrap,
+            problem=args.problem,
+            save_dir=plot_dir
+        )
         # Run all plotting functions, passing laplace_model if available
         plot_params_distribution_single(
             model=model,
