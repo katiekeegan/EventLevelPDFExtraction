@@ -1,3 +1,121 @@
+"""
+Enhanced Plotting Utilities for Uncertainty Quantification in PDF Parameter Inference
+
+This module provides publication-ready plotting functions for visualizing uncertainty
+in PDF parameter inference, with a focus on the simplified DIS problem. All plots
+are designed to be beautiful, clear, and suitable for publication.
+
+New Functions:
+==============
+
+1. plot_parameter_error_histogram:
+   Creates histograms showing parameter errors across multiple parameter choices.
+   Features both absolute and relative error analysis with statistical annotations.
+
+2. plot_function_error_histogram:  
+   Creates histograms of average entrywise function value errors with probability
+   density visualization, mean/median indicators, and comprehensive statistics.
+
+Enhanced Functions:
+==================
+
+1. plot_event_histogram_simplified_DIS:
+   - Now provides both scatter plots and true 2D histograms
+   - Log-scale colorbars with proper normalization
+   - Clear axis labels and mathematical notation
+   - Multiple visualization modes: 'scatter', 'histogram', or 'both'
+
+2. plot_params_distribution_single:
+   - Publication-ready styling with colorblind-friendly colors
+   - Confidence interval visualization (±1σ, ±2σ)
+   - Professional typography and mathematical notation
+   - Statistical text boxes with mean/std information
+   - Adaptive subplot layout for any number of parameters
+
+3. plot_PDF_distribution_single:
+   - Enhanced uncertainty visualization with multiple confidence levels
+   - Beautiful color schemes for different PDF functions
+   - Error statistics and comparison with true functions
+   - Professional mathematical notation and legends
+
+Aesthetic Features:
+==================
+
+All plotting functions now include:
+- Colorblind-friendly color palettes (verified with colorbrewer)
+- Professional mathematical notation with LaTeX formatting
+- Publication-ready typography and layout
+- Proper gridlines, tick marks, and spacing
+- Comprehensive legends and statistical annotations
+- High-DPI output (300 DPI) suitable for publication
+- Consistent styling across all plot types
+
+Color Schemes:
+=============
+
+COLORBLIND_COLORS: Main palette safe for colorblind users
+UNCERTAINTY_COLORS: Specific colors for uncertainty visualization  
+PDF_FUNCTION_COLORS: Colors for different PDF functions (u, d, q)
+
+Usage Examples:
+==============
+
+# Parameter error analysis
+plot_parameter_error_histogram(
+    true_params_list=[true_params1, true_params2, ...],
+    predicted_params_list=[pred_params1, pred_params2, ...],
+    save_path="param_errors.png",
+    problem='simplified_dis'
+)
+
+# Function error analysis  
+plot_function_error_histogram(
+    true_function_values_list=[true_vals1, true_vals2, ...],
+    predicted_function_values_list=[pred_vals1, pred_vals2, ...],
+    function_names=['u(x)', 'd(x)'],
+    save_path="function_errors.png"
+)
+
+# Enhanced event visualization
+plot_event_histogram_simplified_DIS(
+    model, pointnet_model, true_params, device,
+    plot_type='both',  # Show both scatter and histogram
+    save_path="events_both.png"
+)
+
+# Parameter distributions with confidence intervals
+plot_params_distribution_single(
+    model, pointnet_model, true_params, device,
+    laplace_model=laplace_model,  # For analytic uncertainty
+    save_path="param_distributions.png"
+)
+
+# PDF uncertainty with multiple confidence levels
+plot_PDF_distribution_single(
+    model, pointnet_model, true_params, device,
+    laplace_model=laplace_model,
+    save_dir="./pdf_plots/"
+)
+
+Dependencies:
+============
+
+Required:
+- matplotlib
+- numpy
+- torch
+
+Optional (with fallbacks):
+- seaborn (for enhanced color palettes)
+- scipy (for advanced statistics)
+
+Note: All functions include fallback implementations when optional dependencies
+are not available, ensuring robust operation in any environment.
+
+Version: Enhanced for publication-ready output
+Author: Enhanced plotting utilities for PDFParameterInference
+"""
+
 import torch
 import matplotlib.pyplot as plt
 import matplotlib.colors as colors
@@ -49,6 +167,168 @@ COLORBLIND_COLORS = {
     'dark_orange': '#cc5500',
     'dark_green': '#006400'
 }
+
+# Enhanced color schemes for specific plot types
+UNCERTAINTY_COLORS = {
+    'model': COLORBLIND_COLORS['blue'],
+    'data': COLORBLIND_COLORS['orange'], 
+    'combined': COLORBLIND_COLORS['purple'],
+    'true': COLORBLIND_COLORS['dark_green'],
+    'predicted': COLORBLIND_COLORS['red']
+}
+
+PDF_FUNCTION_COLORS = {
+    'up': COLORBLIND_COLORS['blue'],
+    'down': COLORBLIND_COLORS['orange'],
+    'q': COLORBLIND_COLORS['green']
+}
+
+def setup_publication_axes(ax, xlabel="", ylabel="", title="", legend=True, grid=True):
+    """
+    Apply consistent publication-ready styling to matplotlib axes.
+    
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes object to style
+    xlabel : str
+        X-axis label with LaTeX formatting
+    ylabel : str  
+        Y-axis label with LaTeX formatting
+    title : str
+        Plot title
+    legend : bool
+        Whether to show legend if present
+    grid : bool
+        Whether to show grid
+    """
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=12)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=12)
+    if title:
+        ax.set_title(title, fontsize=14, pad=15, fontweight='bold')
+    
+    # Enhanced tick styling
+    ax.tick_params(which='both', direction='in', labelsize=10)
+    ax.tick_params(which='major', length=6)
+    ax.tick_params(which='minor', length=3)
+    
+    # Grid styling
+    if grid:
+        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+    
+    # Legend styling
+    if legend and ax.get_legend():
+        leg = ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=10)
+        leg.get_frame().set_alpha(0.9)
+
+def add_statistics_box(ax, data, position='top_left', format_str='.3f'):
+    """
+    Add a statistics text box to a plot.
+    
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes to add the box to
+    data : array-like
+        Data to compute statistics for
+    position : str
+        Where to place the box ('top_left', 'top_right', 'bottom_left', 'bottom_right')
+    format_str : str
+        Format string for numbers
+    """
+    mean_val = np.mean(data)
+    std_val = np.std(data)
+    median_val = np.median(data)
+    
+    stats_text = f'μ = {mean_val:{format_str}}\nσ = {std_val:{format_str}}\nMedian = {median_val:{format_str}}'
+    
+    # Position mapping
+    positions = {
+        'top_left': (0.02, 0.98, 'top', 'left'),
+        'top_right': (0.98, 0.98, 'top', 'right'), 
+        'bottom_left': (0.02, 0.02, 'bottom', 'left'),
+        'bottom_right': (0.98, 0.02, 'bottom', 'right')
+    }
+    
+    x, y, va, ha = positions.get(position, positions['top_left'])
+    
+    ax.text(x, y, stats_text, transform=ax.transAxes,
+           verticalalignment=va, horizontalalignment=ha, fontsize=9,
+           bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+def create_error_summary_plot(
+    errors_dict, 
+    titles_dict=None,
+    save_path="error_summary.png",
+    figsize=(15, 10)
+):
+    """
+    Create a comprehensive error summary plot with multiple error types.
+    
+    Parameters:
+    -----------
+    errors_dict : dict
+        Dictionary with error type as key and error arrays as values
+    titles_dict : dict, optional
+        Dictionary with error type as key and plot titles as values
+    save_path : str
+        Path to save the summary plot
+    figsize : tuple
+        Figure size
+    """
+    n_error_types = len(errors_dict)
+    cols = min(3, n_error_types)
+    rows = (n_error_types + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if n_error_types == 1:
+        axes = [axes]
+    elif rows == 1:
+        axes = list(axes)
+    else:
+        axes = axes.flatten()
+    
+    colors = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+              COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple'],
+              COLORBLIND_COLORS['brown'], COLORBLIND_COLORS['pink']]
+    
+    for i, (error_type, errors) in enumerate(errors_dict.items()):
+        if i >= len(axes):
+            break
+            
+        ax = axes[i]
+        color = colors[i % len(colors)]
+        
+        # Create histogram
+        counts, bins, patches = ax.hist(
+            errors, bins=30, alpha=0.7, color=color,
+            edgecolor='white', linewidth=0.5, density=True
+        )
+        
+        # Add mean and median lines
+        mean_err = np.mean(errors)
+        median_err = np.median(errors)
+        ax.axvline(mean_err, color='red', linestyle='--', alpha=0.8, 
+                  linewidth=2, label=f'Mean: {mean_err:.4f}')
+        ax.axvline(median_err, color='purple', linestyle=':', alpha=0.8,
+                  linewidth=2, label=f'Median: {median_err:.4f}')
+        
+        # Styling
+        title = titles_dict.get(error_type, error_type) if titles_dict else error_type
+        setup_publication_axes(ax, xlabel='Error Value', ylabel='Density', title=title)
+        add_statistics_box(ax, errors, position='top_right')
+        
+    # Hide extra subplots
+    for i in range(n_error_types, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.suptitle('Error Analysis Summary', fontsize=16, y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.93)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 # Import optional dependencies with fallbacks
 try:
