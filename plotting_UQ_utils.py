@@ -1,8 +1,54 @@
 import torch
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+import matplotlib.cm as cm
 import numpy as np
 import os
 import pylab as py
+
+# Set publication-ready plotting style
+plt.style.use('default')  # Start with clean default style
+plt.rcParams.update({
+    'font.size': 12,
+    'axes.labelsize': 14,
+    'axes.titlesize': 16,
+    'legend.fontsize': 11,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'figure.dpi': 300,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'figure.figsize': [10, 8],
+    'axes.grid': True,
+    'grid.alpha': 0.3,
+    'grid.linewidth': 0.5,
+    'axes.axisbelow': True,
+    'axes.edgecolor': '#333333',
+    'axes.linewidth': 1.2,
+    'xtick.direction': 'in',
+    'ytick.direction': 'in',
+    'xtick.major.size': 6,
+    'ytick.major.size': 6,
+    'xtick.minor.size': 3,
+    'ytick.minor.size': 3,
+})
+
+# Define colorblind-friendly color palette
+COLORBLIND_COLORS = {
+    'blue': '#1f77b4',
+    'orange': '#ff7f0e', 
+    'green': '#2ca02c',
+    'red': '#d62728',
+    'purple': '#9467bd',
+    'brown': '#8c564b',
+    'pink': '#e377c2',
+    'gray': '#7f7f7f',
+    'olive': '#bcbd22',
+    'cyan': '#17becf',
+    'dark_blue': '#0c2c84',
+    'dark_orange': '#cc5500',
+    'dark_green': '#006400'
+}
 
 # Import optional dependencies with fallbacks
 try:
@@ -587,6 +633,266 @@ def plot_PDF_distribution_single_same_plot(
         plt.savefig(save_path, dpi=300)
         plt.close(fig)
 
+def plot_parameter_error_histogram(
+    true_params_list,
+    predicted_params_list,
+    param_names=None,
+    save_path="parameter_error_histogram.png",
+    problem='simplified_dis'
+):
+    """
+    Create publication-ready histograms of parameter errors across multiple parameter choices.
+    
+    Parameters:
+    -----------
+    true_params_list : list of numpy arrays or torch tensors
+        List of true parameter sets, each array/tensor of shape (n_params,)
+    predicted_params_list : list of numpy arrays or torch tensors  
+        List of predicted parameter sets, each array/tensor of shape (n_params,)
+    param_names : list of str, optional
+        Parameter names for axis labels. Auto-generated if None.
+    save_path : str
+        Path to save the histogram plot
+    problem : str
+        Problem type ('simplified_dis' or 'realistic_dis') for default param names
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
+    """
+    # Convert to numpy if needed and compute errors
+    if isinstance(true_params_list[0], torch.Tensor):
+        true_params_list = [p.detach().cpu().numpy() for p in true_params_list]
+    if isinstance(predicted_params_list[0], torch.Tensor):
+        predicted_params_list = [p.detach().cpu().numpy() for p in predicted_params_list]
+        
+    true_params = np.array(true_params_list)  # Shape: (n_samples, n_params)
+    predicted_params = np.array(predicted_params_list)
+    
+    # Compute parameter errors
+    param_errors = predicted_params - true_params  # Shape: (n_samples, n_params)
+    relative_errors = param_errors / (true_params + 1e-8)  # Avoid division by zero
+    
+    n_params = param_errors.shape[1]
+    
+    # Set default parameter names
+    if param_names is None:
+        if problem == 'simplified_dis':
+            param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+        elif problem == 'realistic_dis':
+            param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+        else:
+            param_names = [f'$\\theta_{{{i}}}$' for i in range(n_params)]
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, n_params, figsize=(4*n_params, 10))
+    if n_params == 1:
+        axes = axes.reshape(2, 1)
+    
+    colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['red']]
+    
+    for i in range(n_params):
+        color = colors_list[i % len(colors_list)]
+        
+        # Absolute errors (top row)
+        ax_abs = axes[0, i]
+        n_bins = min(50, max(10, len(param_errors) // 5))  # Adaptive binning
+        counts, bins, patches = ax_abs.hist(
+            param_errors[:, i], 
+            bins=n_bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5
+        )
+        
+        # Add vertical line at zero
+        ax_abs.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
+        
+        # Statistics text
+        mean_err = np.mean(param_errors[:, i])
+        std_err = np.std(param_errors[:, i])
+        ax_abs.text(0.02, 0.98, f'μ = {mean_err:.3f}\nσ = {std_err:.3f}', 
+                   transform=ax_abs.transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_abs.set_xlabel(f'Error in {param_names[i]}')
+        ax_abs.set_ylabel('Frequency')
+        ax_abs.set_title(f'Absolute Error: {param_names[i]}')
+        ax_abs.grid(True, alpha=0.3)
+        ax_abs.legend()
+        
+        # Relative errors (bottom row)
+        ax_rel = axes[1, i]
+        counts, bins, patches = ax_rel.hist(
+            relative_errors[:, i] * 100,  # Convert to percentage
+            bins=n_bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5
+        )
+        
+        # Add vertical line at zero
+        ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
+        
+        # Statistics text
+        mean_rel_err = np.mean(relative_errors[:, i]) * 100
+        std_rel_err = np.std(relative_errors[:, i]) * 100
+        ax_rel.text(0.02, 0.98, f'μ = {mean_rel_err:.1f}%\nσ = {std_rel_err:.1f}%', 
+                   transform=ax_rel.transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_rel.set_xlabel(f'Relative Error in {param_names[i]} (%)')
+        ax_rel.set_ylabel('Frequency')
+        ax_rel.set_title(f'Relative Error: {param_names[i]}')
+        ax_rel.grid(True, alpha=0.3)
+        ax_rel.legend()
+    
+    plt.suptitle('Parameter Error Analysis', fontsize=18, y=0.95)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_function_error_histogram(
+    true_function_values_list,
+    predicted_function_values_list,
+    function_names=None,
+    save_path="function_error_histogram.png",
+    bins=50
+):
+    """
+    Create publication-ready histograms of average entrywise function value errors.
+    
+    Parameters:
+    -----------
+    true_function_values_list : list of numpy arrays
+        List of true function evaluations, each array of shape (n_points,) or (n_points, n_functions)
+    predicted_function_values_list : list of numpy arrays
+        List of predicted function evaluations, same shape as true_function_values_list
+    function_names : list of str, optional
+        Function names for labels (e.g., ['u(x)', 'd(x)'])
+    save_path : str
+        Path to save the histogram plot
+    bins : int
+        Number of histogram bins
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
+    """
+    # Convert to numpy if needed
+    if isinstance(true_function_values_list[0], torch.Tensor):
+        true_function_values_list = [f.detach().cpu().numpy() for f in true_function_values_list]
+    if isinstance(predicted_function_values_list[0], torch.Tensor):
+        predicted_function_values_list = [f.detach().cpu().numpy() for f in predicted_function_values_list]
+    
+    # Ensure consistent shapes
+    true_vals = np.array(true_function_values_list)
+    pred_vals = np.array(predicted_function_values_list)
+    
+    if true_vals.ndim == 2:
+        # Single function case: (n_samples, n_points) -> treat as single function
+        true_vals = true_vals[:, :, np.newaxis]  # (n_samples, n_points, 1)
+        pred_vals = pred_vals[:, :, np.newaxis]
+    
+    n_samples, n_points, n_functions = true_vals.shape
+    
+    # Set default function names
+    if function_names is None:
+        if n_functions == 2:
+            function_names = [r'$u(x)$', r'$d(x)$']
+        else:
+            function_names = [f'$f_{{{i}}}(x)$' for i in range(n_functions)]
+    
+    # Compute average entrywise errors for each sample and function
+    abs_errors = np.abs(pred_vals - true_vals)  # (n_samples, n_points, n_functions)
+    avg_abs_errors = np.mean(abs_errors, axis=1)  # (n_samples, n_functions)
+    
+    rel_errors = abs_errors / (np.abs(true_vals) + 1e-8)  # Relative errors
+    avg_rel_errors = np.mean(rel_errors, axis=1)  # (n_samples, n_functions)
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, n_functions, figsize=(6*n_functions, 10))
+    if n_functions == 1:
+        axes = axes.reshape(2, 1)
+    
+    colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple']]
+    
+    for i in range(n_functions):
+        color = colors_list[i % len(colors_list)]
+        
+        # Absolute errors (top row)
+        ax_abs = axes[0, i]
+        counts, bins_abs, patches = ax_abs.hist(
+            avg_abs_errors[:, i], 
+            bins=bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5,
+            density=True  # Normalize to show probability density
+        )
+        
+        # Add statistics
+        mean_abs = np.mean(avg_abs_errors[:, i])
+        std_abs = np.std(avg_abs_errors[:, i])
+        median_abs = np.median(avg_abs_errors[:, i])
+        
+        ax_abs.axvline(mean_abs, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_abs:.4f}')
+        ax_abs.axvline(median_abs, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_abs:.4f}')
+        
+        ax_abs.text(0.98, 0.98, f'μ = {mean_abs:.4f}\nσ = {std_abs:.4f}', 
+                   transform=ax_abs.transAxes, verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_abs.set_xlabel(f'Average Absolute Error in {function_names[i]}')
+        ax_abs.set_ylabel('Probability Density')
+        ax_abs.set_title(f'Distribution of Errors: {function_names[i]}')
+        ax_abs.grid(True, alpha=0.3)
+        ax_abs.legend()
+        
+        # Relative errors (bottom row)
+        ax_rel = axes[1, i]
+        counts, bins_rel, patches = ax_rel.hist(
+            avg_rel_errors[:, i] * 100,  # Convert to percentage
+            bins=bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5,
+            density=True
+        )
+        
+        # Add statistics
+        mean_rel = np.mean(avg_rel_errors[:, i]) * 100
+        std_rel = np.std(avg_rel_errors[:, i]) * 100
+        median_rel = np.median(avg_rel_errors[:, i]) * 100
+        
+        ax_rel.axvline(mean_rel, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_rel:.2f}%')
+        ax_rel.axvline(median_rel, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_rel:.2f}%')
+        
+        ax_rel.text(0.98, 0.98, f'μ = {mean_rel:.2f}%\nσ = {std_rel:.2f}%', 
+                   transform=ax_rel.transAxes, verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_rel.set_xlabel(f'Average Relative Error in {function_names[i]} (%)')
+        ax_rel.set_ylabel('Probability Density')
+        ax_rel.set_title(f'Distribution of Relative Errors: {function_names[i]}')
+        ax_rel.grid(True, alpha=0.3)
+        ax_rel.legend()
+    
+    plt.suptitle('Function Value Error Analysis', fontsize=18, y=0.95)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_event_histogram_simplified_DIS(
     model,
     pointnet_model,
@@ -596,20 +902,65 @@ def plot_event_histogram_simplified_DIS(
     laplace_model=None,
     num_events=100000,
     save_path="event_histogram_simplified.png",
-    problem='simplified_dis'
+    problem='simplified_dis',
+    plot_type='both',  # 'scatter', 'histogram', or 'both'
+    bins=50,
+    figsize=(15, 8)
 ):
     """
     Plot event histograms using analytic Laplace uncertainty propagation.
+    Provides both scatter plots and true 2D histograms for reconstructed events.
     
-    When laplace_model is provided, uses analytic MAP estimate instead of 
-    Monte Carlo sampling for improved speed and accuracy.
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples (kept for backward compatibility)
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    num_events : int
+        Number of events to generate
+    save_path : str
+        Path to save the plot
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+    plot_type : str
+        Type of plot: 'scatter', 'histogram', or 'both'
+    bins : int or array-like
+        Number of bins for 2D histogram
+    figsize : tuple
+        Figure size (width, height)
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
     """
     model.eval()
     pointnet_model.eval()
-    simulator = SimplifiedDIS(torch.device('cpu'))
+    
+    # Get the appropriate simulator
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    if problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
+    elif problem == 'realistic_dis':
+        simulator = RealisticDIS(torch.device('cpu'))
+    else:
+        simulator = SimplifiedDIS(torch.device('cpu'))
+    
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+    
     if problem != 'mceg':
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
@@ -634,28 +985,120 @@ def plot_event_histogram_simplified_DIS(
     true_events_np = xs.detach().cpu().numpy()
     generated_events_np = generated_events.detach().cpu().numpy()
     
-    # Create the plot
-    fig, axs = plt.subplots(1, 2, figsize=(15, 8))
+    # Determine number of subplots based on plot_type
+    if plot_type == 'both':
+        fig, axes = plt.subplots(2, 2, figsize=(figsize[0], figsize[1]*1.2))
+        ax_true_scatter, ax_gen_scatter = axes[0, 0], axes[0, 1]
+        ax_true_hist, ax_gen_hist = axes[1, 0], axes[1, 1]
+    elif plot_type in ['scatter', 'histogram']:
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        ax_true, ax_gen = axes[0], axes[1]
+    else:
+        raise ValueError("plot_type must be 'scatter', 'histogram', or 'both'")
     
-    # True events
-    axs[0].scatter(true_events_np[:, 0], true_events_np[:, 1], color='turquoise', alpha=0.2)
-    axs[0].set_title(r"$\Xi_{\theta^{*}}$ (True Parameters)")
-    axs[0].set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$")
-    axs[0].set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$")
-    axs[0].set_xscale("log")
-    axs[0].set_yscale("log")
-    
-    # Generated events
     method_label = "MAP (Analytic)" if use_analytic else "Median (MC)"
-    axs[1].scatter(generated_events_np[:, 0], generated_events_np[:, 1], color='darkorange', alpha=0.2)
-    axs[1].set_title(fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label})")
-    axs[1].set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})")
-    axs[1].set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})")
-    axs[1].set_xscale("log")
-    axs[1].set_yscale("log")
+    
+    # Color scheme
+    true_color = COLORBLIND_COLORS['cyan']
+    gen_color = COLORBLIND_COLORS['orange']
+    
+    # Helper function to set log scales and labels
+    def setup_axes(ax, title, is_generated=False):
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(title, fontsize=14, pad=10)
+        if problem == 'simplified_dis':
+            if is_generated:
+                ax.set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
+                ax.set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
+            else:
+                ax.set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$", fontsize=12)
+                ax.set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$", fontsize=12)
+        else:
+            ax.set_xlabel("$x$", fontsize=12)
+            ax.set_ylabel("$Q^2$", fontsize=12)
+        ax.grid(True, alpha=0.3, which='both')
+        ax.tick_params(which='both', direction='in')
+    
+    # Plot scatter plots if requested
+    if plot_type in ['scatter', 'both']:
+        if plot_type == 'both':
+            ax_true_scat, ax_gen_scat = ax_true_scatter, ax_gen_scatter
+        else:
+            ax_true_scat, ax_gen_scat = ax_true, ax_gen
+            
+        # True events scatter
+        ax_true_scat.scatter(true_events_np[:, 0], true_events_np[:, 1], 
+                           color=true_color, alpha=0.3, s=1.5, edgecolors='none')
+        setup_axes(ax_true_scat, r"$\Xi_{\theta^{*}}$ (True Parameters) - Scatter", False)
+        
+        # Generated events scatter  
+        ax_gen_scat.scatter(generated_events_np[:, 0], generated_events_np[:, 1], 
+                          color=gen_color, alpha=0.3, s=1.5, edgecolors='none')
+        setup_axes(ax_gen_scat, fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label}) - Scatter", True)
+    
+    # Plot 2D histograms if requested
+    if plot_type in ['histogram', 'both']:
+        if plot_type == 'both':
+            ax_true_hist_ax, ax_gen_hist_ax = ax_true_hist, ax_gen_hist
+        else:
+            ax_true_hist_ax, ax_gen_hist_ax = ax_true, ax_gen
+        
+        # Create log-spaced bins for better visualization
+        x_min = min(np.min(true_events_np[:, 0]), np.min(generated_events_np[:, 0]))
+        x_max = max(np.max(true_events_np[:, 0]), np.max(generated_events_np[:, 0]))
+        y_min = min(np.min(true_events_np[:, 1]), np.min(generated_events_np[:, 1]))
+        y_max = max(np.max(true_events_np[:, 1]), np.max(generated_events_np[:, 1]))
+        
+        # Add small margin in log space
+        x_margin = (np.log10(x_max) - np.log10(x_min)) * 0.05
+        y_margin = (np.log10(y_max) - np.log10(y_min)) * 0.05
+        
+        x_bins = np.logspace(np.log10(x_min) - x_margin, np.log10(x_max) + x_margin, bins)
+        y_bins = np.logspace(np.log10(y_min) - y_margin, np.log10(y_max) + y_margin, bins)
+        
+        # True events histogram
+        hist_true, _, _ = np.histogram2d(true_events_np[:, 0], true_events_np[:, 1], bins=[x_bins, y_bins])
+        hist_true = hist_true.T  # Transpose for correct orientation
+        
+        # Only show non-zero bins
+        hist_true_masked = np.ma.masked_where(hist_true == 0, hist_true)
+        
+        im_true = ax_true_hist_ax.pcolormesh(x_bins, y_bins, hist_true_masked, 
+                                           cmap='Blues', norm=colors.LogNorm(vmin=1))
+        setup_axes(ax_true_hist_ax, r"$\Xi_{\theta^{*}}$ (True Parameters) - 2D Histogram", False)
+        
+        # Add colorbar for true events
+        cbar_true = plt.colorbar(im_true, ax=ax_true_hist_ax, fraction=0.046, pad=0.04)
+        cbar_true.set_label('Event Count', fontsize=11)
+        cbar_true.ax.tick_params(labelsize=10)
+        
+        # Generated events histogram
+        hist_gen, _, _ = np.histogram2d(generated_events_np[:, 0], generated_events_np[:, 1], bins=[x_bins, y_bins])
+        hist_gen = hist_gen.T  # Transpose for correct orientation
+        
+        # Only show non-zero bins
+        hist_gen_masked = np.ma.masked_where(hist_gen == 0, hist_gen)
+        
+        im_gen = ax_gen_hist_ax.pcolormesh(x_bins, y_bins, hist_gen_masked, 
+                                         cmap='Oranges', norm=colors.LogNorm(vmin=1))
+        setup_axes(ax_gen_hist_ax, fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label}) - 2D Histogram", True)
+        
+        # Add colorbar for generated events
+        cbar_gen = plt.colorbar(im_gen, ax=ax_gen_hist_ax, fraction=0.046, pad=0.04)
+        cbar_gen.set_label('Event Count', fontsize=11)
+        cbar_gen.ax.tick_params(labelsize=10)
+    
+    # Add overall title
+    if plot_type == 'both':
+        fig.suptitle('Event Distribution Analysis: Scatter & Histogram Views', fontsize=16, y=0.95)
+    elif plot_type == 'scatter':
+        fig.suptitle('Event Distribution Analysis: Scatter View', fontsize=16, y=0.95)
+    else:
+        fig.suptitle('Event Distribution Analysis: Histogram View', fontsize=16, y=0.95)
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=False, nll_loss=False):
