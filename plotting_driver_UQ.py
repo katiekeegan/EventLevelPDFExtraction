@@ -391,7 +391,7 @@ Examples:
             save_path=os.path.join(plot_dir, "params_distribution.png")
         )
         generate_parameter_error_histogram(
-            model=inference_model,
+            model=model,
             pointnet_model=pointnet_model,
             device=device,
             n_draws=100,

@@ -218,9 +218,9 @@ def main_worker(rank, world_size, args):
                 [-10.0, 10.0],
                 [-10.0, 10.0],
             ])
-    else
+    else:
         theta_bounds = None
-    param_prediction_model = TransformerHead(latent_dim, theta_dim, ranges=theta_bounds))
+    param_prediction_model = TransformerHead(latent_dim, theta_dim, ranges=theta_bounds)
     param_prediction_model = param_prediction_model.to(device)
     param_prediction_model = DDP(param_prediction_model, device_ids=[rank])
 
