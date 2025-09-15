@@ -390,6 +390,27 @@ Examples:
             problem=args.problem,
             save_path=os.path.join(plot_dir, "params_distribution.png")
         )
+        # New parameter error analysis
+        plot_parameter_error_histogram(
+            true_params_list=[true_params1, true_params2, ...],
+            predicted_params_list=[pred_params1, pred_params2, ...],
+            save_path="param_errors.png",
+            problem='simplified_dis'
+        )
+
+        # Enhanced event visualization with both views
+        plot_event_histogram_simplified_DIS(
+            model, pointnet_model, true_params, device,
+            plot_type='both',  # Shows both scatter and 2D histogram
+            save_path="events_enhanced.png"
+        )
+
+        # Publication-ready parameter distributions
+        plot_params_distribution_single(
+            model, pointnet_model, true_params, device,
+            laplace_model=laplace_model,  # For analytic uncertainty
+            save_path="param_distributions.png"
+        )
         if args.problem != 'mceg':
             plot_PDF_distribution_single_same_plot(
                 model=model,
