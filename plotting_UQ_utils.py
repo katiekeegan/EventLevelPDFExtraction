@@ -123,7 +123,14 @@ import matplotlib.cm as cm
 import numpy as np
 import os
 import pylab as py
-from datasets import *
+from tqdm import tqdm
+from typing import Optional, Callable
+
+# Try to import datasets, but don't fail if not available
+try:
+    from datasets import *
+except ImportError:
+    pass  # Will handle missing dataset classes in get_datasets() function
 
 # Set publication-ready plotting style
 plt.style.use('default')  # Start with clean default style
@@ -4743,5 +4750,348 @@ def plot_summary_uncertainty_scaling(
             print("   ⚠️  GOOD: Uncertainty scaling is mostly consistent")
         else:
             print("   ❌ POOR: Uncertainty scaling deviates significantly from expected behavior")
+
+def get_parameter_bounds_for_problem(problem):
+    """
+    Get parameter bounds for different problem types based on Dataset class definitions.
     
-    return summary_metrics
+    Parameters:
+    -----------
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+        
+    Returns:
+    --------
+    torch.Tensor
+        Parameter bounds tensor of shape (n_params, 2) where bounds[:, 0] are lower bounds
+        and bounds[:, 1] are upper bounds
+    """
+    if problem == 'simplified_dis':
+        # From DISDataset class: [[0.0, 5]] * theta_dim for theta_dim=4
+        return torch.tensor([[0.0, 5.0]] * 4)
+    elif problem == 'realistic_dis':
+        # From RealisticDISDataset class
+        return torch.tensor([
+            [-2.0, 2.0],   # logA0
+            [-1.0, 1.0],   # delta
+            [0.0, 5.0],    # a
+            [0.0, 10.0],   # b
+            [-5.0, 5.0],   # c
+            [-5.0, 5.0],   # d
+        ])
+    elif problem == 'mceg':
+        # From MCEGDISDataset class
+        return torch.tensor([
+            [-1.0, 10.0],
+            [0.0, 10.0],
+            [-10.0, 10.0],
+            [-10.0, 10.0],
+        ])
+    elif problem == 'gaussian':
+        # From Gaussian2DDataset class
+        return torch.tensor([
+            [-2.0, 2.0],   # mu_x
+            [-2.0, 2.0],   # mu_y
+            [0.5, 2.0],    # sigma_x
+            [0.5, 2.0],    # sigma_y
+            [-0.8, 0.8],   # rho
+        ])
+    else:
+        raise ValueError(f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'realistic_dis', 'mceg', 'gaussian'")
+
+def get_simulator_for_problem(problem, device=None):
+    """
+    Get the appropriate simulator for the given problem type.
+    
+    Parameters:
+    -----------
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+    device : torch.device, optional
+        Device to run the simulator on
+        
+    Returns:
+    --------
+    simulator
+        The appropriate simulator instance
+    """
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    
+    if problem == 'simplified_dis':
+        if SimplifiedDIS is None:
+            raise ImportError("Could not import SimplifiedDIS from simulator module")
+        return SimplifiedDIS(device=device)
+    elif problem == 'realistic_dis':
+        if RealisticDIS is None:
+            raise ImportError("Could not import RealisticDIS from simulator module")
+        return RealisticDIS(device=device, smear=True, smear_std=0.05)
+    elif problem == 'mceg':
+        if MCEGSimulator is None:
+            raise ImportError("Could not import MCEGSimulator from simulator module")
+        return MCEGSimulator(device=device)
+    elif problem == 'gaussian':
+        try:
+            from simulator import Gaussian2DSimulator
+            return Gaussian2DSimulator(device=device)
+        except ImportError:
+            raise ImportError("Could not import Gaussian2DSimulator from simulator module")
+    else:
+        raise ValueError(f"Unknown problem type: {problem}")
+
+@torch.no_grad()
+def generate_parameter_error_histogram(
+    model, 
+    pointnet_model, 
+    device,
+    n_draws=100,
+    n_events=10000,
+    problem='simplified_dis',
+    laplace_model=None,
+    save_path="parameter_error_histogram.png",
+    param_names=None,
+    return_data=False
+):
+    """
+    Automatically retrieves parameter bounds, samples parameter sets, generates events,
+    runs inference pipeline, and creates publication-ready parameter error histograms.
+    
+    This is a comprehensive utility function that benchmarks model accuracy across the
+    parameter space with minimal user input.
+    
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        Trained inference model (InferenceNet)
+    pointnet_model : torch.nn.Module
+        Trained PointNet model for latent extraction
+    device : torch.device
+        Device to run computations on
+    n_draws : int, default=100
+        Number of parameter sets to sample and evaluate
+    n_events : int, default=10000
+        Number of events to generate per parameter set
+    problem : str, default='simplified_dis'
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+    laplace_model : optional
+        Laplace approximation model for uncertainty quantification
+    save_path : str, default="parameter_error_histogram.png"
+        Path to save the histogram plot
+    param_names : list of str, optional
+        Parameter names for axis labels. Auto-generated if None.
+    return_data : bool, default=False
+        If True, return the true and predicted parameter lists
+        
+    Returns:
+    --------
+    None or tuple
+        If return_data=True, returns (true_params_list, predicted_params_list)
+        Otherwise saves the plot and returns None
+        
+    Raises:
+    -------
+    ImportError
+        If required simulator modules are not available
+    ValueError  
+        If problem type is not supported
+    RuntimeError
+        If model inference fails
+        
+    Examples:
+    ---------
+    >>> generate_parameter_error_histogram(
+    ...     model, pointnet_model, device,
+    ...     n_draws=200, n_events=50000,
+    ...     problem='simplified_dis',
+    ...     save_path='simplified_dis_errors.png'
+    ... )
+    
+    >>> # With Laplace uncertainty
+    >>> generate_parameter_error_histogram(
+    ...     model, pointnet_model, device,
+    ...     laplace_model=laplace_model,
+    ...     problem='realistic_dis',
+    ...     save_path='realistic_dis_errors.png'
+    ... )
+    """
+    print(f"🎯 Starting parameter error histogram generation...")
+    print(f"   Problem: {problem}")
+    print(f"   Parameter draws: {n_draws}")
+    print(f"   Events per draw: {n_events}")
+    
+    # Set models to evaluation mode
+    model.eval()
+    pointnet_model.eval()
+    if laplace_model is not None:
+        laplace_model.eval()
+    
+    # Get parameter bounds and simulator for the problem
+    try:
+        theta_bounds = get_parameter_bounds_for_problem(problem).to(device)
+        simulator = get_simulator_for_problem(problem, device=device)
+        print(f"   ✅ Parameter bounds: {theta_bounds.shape[0]} parameters")
+    except Exception as e:
+        raise RuntimeError(f"Failed to setup problem '{problem}': {str(e)}")
+    
+    # Get feature engineering function
+    try:
+        advanced_feature_engineering = get_advanced_feature_engineering()
+        print(f"   ✅ Feature engineering function loaded")
+    except Exception as e:
+        print(f"   ⚠️  Warning: Could not load advanced_feature_engineering: {e}")
+        print(f"       Using identity function as fallback")
+        advanced_feature_engineering = lambda x: x
+    
+    # Storage for results
+    true_params_list = []
+    predicted_params_list = []
+    failed_samples = 0
+    
+    print(f"   🔄 Processing {n_draws} parameter samples...")
+    
+    # Process each parameter draw
+    for i in tqdm(range(n_draws), desc="Generating parameter errors"):
+        try:
+            # Sample random parameters from bounds
+            theta_raw = torch.rand(theta_bounds.shape[0], device=device)
+            true_params = (theta_raw * (theta_bounds[:, 1] - theta_bounds[:, 0]) + 
+                          theta_bounds[:, 0])
+            
+            # Generate events using the simulator
+            try:
+                if problem == 'gaussian':
+                    xs = simulator.sample(true_params, nevents=n_events)
+                else:
+                    xs = simulator.sample(true_params, n_events)
+                
+                # Handle different output shapes from simulators
+                if xs.dim() == 1:
+                    xs = xs.unsqueeze(0)
+                if xs.shape[0] != n_events:
+                    if xs.shape[1] == n_events:
+                        xs = xs.t()  # transpose if needed
+                    else:
+                        # Pad or truncate to get correct number of events
+                        if xs.shape[0] > n_events:
+                            xs = xs[:n_events]
+                        else:
+                            # Pad with zeros if needed
+                            pad_size = n_events - xs.shape[0]
+                            if xs.dim() == 2:
+                                padding = torch.zeros(pad_size, xs.shape[1], device=device)
+                            else:
+                                padding = torch.zeros(pad_size, device=device)
+                            xs = torch.cat([xs, padding], dim=0)
+                
+            except Exception as e:
+                print(f"   ⚠️  Failed to generate events for sample {i}: {e}")
+                failed_samples += 1
+                continue
+            
+            # Apply feature engineering
+            try:
+                xs_engineered = advanced_feature_engineering(xs)
+                if not isinstance(xs_engineered, torch.Tensor):
+                    xs_engineered = torch.tensor(xs_engineered, device=device, dtype=torch.float32)
+                xs_engineered = xs_engineered.to(device)
+            except Exception as e:
+                print(f"   ⚠️  Feature engineering failed for sample {i}: {e}")
+                failed_samples += 1
+                continue
+            
+            # Extract latent features using PointNet
+            try:
+                # Add batch dimension if needed
+                if xs_engineered.dim() == 2:
+                    xs_batch = xs_engineered.unsqueeze(0)  # [1, n_events, n_features]
+                else:
+                    xs_batch = xs_engineered
+                
+                latent = pointnet_model(xs_batch)  # [1, latent_dim]
+                
+                if latent.dim() == 1:
+                    latent = latent.unsqueeze(0)
+                    
+            except Exception as e:
+                print(f"   ⚠️  PointNet inference failed for sample {i}: {e}")
+                failed_samples += 1
+                continue
+            
+            # Predict parameters using the inference model
+            try:
+                if hasattr(model, 'nll_mode') and model.nll_mode:
+                    # Handle NLL mode (returns mean and log_var)
+                    predicted_mean, predicted_log_var = model(latent)
+                    predicted_params = predicted_mean.squeeze()
+                else:
+                    # Standard mode
+                    predicted_params = model(latent).squeeze()
+                
+                # Handle Laplace uncertainty if available
+                if laplace_model is not None:
+                    try:
+                        # Get uncertainty-aware predictions
+                        with torch.no_grad():
+                            laplace_samples = laplace_model.sample(10, x=latent)  # Sample from posterior
+                            predicted_params = laplace_samples.mean(dim=0).squeeze()
+                    except Exception as e:
+                        print(f"   ⚠️  Laplace inference failed for sample {i}, using standard prediction: {e}")
+                
+            except Exception as e:
+                print(f"   ⚠️  Parameter prediction failed for sample {i}: {e}")
+                failed_samples += 1
+                continue
+            
+            # Store results
+            true_params_list.append(true_params.detach().cpu())
+            predicted_params_list.append(predicted_params.detach().cpu())
+            
+        except Exception as e:
+            print(f"   ⚠️  Sample {i} failed with unexpected error: {e}")
+            failed_samples += 1
+            continue
+    
+    # Check if we have enough successful samples
+    successful_samples = len(true_params_list)
+    if successful_samples == 0:
+        raise RuntimeError("All parameter samples failed. Check model compatibility and data pipeline.")
+    elif failed_samples > 0:
+        print(f"   ⚠️  {failed_samples}/{n_draws} samples failed, proceeding with {successful_samples} successful samples")
+    
+    print(f"   ✅ Successfully processed {successful_samples} parameter samples")
+    
+    # Generate the histogram plot using existing function
+    try:
+        plot_parameter_error_histogram(
+            true_params_list=true_params_list,
+            predicted_params_list=predicted_params_list,
+            param_names=param_names,
+            save_path=save_path,
+            problem=problem
+        )
+        print(f"   ✅ Parameter error histogram saved to: {save_path}")
+    except Exception as e:
+        print(f"   ❌ Failed to create histogram plot: {e}")
+        raise
+    
+    # Print summary statistics
+    if successful_samples > 0:
+        true_params_array = torch.stack(true_params_list)
+        predicted_params_array = torch.stack(predicted_params_list)
+        
+        abs_errors = torch.abs(predicted_params_array - true_params_array)
+        rel_errors = abs_errors / (torch.abs(true_params_array) + 1e-8)
+        
+        print(f"\n📊 Error Statistics Summary:")
+        print(f"   Mean absolute error: {abs_errors.mean():.4f}")
+        print(f"   Mean relative error: {rel_errors.mean():.4f}")
+        print(f"   Max absolute error: {abs_errors.max():.4f}")
+        print(f"   Max relative error: {rel_errors.max():.4f}")
+        
+        for i in range(true_params_array.shape[1]):
+            param_name = param_names[i] if param_names else f"θ_{i}"
+            print(f"   {param_name}: MAE={abs_errors[:, i].mean():.4f}, MRE={rel_errors[:, i].mean():.4f}")
+    
+    print(f"🎯 Parameter error histogram generation complete!")
+    
+    if return_data:
+        return true_params_list, predicted_params_list
