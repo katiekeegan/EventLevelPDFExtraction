@@ -16,6 +16,17 @@ New Functions:
    Creates histograms of average entrywise function value errors with probability
    density visualization, mean/median indicators, and comprehensive statistics.
 
+3. generate_parameter_error_histogram:
+   **NEW STANDALONE UTILITY** - Automated parameter error benchmarking function
+   that handles the complete workflow from parameter sampling to histogram plotting:
+   - Automatically retrieves parameter bounds for different problem types
+   - Uniformly samples parameter sets from bounds
+   - Generates events using appropriate simulators
+   - Runs complete inference pipeline (featurize → PointNet → predict)
+   - Creates publication-ready error histograms with comprehensive statistics
+   - Supports optional Laplace uncertainty quantification
+   - Minimal user input required - just provide models and settings
+
 Enhanced Functions:
 ==================
 
@@ -95,6 +106,24 @@ plot_PDF_distribution_single(
     model, pointnet_model, true_params, device,
     laplace_model=laplace_model,
     save_dir="./pdf_plots/"
+)
+
+# NEW: Automated parameter error benchmarking (standalone function)
+generate_parameter_error_histogram(
+    model, pointnet_model, device,
+    n_draws=100, n_events=10000,
+    problem='simplified_dis',
+    save_path="automated_param_errors.png"
+)
+
+# NEW: With custom settings and data return
+true_params, pred_params = generate_parameter_error_histogram(
+    model, pointnet_model, device,
+    n_draws=200, n_events=50000,
+    problem='realistic_dis',
+    laplace_model=laplace_model,
+    param_names=['logA0', 'delta', 'a', 'b', 'c', 'd'],
+    return_data=True
 )
 
 Dependencies:
