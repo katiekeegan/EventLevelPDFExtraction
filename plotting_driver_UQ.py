@@ -390,12 +390,14 @@ Examples:
             problem=args.problem,
             save_path=os.path.join(plot_dir, "params_distribution.png")
         )
-        # New parameter error analysis
-        plot_parameter_error_histogram(
-            true_params_list=[true_params1, true_params2, ...],
-            predicted_params_list=[pred_params1, pred_params2, ...],
-            save_path="param_errors.png",
-            problem='simplified_dis'
+        generate_parameter_error_histogram(
+            model=inference_model,
+            pointnet_model=pointnet_model,
+            device=device,
+            n_draws=100,
+            n_events=args.num_events,
+            problem=args.problem,
+            save_path=plot_dir + 'param_errors.png'
         )
 
         # Enhanced event visualization with both views
