@@ -1,9 +1,335 @@
+"""
+Enhanced Plotting Utilities for Uncertainty Quantification in PDF Parameter Inference
+
+This module provides publication-ready plotting functions for visualizing uncertainty
+in PDF parameter inference, with a focus on the simplified DIS problem. All plots
+are designed to be beautiful, clear, and suitable for publication.
+
+New Functions:
+==============
+
+1. plot_parameter_error_histogram:
+   Creates histograms showing parameter errors across multiple parameter choices.
+   Features both absolute and relative error analysis with statistical annotations.
+
+2. plot_function_error_histogram:  
+   Creates histograms of average entrywise function value errors with probability
+   density visualization, mean/median indicators, and comprehensive statistics.
+
+Enhanced Functions:
+==================
+
+1. plot_event_histogram_simplified_DIS:
+   - Now provides both scatter plots and true 2D histograms
+   - Log-scale colorbars with proper normalization
+   - Clear axis labels and mathematical notation
+   - Multiple visualization modes: 'scatter', 'histogram', or 'both'
+
+2. plot_params_distribution_single:
+   - Publication-ready styling with colorblind-friendly colors
+   - Confidence interval visualization (±1σ, ±2σ)
+   - Professional typography and mathematical notation
+   - Statistical text boxes with mean/std information
+   - Adaptive subplot layout for any number of parameters
+
+3. plot_PDF_distribution_single:
+   - Enhanced uncertainty visualization with multiple confidence levels
+   - Beautiful color schemes for different PDF functions
+   - Error statistics and comparison with true functions
+   - Professional mathematical notation and legends
+
+Aesthetic Features:
+==================
+
+All plotting functions now include:
+- Colorblind-friendly color palettes (verified with colorbrewer)
+- Professional mathematical notation with LaTeX formatting
+- Publication-ready typography and layout
+- Proper gridlines, tick marks, and spacing
+- Comprehensive legends and statistical annotations
+- High-DPI output (300 DPI) suitable for publication
+- Consistent styling across all plot types
+
+Color Schemes:
+=============
+
+COLORBLIND_COLORS: Main palette safe for colorblind users
+UNCERTAINTY_COLORS: Specific colors for uncertainty visualization  
+PDF_FUNCTION_COLORS: Colors for different PDF functions (u, d, q)
+
+Usage Examples:
+==============
+
+# Parameter error analysis
+plot_parameter_error_histogram(
+    true_params_list=[true_params1, true_params2, ...],
+    predicted_params_list=[pred_params1, pred_params2, ...],
+    save_path="param_errors.png",
+    problem='simplified_dis'
+)
+
+# Function error analysis  
+plot_function_error_histogram(
+    true_function_values_list=[true_vals1, true_vals2, ...],
+    predicted_function_values_list=[pred_vals1, pred_vals2, ...],
+    function_names=['u(x)', 'd(x)'],
+    save_path="function_errors.png"
+)
+
+# Enhanced event visualization
+plot_event_histogram_simplified_DIS(
+    model, pointnet_model, true_params, device,
+    plot_type='both',  # Show both scatter and histogram
+    save_path="events_both.png"
+)
+
+# Parameter distributions with confidence intervals
+plot_params_distribution_single(
+    model, pointnet_model, true_params, device,
+    laplace_model=laplace_model,  # For analytic uncertainty
+    save_path="param_distributions.png"
+)
+
+# PDF uncertainty with multiple confidence levels
+plot_PDF_distribution_single(
+    model, pointnet_model, true_params, device,
+    laplace_model=laplace_model,
+    save_dir="./pdf_plots/"
+)
+
+Dependencies:
+============
+
+Required:
+- matplotlib
+- numpy
+- torch
+
+Optional (with fallbacks):
+- seaborn (for enhanced color palettes)
+- scipy (for advanced statistics)
+
+Note: All functions include fallback implementations when optional dependencies
+are not available, ensuring robust operation in any environment.
+
+Version: Enhanced for publication-ready output
+Author: Enhanced plotting utilities for PDFParameterInference
+"""
+
 import torch
 import matplotlib.pyplot as plt
+import matplotlib.colors as colors
+import matplotlib.cm as cm
 import numpy as np
 import os
 import pylab as py
 from datasets import *
+
+# Set publication-ready plotting style
+plt.style.use('default')  # Start with clean default style
+plt.rcParams.update({
+    'font.size': 12,
+    'axes.labelsize': 14,
+    'axes.titlesize': 16,
+    'legend.fontsize': 11,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'figure.dpi': 300,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'figure.figsize': [10, 8],
+    'axes.grid': True,
+    'grid.alpha': 0.3,
+    'grid.linewidth': 0.5,
+    'axes.axisbelow': True,
+    'axes.edgecolor': '#333333',
+    'axes.linewidth': 1.2,
+    'xtick.direction': 'in',
+    'ytick.direction': 'in',
+    'xtick.major.size': 6,
+    'ytick.major.size': 6,
+    'xtick.minor.size': 3,
+    'ytick.minor.size': 3,
+})
+
+# Define colorblind-friendly color palette
+COLORBLIND_COLORS = {
+    'blue': '#1f77b4',
+    'orange': '#ff7f0e', 
+    'green': '#2ca02c',
+    'red': '#d62728',
+    'purple': '#9467bd',
+    'brown': '#8c564b',
+    'pink': '#e377c2',
+    'gray': '#7f7f7f',
+    'olive': '#bcbd22',
+    'cyan': '#17becf',
+    'dark_blue': '#0c2c84',
+    'dark_orange': '#cc5500',
+    'dark_green': '#006400'
+}
+
+# Enhanced color schemes for specific plot types
+UNCERTAINTY_COLORS = {
+    'model': COLORBLIND_COLORS['blue'],
+    'data': COLORBLIND_COLORS['orange'], 
+    'combined': COLORBLIND_COLORS['purple'],
+    'true': COLORBLIND_COLORS['dark_green'],
+    'predicted': COLORBLIND_COLORS['red']
+}
+
+PDF_FUNCTION_COLORS = {
+    'up': COLORBLIND_COLORS['blue'],
+    'down': COLORBLIND_COLORS['orange'],
+    'q': COLORBLIND_COLORS['green']
+}
+
+def setup_publication_axes(ax, xlabel="", ylabel="", title="", legend=True, grid=True):
+    """
+    Apply consistent publication-ready styling to matplotlib axes.
+    
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes object to style
+    xlabel : str
+        X-axis label with LaTeX formatting
+    ylabel : str  
+        Y-axis label with LaTeX formatting
+    title : str
+        Plot title
+    legend : bool
+        Whether to show legend if present
+    grid : bool
+        Whether to show grid
+    """
+    if xlabel:
+        ax.set_xlabel(xlabel, fontsize=12)
+    if ylabel:
+        ax.set_ylabel(ylabel, fontsize=12)
+    if title:
+        ax.set_title(title, fontsize=14, pad=15, fontweight='bold')
+    
+    # Enhanced tick styling
+    ax.tick_params(which='both', direction='in', labelsize=10)
+    ax.tick_params(which='major', length=6)
+    ax.tick_params(which='minor', length=3)
+    
+    # Grid styling
+    if grid:
+        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+    
+    # Legend styling
+    if legend and ax.get_legend():
+        leg = ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=10)
+        leg.get_frame().set_alpha(0.9)
+
+def add_statistics_box(ax, data, position='top_left', format_str='.3f'):
+    """
+    Add a statistics text box to a plot.
+    
+    Parameters:
+    -----------
+    ax : matplotlib.axes.Axes
+        The axes to add the box to
+    data : array-like
+        Data to compute statistics for
+    position : str
+        Where to place the box ('top_left', 'top_right', 'bottom_left', 'bottom_right')
+    format_str : str
+        Format string for numbers
+    """
+    mean_val = np.mean(data)
+    std_val = np.std(data)
+    median_val = np.median(data)
+    
+    stats_text = f'μ = {mean_val:{format_str}}\nσ = {std_val:{format_str}}\nMedian = {median_val:{format_str}}'
+    
+    # Position mapping
+    positions = {
+        'top_left': (0.02, 0.98, 'top', 'left'),
+        'top_right': (0.98, 0.98, 'top', 'right'), 
+        'bottom_left': (0.02, 0.02, 'bottom', 'left'),
+        'bottom_right': (0.98, 0.02, 'bottom', 'right')
+    }
+    
+    x, y, va, ha = positions.get(position, positions['top_left'])
+    
+    ax.text(x, y, stats_text, transform=ax.transAxes,
+           verticalalignment=va, horizontalalignment=ha, fontsize=9,
+           bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+
+def create_error_summary_plot(
+    errors_dict, 
+    titles_dict=None,
+    save_path="error_summary.png",
+    figsize=(15, 10)
+):
+    """
+    Create a comprehensive error summary plot with multiple error types.
+    
+    Parameters:
+    -----------
+    errors_dict : dict
+        Dictionary with error type as key and error arrays as values
+    titles_dict : dict, optional
+        Dictionary with error type as key and plot titles as values
+    save_path : str
+        Path to save the summary plot
+    figsize : tuple
+        Figure size
+    """
+    n_error_types = len(errors_dict)
+    cols = min(3, n_error_types)
+    rows = (n_error_types + cols - 1) // cols
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
+    if n_error_types == 1:
+        axes = [axes]
+    elif rows == 1:
+        axes = list(axes)
+    else:
+        axes = axes.flatten()
+    
+    colors = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+              COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple'],
+              COLORBLIND_COLORS['brown'], COLORBLIND_COLORS['pink']]
+    
+    for i, (error_type, errors) in enumerate(errors_dict.items()):
+        if i >= len(axes):
+            break
+            
+        ax = axes[i]
+        color = colors[i % len(colors)]
+        
+        # Create histogram
+        counts, bins, patches = ax.hist(
+            errors, bins=30, alpha=0.7, color=color,
+            edgecolor='white', linewidth=0.5, density=True
+        )
+        
+        # Add mean and median lines
+        mean_err = np.mean(errors)
+        median_err = np.median(errors)
+        ax.axvline(mean_err, color='red', linestyle='--', alpha=0.8, 
+                  linewidth=2, label=f'Mean: {mean_err:.4f}')
+        ax.axvline(median_err, color='purple', linestyle=':', alpha=0.8,
+                  linewidth=2, label=f'Median: {median_err:.4f}')
+        
+        # Styling
+        title = titles_dict.get(error_type, error_type) if titles_dict else error_type
+        setup_publication_axes(ax, xlabel='Error Value', ylabel='Density', title=title)
+        add_statistics_box(ax, errors, position='top_right')
+        
+    # Hide extra subplots
+    for i in range(n_error_types, len(axes)):
+        axes[i].set_visible(False)
+    
+    plt.suptitle('Error Analysis Summary', fontsize=16, y=0.98)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.93)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
 
 # Import optional dependencies with fallbacks
 try:
@@ -194,18 +520,66 @@ def plot_params_distribution_single(
     problem='simplified_dis'
 ):
     """
-    Plot parameter distributions using analytic Laplace uncertainty propagation.
+    Create publication-ready parameter distribution plots with analytic Laplace uncertainty propagation.
     
+    This function generates beautiful, clear distribution plots showing posterior uncertainty
+    over model parameters, with optional comparison to simulation-based inference (SBI) methods.
+    
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module  
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values for comparison
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples (ignored when using analytic uncertainty)
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    compare_with_sbi : bool
+        Whether to include SBI posterior comparisons
+    sbi_posteriors : list of torch.Tensor, optional
+        SBI posterior samples for comparison
+    sbi_labels : list of str, optional
+        Labels for SBI methods
+    save_path : str
+        Path to save the plot
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        
+    Returns:
+    --------
+    None
+        Saves the publication-ready plot to save_path
+        
+    Notes:
+    ------
     When laplace_model is provided, uses analytic uncertainty propagation via 
     delta method instead of Monte Carlo sampling for improved speed and accuracy.
+    The resulting plots feature:
+    - Colorblind-friendly color palette
+    - Clear mathematical notation in labels
+    - Professional typography and layout
+    - Proper uncertainty visualization with filled regions
+    - Comparison with true parameter values
     """
     model.eval()
     pointnet_model.eval()
+    
+    # Get simulators with fallback
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
     if problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
     else:
         simulator = SimplifiedDIS(torch.device('cpu'))
 
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -221,79 +595,155 @@ def plot_params_distribution_single(
         mean_params = mean_params.cpu().squeeze(0)
         std_params = std_params.cpu().squeeze(0)
         use_analytic = True
+        uncertainty_label = "Analytic (Laplace)"
     else:
         # Fallback to MC sampling for backward compatibility
         samples = get_gaussian_samples(model, latent_embedding, n_samples=n_mc, laplace_model=laplace_model).cpu()
+        mean_params = torch.mean(samples, dim=0)
+        std_params = torch.std(samples, dim=0)
         use_analytic = False
+        uncertainty_label = "Monte Carlo"
 
     n_params = true_params.size(0)
-    fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
+    
+    # Set parameter names with proper mathematical notation
+    if problem == 'simplified_dis':
+        param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+    elif problem == 'realistic_dis':
+        param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+    elif problem == 'mceg':
+        param_names = [r'$\mu_1$', r'$\mu_2$', r'$\sigma_1$', r'$\sigma_2$']
+    else:
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
+    
+    # Set up color palette
+    base_colors = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple'],
+                   COLORBLIND_COLORS['brown'], COLORBLIND_COLORS['pink']]
+    
+    # Create subplots with proper sizing
+    cols = min(n_params, 4)  # Max 4 columns
+    rows = (n_params + cols - 1) // cols  # Ceiling division
+    figsize = (5 * cols, 4 * rows)
+    
+    fig, axes = plt.subplots(rows, cols, figsize=figsize)
     if n_params == 1:
         axes = [axes]
+    elif rows == 1:
+        axes = list(axes)
+    else:
+        axes = axes.flatten()
+    
+    # Hide extra subplots if needed
+    for i in range(n_params, len(axes)):
+        axes[i].set_visible(False)
 
-    colors = ['skyblue', 'orange', 'green', 'purple', 'gray']
-    param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$'] if problem == 'simplified_dis' else [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
-
-    # Prepare data for plotting
-    all_samples = []
-    if not use_analytic:
-        all_samples = [samples]
+    # Prepare SBI data for proper color cycling
+    all_samples = [samples] if not use_analytic else []
+    all_labels = [uncertainty_label]
+    
     if compare_with_sbi and sbi_posteriors is not None:
-        all_samples.extend([s.detach().cpu() for s in sbi_posteriors])
+        all_samples.extend(sbi_posteriors)
+        if sbi_labels is not None:
+            all_labels.extend(sbi_labels)
+        else:
+            all_labels.extend([f'SBI Method {i+1}' for i in range(len(sbi_posteriors))])
 
     for i in range(n_params):
+        ax = axes[i]
+        
         if use_analytic:
-            # Plot analytic Gaussian distribution
+            # Plot analytic Gaussian distribution with enhanced aesthetics
             mu = mean_params[i].item()
             sigma = std_params[i].item()
             
-            # Create x range around the mean
-            x_range = 4 * sigma  # Show ±4 standard deviations
+            # Create x range around the mean (show ±4 standard deviations)
+            x_range = max(4 * sigma, 0.1 * abs(mu))  # Ensure minimum range
             x_vals = torch.linspace(mu - x_range, mu + x_range, 1000)
             
             # Compute Gaussian PDF
             gaussian_pdf = torch.exp(-0.5 * ((x_vals - mu) / sigma) ** 2) / (sigma * torch.sqrt(2 * torch.tensor(torch.pi)))
             
-            # Plot the analytic Gaussian
-            axes[i].plot(x_vals.numpy(), gaussian_pdf.numpy(), color=colors[0], linewidth=2, 
-                        label='Analytic Posterior (Laplace)', alpha=0.8)
-            axes[i].fill_between(x_vals.numpy(), 0, gaussian_pdf.numpy(), color=colors[0], alpha=0.3)
+            # Plot the analytic Gaussian with enhanced styling
+            ax.plot(x_vals.numpy(), gaussian_pdf.numpy(), color=base_colors[0], linewidth=2.5, 
+                   label=f'Posterior ({uncertainty_label})', alpha=0.9, zorder=3)
+            ax.fill_between(x_vals.numpy(), 0, gaussian_pdf.numpy(), 
+                          color=base_colors[0], alpha=0.25, zorder=2)
+            
+            # Add confidence intervals
+            for n_sigma, alpha, label in [(1, 0.4, r'$\pm 1\sigma$'), (2, 0.2, r'$\pm 2\sigma$')]:
+                lower, upper = mu - n_sigma * sigma, mu + n_sigma * sigma
+                ax.axvspan(lower, upper, alpha=alpha, color=base_colors[0], zorder=1, 
+                          label=label if i == 0 else "")
             
             # Set appropriate x limits
-            axes[i].set_xlim(mu - x_range, mu + x_range)
+            ax.set_xlim(mu - x_range, mu + x_range)
+            
         else:
-            # Plot histogram from MC samples (legacy approach)
+            # Plot histogram from MC samples with enhanced styling
             param_vals = [s[:, i].numpy() for s in all_samples]
             xmin = min([v.min() for v in param_vals])
             xmax = max([v.max() for v in param_vals])
-            padding = 0.05 * (xmax - xmin)
+            padding = 0.1 * (xmax - xmin)
             xmin -= padding
             xmax += padding
             
-            axes[i].hist(samples[:, i].numpy(), bins=20, alpha=0.6, density=True, 
-                        color=colors[0], label='MC Posterior Samples')
-            axes[i].set_xlim(xmin, xmax)
+            # Plot main posterior
+            n, bins, patches = ax.hist(samples[:, i].numpy(), bins=30, alpha=0.7, density=True, 
+                                     color=base_colors[0], label=uncertainty_label,
+                                     edgecolor='white', linewidth=0.5)
+            ax.set_xlim(xmin, xmax)
 
         # Add SBI comparison if requested
         if compare_with_sbi and sbi_posteriors is not None and sbi_labels is not None:
             for j, sbi_samples in enumerate(sbi_posteriors):
-                label = sbi_labels[j] if j < len(sbi_labels) else f"SBI {j}"
-                axes[i].hist(
+                color_idx = (j + 1) % len(base_colors)
+                label = sbi_labels[j] if j < len(sbi_labels) else f"SBI {j+1}"
+                ax.hist(
                     sbi_samples[:, i].detach().cpu().numpy(),
-                    bins=20, alpha=0.4, density=True,
-                    color=colors[(j + 1) % len(colors)],
-                    label=label
+                    bins=30, alpha=0.6, density=True,
+                    color=base_colors[color_idx],
+                    label=label,
+                    edgecolor='white',
+                    linewidth=0.5
                 )
         
-        # Add true value line
-        axes[i].axvline(true_params[i].item(), color='red', linestyle='dashed', linewidth=2, label='True Value')
-        axes[i].set_title(f'{param_names[i]}')
-        axes[i].set_ylabel('Density')
+        # Add true value line with enhanced styling
+        true_val = true_params[i].item()
+        ax.axvline(true_val, color=COLORBLIND_COLORS['red'], linestyle='--', 
+                  linewidth=2.5, label='True Value', alpha=0.9, zorder=4)
+        
+        # Enhanced axis styling
+        ax.set_title(f'Parameter {param_names[i]}', fontsize=14, pad=15, fontweight='bold')
+        ax.set_xlabel(f'{param_names[i]}', fontsize=12)
+        ax.set_ylabel('Probability Density', fontsize=12)
+        ax.grid(True, alpha=0.3, linestyle=':', linewidth=0.5)
+        ax.tick_params(which='both', direction='in', labelsize=10)
+        
+        # Add legend only to first subplot to avoid clutter
         if i == 0: 
-            axes[i].legend()
+            ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=10)
+        
+        # Add statistics text box
+        if use_analytic:
+            stats_text = f'μ = {mu:.3f}\nσ = {sigma:.3f}'
+        else:
+            sample_mean = torch.mean(samples[:, i]).item()
+            sample_std = torch.std(samples[:, i]).item()
+            stats_text = f'μ = {sample_mean:.3f}\nσ = {sample_std:.3f}'
+            
+        ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
+               verticalalignment='top', fontsize=9,
+               bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
+    # Add overall title
+    method_str = "Analytic Laplace" if use_analytic else "Monte Carlo"
+    fig.suptitle(f'Parameter Posterior Distributions ({method_str} Uncertainty)', 
+                fontsize=16, y=0.98, fontweight='bold')
+    
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.subplots_adjust(top=0.93)  # Make room for suptitle
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_PDF_distribution_single(
@@ -309,27 +759,73 @@ def plot_PDF_distribution_single(
     save_path="pdf_distribution.png"
 ):
     """
-    Plot PDF distributions with function-level uncertainty quantification.
+    Create publication-ready PDF distribution plots with function-level uncertainty quantification.
     
-    **UPDATED APPROACH**: This function now emphasizes that uncertainty is computed 
-    over the predicted functions f(x), not just parameter uncertainty. For each 
-    parameter sample θ drawn from the posterior, we evaluate f(x|θ) at each x-point
-    and then compute pointwise statistics (median, IQR) of the function values.
+    This function generates beautiful, clear plots showing posterior uncertainty over predicted 
+    functions (PDFs), providing more interpretable uncertainty visualization than parameter-only plots.
+    
+    **ENHANCED APPROACH**: Uncertainty is computed over the predicted functions f(x), not just 
+    parameter uncertainty. For each parameter sample θ drawn from the posterior, we evaluate 
+    f(x|θ) at each x-point and then compute pointwise statistics (median, IQR) of the function values.
 
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values for comparison
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples for uncertainty estimation
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+    Q2_slices : list of float, optional
+        Q² values for realistic_dis problem (ignored for simplified_dis)
+    save_dir : str, optional
+        Directory to save plots (if None, uses current directory)
+    save_path : str
+        Base name for saved plots
+        
+    Returns:
+    --------
+    None
+        Saves publication-ready plots to specified paths
+        
     Method:
+    -------
     1. Extract latent representation from events generated with true parameters
     2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
     3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
     4. Compute pointwise median and quantiles of f(x) across all parameter samples
     5. Plot uncertainty bands reflecting function uncertainty at each x-point
 
-    This provides more interpretable uncertainty for PDF predictions compared to
-    parameter-only uncertainty reporting.
+    Features:
+    ---------
+    - Colorblind-friendly color palette
+    - Professional mathematical notation
+    - Clear uncertainty bands with IQR visualization
+    - Proper log-scale handling
+    - Statistical annotations and legends
     """
     model.eval()
     pointnet_model.eval()
-    simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
+    
+    # Get simulators with fallback
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    if problem == 'realistic_dis':
+        simulator = RealisticDIS(torch.device('cpu'))
+    elif problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
+    else:
+        simulator = SimplifiedDIS(torch.device('cpu'))
 
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -339,18 +835,17 @@ def plot_PDF_distribution_single(
         xs_tensor = xs_tensor
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
-    # --- Sampling strategy ---
-    # If Laplace is available, sample parameters from its Gaussian posterior.
-    # Otherwise, fall back to your legacy get_gaussian_samples behavior.
+    # --- Enhanced Sampling Strategy ---
     if laplace_model is not None:
         samples = get_gaussian_samples(
             model,
             latent_embedding,
             n_samples=n_mc,
-            laplace_model=laplace_model  # should draw from N(theta_hat, Sigma_laplace)
+            laplace_model=laplace_model
         ).cpu()
-        label_curve = "Median (function-level, Laplace posterior)"
-        label_band  = "IQR (function uncertainty)"
+        uncertainty_method = "Laplace Posterior"
+        label_curve = "Median (Analytic Uncertainty)"
+        label_band  = "IQR (Function Uncertainty)"
     else:
         samples = get_gaussian_samples(
             model,
@@ -358,12 +853,22 @@ def plot_PDF_distribution_single(
             n_samples=n_mc,
             laplace_model=None
         ).cpu()
-        label_curve = "Median (function-level, MC)"
-        label_band  = "IQR (function uncertainty)"
+        uncertainty_method = "Monte Carlo"
+        label_curve = "Median (MC Uncertainty)"
+        label_band  = "IQR (Function Uncertainty)"
 
     if problem == 'simplified_dis':
-        x_vals = torch.linspace(0, 1, 500).to(device)
-        for fn_name, fn_label, color in [("up", "u", "royalblue"), ("down", "d", "darkorange")]:
+        x_vals = torch.linspace(0.001, 1, 500).to(device)  # Start slightly above 0 for log scale
+        
+        # Enhanced color scheme
+        function_colors = {
+            'up': COLORBLIND_COLORS['blue'],
+            'down': COLORBLIND_COLORS['orange']
+        }
+        
+        for fn_name, fn_label, _ in [("up", "u", None), ("down", "d", None)]:
+            color = function_colors[fn_name]
+            
             # Evaluate function for each sampled parameter vector
             fn_vals_all = []
             for i in range(samples.shape[0]):
@@ -375,42 +880,86 @@ def plot_PDF_distribution_single(
             median_vals = fn_stack.median(dim=0).values.detach().cpu()
             lower_bounds = torch.quantile(fn_stack, 0.25, dim=0).detach().cpu()
             upper_bounds = torch.quantile(fn_stack, 0.75, dim=0).detach().cpu()
+            
+            # Additional confidence levels
+            p05_bounds = torch.quantile(fn_stack, 0.05, dim=0).detach().cpu()
+            p95_bounds = torch.quantile(fn_stack, 0.95, dim=0).detach().cpu()
 
             # True curve
             simulator.init(true_params.squeeze())
             true_vals = getattr(simulator, fn_name)(x_vals).detach().cpu()
 
-            # Plot
-            fig, ax = plt.subplots(figsize=(7, 5))
-            ax.plot(x_vals.detach().cpu(), true_vals, label=fr"True ${fn_label}(x|\theta^*)$", color=color, linewidth=2)
+            # Create enhanced plot
+            fig, ax = plt.subplots(figsize=(10, 7))
+            
+            # Plot true function with enhanced styling
+            ax.plot(x_vals.detach().cpu(), true_vals, 
+                   label=fr"True ${fn_label}(x|\theta^*)$", 
+                   color=COLORBLIND_COLORS['dark_green'], 
+                   linewidth=3, alpha=0.9, zorder=3)
+            
+            # Plot predicted median with enhanced styling
             ax.plot(
                 x_vals.detach().cpu(),
                 median_vals,
-                linestyle='--',
+                linestyle='-',
                 label=fr"{label_curve} ${fn_label}(x)$",
-                color="crimson",
-                linewidth=2
+                color=color,
+                linewidth=2.5,
+                alpha=0.9,
+                zorder=2
             )
+            
+            # Plot uncertainty bands with multiple confidence levels
+            ax.fill_between(
+                x_vals.detach().cpu(),
+                p05_bounds,
+                p95_bounds,
+                color=color,
+                alpha=0.15,
+                label="90% Confidence",
+                zorder=0
+            )
+            
             ax.fill_between(
                 x_vals.detach().cpu(),
                 lower_bounds,
                 upper_bounds,
-                color="crimson",
+                color=color,
                 alpha=0.3,
-                label=label_band
+                label="IQR (25%-75%)",
+                zorder=1
             )
 
-            ax.set_xlabel(r"$x$")
-            ax.set_ylabel(fr"${fn_label}(x|\theta)$")
+            # Enhanced axis styling
+            ax.set_xlabel(r"$x$", fontsize=14)
+            ax.set_ylabel(fr"${fn_label}(x|\theta)$", fontsize=14)
             ax.set_xlim(1e-3, 1)
             ax.set_xscale("log")
-            ax.grid(True, which='both', linestyle=':', linewidth=0.5)
-            ax.legend(frameon=False)
-            ax.set_title(f"Function-Level Uncertainty: {fn_name.title()} PDF\n"
-                        f"({n_mc} parameter samples)")
+            ax.set_yscale("log")
+            ax.grid(True, which='both', linestyle=':', linewidth=0.5, alpha=0.3)
+            ax.tick_params(which='both', direction='in', labelsize=11)
+            
+            # Enhanced legend
+            ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=11, loc='best')
+            
+            # Enhanced title with method information
+            ax.set_title(f"PDF Function Uncertainty: {fn_name.title()} Distribution\n"
+                        f"Method: {uncertainty_method} ({n_mc} samples)", 
+                        fontsize=14, pad=20, fontweight='bold')
+            
+            # Add statistical information box
+            mean_error = torch.mean(torch.abs(median_vals - true_vals)).item()
+            max_error = torch.max(torch.abs(median_vals - true_vals)).item()
+            stats_text = f'Mean |Error|: {mean_error:.4f}\nMax |Error|: {max_error:.4f}'
+            
+            ax.text(0.02, 0.02, stats_text, transform=ax.transAxes, 
+                   verticalalignment='bottom', fontsize=10,
+                   bbox=dict(boxstyle='round,pad=0.4', facecolor='white', alpha=0.8))
+            
             plt.tight_layout()
-            out_path = f"{save_dir}/{fn_name}.png" if save_dir else f"{fn_name}.png"
-            plt.savefig(out_path, dpi=300)
+            out_path = f"{save_dir}/{fn_name}_enhanced.png" if save_dir else f"{fn_name}_enhanced.png"
+            plt.savefig(out_path, dpi=300, bbox_inches='tight')
             plt.close(fig)
 
     elif problem == 'realistic_dis':
@@ -588,6 +1137,266 @@ def plot_PDF_distribution_single_same_plot(
         plt.savefig(save_path, dpi=300)
         plt.close(fig)
 
+def plot_parameter_error_histogram(
+    true_params_list,
+    predicted_params_list,
+    param_names=None,
+    save_path="parameter_error_histogram.png",
+    problem='simplified_dis'
+):
+    """
+    Create publication-ready histograms of parameter errors across multiple parameter choices.
+    
+    Parameters:
+    -----------
+    true_params_list : list of numpy arrays or torch tensors
+        List of true parameter sets, each array/tensor of shape (n_params,)
+    predicted_params_list : list of numpy arrays or torch tensors  
+        List of predicted parameter sets, each array/tensor of shape (n_params,)
+    param_names : list of str, optional
+        Parameter names for axis labels. Auto-generated if None.
+    save_path : str
+        Path to save the histogram plot
+    problem : str
+        Problem type ('simplified_dis' or 'realistic_dis') for default param names
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
+    """
+    # Convert to numpy if needed and compute errors
+    if isinstance(true_params_list[0], torch.Tensor):
+        true_params_list = [p.detach().cpu().numpy() for p in true_params_list]
+    if isinstance(predicted_params_list[0], torch.Tensor):
+        predicted_params_list = [p.detach().cpu().numpy() for p in predicted_params_list]
+        
+    true_params = np.array(true_params_list)  # Shape: (n_samples, n_params)
+    predicted_params = np.array(predicted_params_list)
+    
+    # Compute parameter errors
+    param_errors = predicted_params - true_params  # Shape: (n_samples, n_params)
+    relative_errors = param_errors / (true_params + 1e-8)  # Avoid division by zero
+    
+    n_params = param_errors.shape[1]
+    
+    # Set default parameter names
+    if param_names is None:
+        if problem == 'simplified_dis':
+            param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
+        elif problem == 'realistic_dis':
+            param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
+        else:
+            param_names = [f'$\\theta_{{{i}}}$' for i in range(n_params)]
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, n_params, figsize=(4*n_params, 10))
+    if n_params == 1:
+        axes = axes.reshape(2, 1)
+    
+    colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['red']]
+    
+    for i in range(n_params):
+        color = colors_list[i % len(colors_list)]
+        
+        # Absolute errors (top row)
+        ax_abs = axes[0, i]
+        n_bins = min(50, max(10, len(param_errors) // 5))  # Adaptive binning
+        counts, bins, patches = ax_abs.hist(
+            param_errors[:, i], 
+            bins=n_bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5
+        )
+        
+        # Add vertical line at zero
+        ax_abs.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
+        
+        # Statistics text
+        mean_err = np.mean(param_errors[:, i])
+        std_err = np.std(param_errors[:, i])
+        ax_abs.text(0.02, 0.98, f'μ = {mean_err:.3f}\nσ = {std_err:.3f}', 
+                   transform=ax_abs.transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_abs.set_xlabel(f'Error in {param_names[i]}')
+        ax_abs.set_ylabel('Frequency')
+        ax_abs.set_title(f'Absolute Error: {param_names[i]}')
+        ax_abs.grid(True, alpha=0.3)
+        ax_abs.legend()
+        
+        # Relative errors (bottom row)
+        ax_rel = axes[1, i]
+        counts, bins, patches = ax_rel.hist(
+            relative_errors[:, i] * 100,  # Convert to percentage
+            bins=n_bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5
+        )
+        
+        # Add vertical line at zero
+        ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
+        
+        # Statistics text
+        mean_rel_err = np.mean(relative_errors[:, i]) * 100
+        std_rel_err = np.std(relative_errors[:, i]) * 100
+        ax_rel.text(0.02, 0.98, f'μ = {mean_rel_err:.1f}%\nσ = {std_rel_err:.1f}%', 
+                   transform=ax_rel.transAxes, verticalalignment='top',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_rel.set_xlabel(f'Relative Error in {param_names[i]} (%)')
+        ax_rel.set_ylabel('Frequency')
+        ax_rel.set_title(f'Relative Error: {param_names[i]}')
+        ax_rel.grid(True, alpha=0.3)
+        ax_rel.legend()
+    
+    plt.suptitle('Parameter Error Analysis', fontsize=18, y=0.95)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
+def plot_function_error_histogram(
+    true_function_values_list,
+    predicted_function_values_list,
+    function_names=None,
+    save_path="function_error_histogram.png",
+    bins=50
+):
+    """
+    Create publication-ready histograms of average entrywise function value errors.
+    
+    Parameters:
+    -----------
+    true_function_values_list : list of numpy arrays
+        List of true function evaluations, each array of shape (n_points,) or (n_points, n_functions)
+    predicted_function_values_list : list of numpy arrays
+        List of predicted function evaluations, same shape as true_function_values_list
+    function_names : list of str, optional
+        Function names for labels (e.g., ['u(x)', 'd(x)'])
+    save_path : str
+        Path to save the histogram plot
+    bins : int
+        Number of histogram bins
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
+    """
+    # Convert to numpy if needed
+    if isinstance(true_function_values_list[0], torch.Tensor):
+        true_function_values_list = [f.detach().cpu().numpy() for f in true_function_values_list]
+    if isinstance(predicted_function_values_list[0], torch.Tensor):
+        predicted_function_values_list = [f.detach().cpu().numpy() for f in predicted_function_values_list]
+    
+    # Ensure consistent shapes
+    true_vals = np.array(true_function_values_list)
+    pred_vals = np.array(predicted_function_values_list)
+    
+    if true_vals.ndim == 2:
+        # Single function case: (n_samples, n_points) -> treat as single function
+        true_vals = true_vals[:, :, np.newaxis]  # (n_samples, n_points, 1)
+        pred_vals = pred_vals[:, :, np.newaxis]
+    
+    n_samples, n_points, n_functions = true_vals.shape
+    
+    # Set default function names
+    if function_names is None:
+        if n_functions == 2:
+            function_names = [r'$u(x)$', r'$d(x)$']
+        else:
+            function_names = [f'$f_{{{i}}}(x)$' for i in range(n_functions)]
+    
+    # Compute average entrywise errors for each sample and function
+    abs_errors = np.abs(pred_vals - true_vals)  # (n_samples, n_points, n_functions)
+    avg_abs_errors = np.mean(abs_errors, axis=1)  # (n_samples, n_functions)
+    
+    rel_errors = abs_errors / (np.abs(true_vals) + 1e-8)  # Relative errors
+    avg_rel_errors = np.mean(rel_errors, axis=1)  # (n_samples, n_functions)
+    
+    # Create subplots
+    fig, axes = plt.subplots(2, n_functions, figsize=(6*n_functions, 10))
+    if n_functions == 1:
+        axes = axes.reshape(2, 1)
+    
+    colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
+                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple']]
+    
+    for i in range(n_functions):
+        color = colors_list[i % len(colors_list)]
+        
+        # Absolute errors (top row)
+        ax_abs = axes[0, i]
+        counts, bins_abs, patches = ax_abs.hist(
+            avg_abs_errors[:, i], 
+            bins=bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5,
+            density=True  # Normalize to show probability density
+        )
+        
+        # Add statistics
+        mean_abs = np.mean(avg_abs_errors[:, i])
+        std_abs = np.std(avg_abs_errors[:, i])
+        median_abs = np.median(avg_abs_errors[:, i])
+        
+        ax_abs.axvline(mean_abs, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_abs:.4f}')
+        ax_abs.axvline(median_abs, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_abs:.4f}')
+        
+        ax_abs.text(0.98, 0.98, f'μ = {mean_abs:.4f}\nσ = {std_abs:.4f}', 
+                   transform=ax_abs.transAxes, verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_abs.set_xlabel(f'Average Absolute Error in {function_names[i]}')
+        ax_abs.set_ylabel('Probability Density')
+        ax_abs.set_title(f'Distribution of Errors: {function_names[i]}')
+        ax_abs.grid(True, alpha=0.3)
+        ax_abs.legend()
+        
+        # Relative errors (bottom row)
+        ax_rel = axes[1, i]
+        counts, bins_rel, patches = ax_rel.hist(
+            avg_rel_errors[:, i] * 100,  # Convert to percentage
+            bins=bins, 
+            alpha=0.7, 
+            color=color,
+            edgecolor='white',
+            linewidth=0.5,
+            density=True
+        )
+        
+        # Add statistics
+        mean_rel = np.mean(avg_rel_errors[:, i]) * 100
+        std_rel = np.std(avg_rel_errors[:, i]) * 100
+        median_rel = np.median(avg_rel_errors[:, i]) * 100
+        
+        ax_rel.axvline(mean_rel, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_rel:.2f}%')
+        ax_rel.axvline(median_rel, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_rel:.2f}%')
+        
+        ax_rel.text(0.98, 0.98, f'μ = {mean_rel:.2f}%\nσ = {std_rel:.2f}%', 
+                   transform=ax_rel.transAxes, verticalalignment='top', horizontalalignment='right',
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax_rel.set_xlabel(f'Average Relative Error in {function_names[i]} (%)')
+        ax_rel.set_ylabel('Probability Density')
+        ax_rel.set_title(f'Distribution of Relative Errors: {function_names[i]}')
+        ax_rel.grid(True, alpha=0.3)
+        ax_rel.legend()
+    
+    plt.suptitle('Function Value Error Analysis', fontsize=18, y=0.95)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
+    plt.close(fig)
+
+
 def plot_event_histogram_simplified_DIS(
     model,
     pointnet_model,
@@ -597,20 +1406,65 @@ def plot_event_histogram_simplified_DIS(
     laplace_model=None,
     num_events=100000,
     save_path="event_histogram_simplified.png",
-    problem='simplified_dis'
+    problem='simplified_dis',
+    plot_type='both',  # 'scatter', 'histogram', or 'both'
+    bins=50,
+    figsize=(15, 8)
 ):
     """
     Plot event histograms using analytic Laplace uncertainty propagation.
+    Provides both scatter plots and true 2D histograms for reconstructed events.
     
-    When laplace_model is provided, uses analytic MAP estimate instead of 
-    Monte Carlo sampling for improved speed and accuracy.
+    Parameters:
+    -----------
+    model : torch.nn.Module
+        The parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        The PointNet feature extractor
+    true_params : torch.Tensor
+        True parameter values
+    device : torch.device
+        Device to run computations on
+    n_mc : int
+        Number of Monte Carlo samples (kept for backward compatibility)
+    laplace_model : object, optional
+        Fitted Laplace approximation object for analytic uncertainty
+    num_events : int
+        Number of events to generate
+    save_path : str
+        Path to save the plot
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+    plot_type : str
+        Type of plot: 'scatter', 'histogram', or 'both'
+    bins : int or array-like
+        Number of bins for 2D histogram
+    figsize : tuple
+        Figure size (width, height)
+        
+    Returns:
+    --------
+    None
+        Saves the plot to save_path
     """
     model.eval()
     pointnet_model.eval()
-    simulator = SimplifiedDIS(torch.device('cpu'))
+    
+    # Get the appropriate simulator
+    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    if problem == 'mceg':
+        simulator = MCEGSimulator(torch.device('cpu'))
+    elif problem == 'realistic_dis':
+        simulator = RealisticDIS(torch.device('cpu'))
+    else:
+        simulator = SimplifiedDIS(torch.device('cpu'))
+    
+    advanced_feature_engineering = get_advanced_feature_engineering()
+    
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+    
     if problem != 'mceg':
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
@@ -635,28 +1489,120 @@ def plot_event_histogram_simplified_DIS(
     true_events_np = xs.detach().cpu().numpy()
     generated_events_np = generated_events.detach().cpu().numpy()
     
-    # Create the plot
-    fig, axs = plt.subplots(1, 2, figsize=(15, 8))
+    # Determine number of subplots based on plot_type
+    if plot_type == 'both':
+        fig, axes = plt.subplots(2, 2, figsize=(figsize[0], figsize[1]*1.2))
+        ax_true_scatter, ax_gen_scatter = axes[0, 0], axes[0, 1]
+        ax_true_hist, ax_gen_hist = axes[1, 0], axes[1, 1]
+    elif plot_type in ['scatter', 'histogram']:
+        fig, axes = plt.subplots(1, 2, figsize=figsize)
+        ax_true, ax_gen = axes[0], axes[1]
+    else:
+        raise ValueError("plot_type must be 'scatter', 'histogram', or 'both'")
     
-    # True events
-    axs[0].scatter(true_events_np[:, 0], true_events_np[:, 1], color='turquoise', alpha=0.2)
-    axs[0].set_title(r"$\Xi_{\theta^{*}}$ (True Parameters)")
-    axs[0].set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$")
-    axs[0].set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$")
-    axs[0].set_xscale("log")
-    axs[0].set_yscale("log")
-    
-    # Generated events
     method_label = "MAP (Analytic)" if use_analytic else "Median (MC)"
-    axs[1].scatter(generated_events_np[:, 0], generated_events_np[:, 1], color='darkorange', alpha=0.2)
-    axs[1].set_title(fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label})")
-    axs[1].set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})")
-    axs[1].set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})")
-    axs[1].set_xscale("log")
-    axs[1].set_yscale("log")
+    
+    # Color scheme
+    true_color = COLORBLIND_COLORS['cyan']
+    gen_color = COLORBLIND_COLORS['orange']
+    
+    # Helper function to set log scales and labels
+    def setup_axes(ax, title, is_generated=False):
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(title, fontsize=14, pad=10)
+        if problem == 'simplified_dis':
+            if is_generated:
+                ax.set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
+                ax.set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
+            else:
+                ax.set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$", fontsize=12)
+                ax.set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$", fontsize=12)
+        else:
+            ax.set_xlabel("$x$", fontsize=12)
+            ax.set_ylabel("$Q^2$", fontsize=12)
+        ax.grid(True, alpha=0.3, which='both')
+        ax.tick_params(which='both', direction='in')
+    
+    # Plot scatter plots if requested
+    if plot_type in ['scatter', 'both']:
+        if plot_type == 'both':
+            ax_true_scat, ax_gen_scat = ax_true_scatter, ax_gen_scatter
+        else:
+            ax_true_scat, ax_gen_scat = ax_true, ax_gen
+            
+        # True events scatter
+        ax_true_scat.scatter(true_events_np[:, 0], true_events_np[:, 1], 
+                           color=true_color, alpha=0.3, s=1.5, edgecolors='none')
+        setup_axes(ax_true_scat, r"$\Xi_{\theta^{*}}$ (True Parameters) - Scatter", False)
+        
+        # Generated events scatter  
+        ax_gen_scat.scatter(generated_events_np[:, 0], generated_events_np[:, 1], 
+                          color=gen_color, alpha=0.3, s=1.5, edgecolors='none')
+        setup_axes(ax_gen_scat, fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label}) - Scatter", True)
+    
+    # Plot 2D histograms if requested
+    if plot_type in ['histogram', 'both']:
+        if plot_type == 'both':
+            ax_true_hist_ax, ax_gen_hist_ax = ax_true_hist, ax_gen_hist
+        else:
+            ax_true_hist_ax, ax_gen_hist_ax = ax_true, ax_gen
+        
+        # Create log-spaced bins for better visualization
+        x_min = min(np.min(true_events_np[:, 0]), np.min(generated_events_np[:, 0]))
+        x_max = max(np.max(true_events_np[:, 0]), np.max(generated_events_np[:, 0]))
+        y_min = min(np.min(true_events_np[:, 1]), np.min(generated_events_np[:, 1]))
+        y_max = max(np.max(true_events_np[:, 1]), np.max(generated_events_np[:, 1]))
+        
+        # Add small margin in log space
+        x_margin = (np.log10(x_max) - np.log10(x_min)) * 0.05
+        y_margin = (np.log10(y_max) - np.log10(y_min)) * 0.05
+        
+        x_bins = np.logspace(np.log10(x_min) - x_margin, np.log10(x_max) + x_margin, bins)
+        y_bins = np.logspace(np.log10(y_min) - y_margin, np.log10(y_max) + y_margin, bins)
+        
+        # True events histogram
+        hist_true, _, _ = np.histogram2d(true_events_np[:, 0], true_events_np[:, 1], bins=[x_bins, y_bins])
+        hist_true = hist_true.T  # Transpose for correct orientation
+        
+        # Only show non-zero bins
+        hist_true_masked = np.ma.masked_where(hist_true == 0, hist_true)
+        
+        im_true = ax_true_hist_ax.pcolormesh(x_bins, y_bins, hist_true_masked, 
+                                           cmap='Blues', norm=colors.LogNorm(vmin=1))
+        setup_axes(ax_true_hist_ax, r"$\Xi_{\theta^{*}}$ (True Parameters) - 2D Histogram", False)
+        
+        # Add colorbar for true events
+        cbar_true = plt.colorbar(im_true, ax=ax_true_hist_ax, fraction=0.046, pad=0.04)
+        cbar_true.set_label('Event Count', fontsize=11)
+        cbar_true.ax.tick_params(labelsize=10)
+        
+        # Generated events histogram
+        hist_gen, _, _ = np.histogram2d(generated_events_np[:, 0], generated_events_np[:, 1], bins=[x_bins, y_bins])
+        hist_gen = hist_gen.T  # Transpose for correct orientation
+        
+        # Only show non-zero bins
+        hist_gen_masked = np.ma.masked_where(hist_gen == 0, hist_gen)
+        
+        im_gen = ax_gen_hist_ax.pcolormesh(x_bins, y_bins, hist_gen_masked, 
+                                         cmap='Oranges', norm=colors.LogNorm(vmin=1))
+        setup_axes(ax_gen_hist_ax, fr"$\Xi_{{\hat{{\theta}}}}$ ({method_label}) - 2D Histogram", True)
+        
+        # Add colorbar for generated events
+        cbar_gen = plt.colorbar(im_gen, ax=ax_gen_hist_ax, fraction=0.046, pad=0.04)
+        cbar_gen.set_label('Event Count', fontsize=11)
+        cbar_gen.ax.tick_params(labelsize=10)
+    
+    # Add overall title
+    if plot_type == 'both':
+        fig.suptitle('Event Distribution Analysis: Scatter & Histogram Views', fontsize=16, y=0.95)
+    elif plot_type == 'scatter':
+        fig.suptitle('Event Distribution Analysis: Scatter View', fontsize=16, y=0.95)
+    else:
+        fig.suptitle('Event Distribution Analysis: Histogram View', fontsize=16, y=0.95)
     
     plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
 def plot_loss_curves(loss_dir='.', save_path='loss_plot.png', show_plot=False, nll_loss=False):
