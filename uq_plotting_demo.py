@@ -171,12 +171,7 @@ class Gaussian2DSimulator:
         return torch.exp(-0.5 * ((x - mu_x) / sigma_x)**2) / (sigma_x * np.sqrt(2 * np.pi))
 
 
-def save_latex_description(filepath: str, description: str):
-    """Save LaTeX description to a .tex file."""
-    tex_filepath = filepath.replace('.png', '.tex').replace('.pdf', '.tex')
-    with open(tex_filepath, 'w') as f:
-        f.write(description)
-    print(f"LaTeX description saved to: {tex_filepath}")
+# LaTeX descriptions are now included as comments within each plotting function
 
 
 def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=1000):
@@ -214,6 +209,31 @@ def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=10
 def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="plots"):
     """
     Plot parameter-space uncertainty showing posterior distribution of inferred parameters.
+    
+    LaTeX Description:
+    ==================
+    
+    \section{Parameter-Space Uncertainty}
+
+    This figure shows the posterior distribution of model parameters $p(\theta|\mathcal{D})$ 
+    obtained through inference on simulated data. The uncertainty visualization includes:
+
+    \begin{itemize}
+    \item \textbf{Posterior histograms}: Density plots showing the inferred parameter distributions
+    \item \textbf{True values}: Red dashed lines indicating the ground truth parameters used to generate the data
+    \item \textbf{Posterior means}: Green solid lines showing the expected values $\mathbb{E}[\theta|\mathcal{D}]$
+    \item \textbf{Confidence intervals}: Shaded regions showing $\pm 1\sigma$ and $\pm 2\sigma$ credible intervals
+    \end{itemize}
+
+    The parameter uncertainty is computed by sampling from the posterior distribution:
+    $$p(\theta|\mathcal{D}) \propto p(\mathcal{D}|\theta) p(\theta)$$
+
+    where $p(\mathcal{D}|\theta)$ is the likelihood of observing data $\mathcal{D}$ given parameters $\theta$, 
+    and $p(\theta)$ is the prior distribution. The width of each posterior distribution indicates 
+    the uncertainty in that parameter given the observed data.
+
+    Statistics shown include the posterior mean and standard deviation for each parameter, 
+    providing quantitative measures of the parameter inference uncertainty.
     """
     print("📊 Generating parameter-space uncertainty plot...")
     
@@ -282,32 +302,6 @@ def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="p
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # LaTeX description
-    latex_desc = r"""
-\section{Parameter-Space Uncertainty}
-
-This figure shows the posterior distribution of model parameters $p(\theta|\mathcal{D})$ 
-obtained through inference on simulated data. The uncertainty visualization includes:
-
-\begin{itemize}
-\item \textbf{Posterior histograms}: Density plots showing the inferred parameter distributions
-\item \textbf{True values}: Red dashed lines indicating the ground truth parameters used to generate the data
-\item \textbf{Posterior means}: Green solid lines showing the expected values $\mathbb{E}[\theta|\mathcal{D}]$
-\item \textbf{Confidence intervals}: Shaded regions showing $\pm 1\sigma$ and $\pm 2\sigma$ credible intervals
-\end{itemize}
-
-The parameter uncertainty is computed by sampling from the posterior distribution:
-$$p(\theta|\mathcal{D}) \propto p(\mathcal{D}|\theta) p(\theta)$$
-
-where $p(\mathcal{D}|\theta)$ is the likelihood of observing data $\mathcal{D}$ given parameters $\theta$, 
-and $p(\theta)$ is the prior distribution. The width of each posterior distribution indicates 
-the uncertainty in that parameter given the observed data.
-
-Statistics shown include the posterior mean and standard deviation for each parameter, 
-providing quantitative measures of the parameter inference uncertainty.
-"""
-    
-    save_latex_description(filepath, latex_desc)
     print(f"✅ Parameter uncertainty plot saved to: {filepath}")
     return posterior_samples
 
@@ -315,6 +309,38 @@ providing quantitative measures of the parameter inference uncertainty.
 def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir="plots"):
     """
     Plot function-space (predictive) uncertainty by propagating parameter uncertainty.
+    
+    LaTeX Description:
+    ==================
+    
+    \section{Function-Space (Predictive) Uncertainty}
+
+    This figure demonstrates how parameter uncertainty propagates to function predictions, 
+    showing the predictive uncertainty $p(f(x)|\mathcal{D})$ obtained by marginalizing 
+    over the parameter posterior:
+
+    $$p(f(x)|\mathcal{D}) = \int p(f(x)|\theta) p(\theta|\mathcal{D}) d\theta$$
+
+    The visualization includes:
+
+    \begin{itemize}
+    \item \textbf{Uncertainty bands}: Shaded regions showing 50\% (dark) and 90\% (light) 
+      confidence intervals for function predictions at each $x$
+    \item \textbf{Median prediction}: Blue solid line showing the median $f(x)$ across all posterior samples
+    \item \textbf{True function}: Red dashed line showing the ground truth $f(x|\theta_{\text{true}})$
+    \item \textbf{Sample functions}: Gray lines showing individual function realizations from posterior samples
+    \end{itemize}
+
+    The computation procedure:
+    \begin{enumerate}
+    \item Sample parameters $\{\theta^{(i)}\}$ from the posterior $p(\theta|\mathcal{D})$
+    \item Evaluate function $f(x|\theta^{(i)})$ for each sample at all $x$ values
+    \item Compute empirical quantiles across samples to form confidence bands
+    \end{enumerate}
+
+    The width of the uncertainty bands indicates how confident we are in our function 
+    predictions given the observed data. Wider bands indicate higher uncertainty, 
+    typically occurring in regions where the data provides less constraint.
     """
     print("📈 Generating function-space uncertainty plot...")
     
@@ -389,45 +415,46 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # LaTeX description
-    latex_desc = r"""
-\section{Function-Space (Predictive) Uncertainty}
-
-This figure demonstrates how parameter uncertainty propagates to function predictions, 
-showing the predictive uncertainty $p(f(x)|\mathcal{D})$ obtained by marginalizing 
-over the parameter posterior:
-
-$$p(f(x)|\mathcal{D}) = \int p(f(x)|\theta) p(\theta|\mathcal{D}) d\theta$$
-
-The visualization includes:
-
-\begin{itemize}
-\item \textbf{Uncertainty bands}: Shaded regions showing 50\% (dark) and 90\% (light) 
-  confidence intervals for function predictions at each $x$
-\item \textbf{Median prediction}: Blue solid line showing the median $f(x)$ across all posterior samples
-\item \textbf{True function}: Red dashed line showing the ground truth $f(x|\theta_{\text{true}})$
-\item \textbf{Sample functions}: Gray lines showing individual function realizations from posterior samples
-\end{itemize}
-
-The computation procedure:
-\begin{enumerate}
-\item Sample parameters $\{\theta^{(i)}\}$ from the posterior $p(\theta|\mathcal{D})$
-\item Evaluate function $f(x|\theta^{(i)})$ for each sample at all $x$ values
-\item Compute empirical quantiles across samples to form confidence bands
-\end{enumerate}
-
-The width of the uncertainty bands indicates how confident we are in our function 
-predictions given the observed data. Wider bands indicate higher uncertainty, 
-typically occurring in regions where the data provides less constraint.
-"""
-    
-    save_latex_description(filepath, latex_desc)
     print(f"✅ Function uncertainty plot saved to: {filepath}")
 
 
 def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap=50, save_dir="plots"):
     """
     Demonstrate bootstrap/data uncertainty by generating multiple datasets.
+    
+    LaTeX Description:
+    ==================
+    
+    \section{Bootstrap/Data Uncertainty}
+
+    This figure demonstrates the parametric bootstrap procedure for estimating data (sampling) 
+    uncertainty. The bootstrap quantifies how much our parameter estimates would vary if we 
+    could repeat the experiment multiple times with the same true parameters.
+
+    \textbf{Parametric Bootstrap Procedure:}
+    \begin{enumerate}
+    \item Generate $B$ independent datasets $\{\mathcal{D}_b\}_{b=1}^B$ using the same true parameters $\theta_{\text{true}}$
+    \item For each dataset $\mathcal{D}_b$, estimate parameters $\hat{\theta}_b$ using the inference procedure
+    \item Analyze the distribution of estimates $\{\hat{\theta}_b\}_{b=1}^B$
+    \end{enumerate}
+
+    The visualization shows:
+    \begin{itemize}
+    \item \textbf{Bootstrap histograms}: Distribution of parameter estimates across bootstrap samples
+    \item \textbf{True values}: Red dashed lines showing the parameters used to generate all datasets
+    \item \textbf{Bootstrap mean}: Green line showing the average estimate $\bar{\theta} = \frac{1}{B}\sum_{b=1}^B \hat{\theta}_b$
+    \item \textbf{95\% confidence intervals}: Orange shaded regions containing 95\% of bootstrap estimates
+    \end{itemize}
+
+    \textbf{Key Statistics:}
+    \begin{itemize}
+    \item \textbf{Bias}: $\text{Bias} = \mathbb{E}[\hat{\theta}] - \theta_{\text{true}} \approx \bar{\theta} - \theta_{\text{true}}$
+    \item \textbf{Standard error}: $\text{SE} = \sqrt{\text{Var}[\hat{\theta}]} \approx \sqrt{\frac{1}{B-1}\sum_{b=1}^B (\hat{\theta}_b - \bar{\theta})^2}$
+    \end{itemize}
+
+    This bootstrap uncertainty represents the intrinsic variability due to finite sample size, 
+    independent of model uncertainty. It answers: "How much would my estimates vary if I 
+    collected new data with the same experimental setup?"
     """
     print("🔄 Generating bootstrap uncertainty plot...")
     
@@ -511,41 +538,6 @@ def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # LaTeX description
-    latex_desc = r"""
-\section{Bootstrap/Data Uncertainty}
-
-This figure demonstrates the parametric bootstrap procedure for estimating data (sampling) 
-uncertainty. The bootstrap quantifies how much our parameter estimates would vary if we 
-could repeat the experiment multiple times with the same true parameters.
-
-\textbf{Parametric Bootstrap Procedure:}
-\begin{enumerate}
-\item Generate $B$ independent datasets $\{\mathcal{D}_b\}_{b=1}^B$ using the same true parameters $\theta_{\text{true}}$
-\item For each dataset $\mathcal{D}_b$, estimate parameters $\hat{\theta}_b$ using the inference procedure
-\item Analyze the distribution of estimates $\{\hat{\theta}_b\}_{b=1}^B$
-\end{enumerate}
-
-The visualization shows:
-\begin{itemize}
-\item \textbf{Bootstrap histograms}: Distribution of parameter estimates across bootstrap samples
-\item \textbf{True values}: Red dashed lines showing the parameters used to generate all datasets
-\item \textbf{Bootstrap mean}: Green line showing the average estimate $\bar{\theta} = \frac{1}{B}\sum_{b=1}^B \hat{\theta}_b$
-\item \textbf{95\% confidence intervals}: Orange shaded regions containing 95\% of bootstrap estimates
-\end{itemize}
-
-\textbf{Key Statistics:}
-\begin{itemize}
-\item \textbf{Bias}: $\text{Bias} = \mathbb{E}[\hat{\theta}] - \theta_{\text{true}} \approx \bar{\theta} - \theta_{\text{true}}$
-\item \textbf{Standard error}: $\text{SE} = \sqrt{\text{Var}[\hat{\theta}]} \approx \sqrt{\frac{1}{B-1}\sum_{b=1}^B (\hat{\theta}_b - \bar{\theta})^2}$
-\end{itemize}
-
-This bootstrap uncertainty represents the intrinsic variability due to finite sample size, 
-independent of model uncertainty. It answers: "How much would my estimates vary if I 
-collected new data with the same experimental setup?"
-"""
-    
-    save_latex_description(filepath, latex_desc)
     print(f"✅ Bootstrap uncertainty plot saved to: {filepath}")
     return bootstrap_theta_estimates
 
@@ -554,6 +546,47 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
                                           bootstrap_estimates, save_dir="plots"):
     """
     Plot combined uncertainty decomposition showing total variance and its components.
+    
+    LaTeX Description:
+    ==================
+    
+    \section{Combined Uncertainty Decomposition}
+
+    This figure shows the decomposition of total prediction uncertainty into its constituent components, 
+    following the variance decomposition formula:
+
+    $$\text{Var}_{\text{total}}[f(x)] = \mathbb{E}_b[\text{Var}_{\theta|b}[f(x|\theta)]] + \text{Var}_b[\mathbb{E}_{\theta|b}[f(x|\theta)]]$$
+
+    where $b$ indexes bootstrap samples and $\theta|b$ represents the posterior distribution for bootstrap sample $b$.
+
+    \textbf{Uncertainty Components:}
+
+    \begin{itemize}
+    \item \textbf{Model uncertainty} (blue): $\mathbb{E}_b[\sigma_b^2(x)]$ - Average within-bootstrap variance representing 
+      uncertainty in our model predictions given a fixed dataset. This captures epistemic uncertainty 
+      about the model parameters.
+
+    \item \textbf{Data uncertainty} (orange): $\text{Var}_b[\mu_b(x)]$ - Between-bootstrap variance representing 
+      uncertainty due to finite sample size. This captures aleatoric uncertainty arising from 
+      sampling variability.
+    \end{itemize}
+
+    \textbf{Left panels}: Absolute variance contributions showing how much each uncertainty source 
+    contributes to the total variance at each $x$ value.
+
+    \textbf{Right panels}: Relative contributions showing the fraction of total variance attributable 
+    to each source, with values summing to 1.
+
+    \textbf{Interpretation:}
+    \begin{itemize}
+    \item Regions where model uncertainty dominates suggest the model is well-constrained by the data 
+      but has inherent parameter uncertainty
+    \item Regions where data uncertainty dominates suggest more data would significantly reduce uncertainty
+    \item The relative importance can guide experimental design and model improvement strategies
+    \end{itemize}
+
+    This decomposition is essential for understanding whether uncertainty reduction efforts should 
+    focus on improving the model or collecting more data.
     """
     print("🔬 Generating combined uncertainty decomposition plot...")
     
@@ -659,48 +692,6 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # LaTeX description
-    latex_desc = r"""
-\section{Combined Uncertainty Decomposition}
-
-This figure shows the decomposition of total prediction uncertainty into its constituent components, 
-following the variance decomposition formula:
-
-$$\text{Var}_{\text{total}}[f(x)] = \mathbb{E}_b[\text{Var}_{\theta|b}[f(x|\theta)]] + \text{Var}_b[\mathbb{E}_{\theta|b}[f(x|\theta)]]$$
-
-where $b$ indexes bootstrap samples and $\theta|b$ represents the posterior distribution for bootstrap sample $b$.
-
-\textbf{Uncertainty Components:}
-
-\begin{itemize}
-\item \textbf{Model uncertainty} (blue): $\mathbb{E}_b[\sigma_b^2(x)]$ - Average within-bootstrap variance representing 
-  uncertainty in our model predictions given a fixed dataset. This captures epistemic uncertainty 
-  about the model parameters.
-
-\item \textbf{Data uncertainty} (orange): $\text{Var}_b[\mu_b(x)]$ - Between-bootstrap variance representing 
-  uncertainty due to finite sample size. This captures aleatoric uncertainty arising from 
-  sampling variability.
-\end{itemize}
-
-\textbf{Left panels}: Absolute variance contributions showing how much each uncertainty source 
-contributes to the total variance at each $x$ value.
-
-\textbf{Right panels}: Relative contributions showing the fraction of total variance attributable 
-to each source, with values summing to 1.
-
-\textbf{Interpretation:}
-\begin{itemize}
-\item Regions where model uncertainty dominates suggest the model is well-constrained by the data 
-  but has inherent parameter uncertainty
-\item Regions where data uncertainty dominates suggest more data would significantly reduce uncertainty
-\item The relative importance can guide experimental design and model improvement strategies
-\end{itemize}
-
-This decomposition is essential for understanding whether uncertainty reduction efforts should 
-focus on improving the model or collecting more data.
-"""
-    
-    save_latex_description(filepath, latex_desc)
     print(f"✅ Uncertainty decomposition plot saved to: {filepath}")
 
 
@@ -708,6 +699,54 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
                            save_dir="plots"):
     """
     Plot how uncertainty scales with the number of events per experiment.
+    
+    LaTeX Description:
+    ==================
+    
+    \section{Uncertainty Scaling with Number of Events}
+
+    This figure demonstrates how parameter estimation uncertainty decreases as the number of 
+    events per experiment increases, illustrating the fundamental statistical relationship 
+    between sample size and estimation precision.
+
+    \textbf{Theoretical Expectation:}
+
+    For most well-behaved estimators, the standard error should scale as:
+    $$\sigma_{\hat{\theta}} \propto \frac{1}{\sqrt{N}}$$
+
+    where $N$ is the number of events. This follows from the Central Limit Theorem and 
+    the fact that the variance of a sample mean decreases as $1/N$.
+
+    \textbf{Visualization Elements:}
+
+    \begin{itemize}
+    \item \textbf{Observed scaling} (blue circles): Empirical standard deviations computed from 
+      multiple parameter estimates at each event count
+    \item \textbf{Theoretical scaling} (red dashed): Reference $1/\sqrt{N}$ scaling normalized 
+      to match the observed data at a reference point
+    \item \textbf{Fitted scaling}: Power-law fit to the observed data showing the actual scaling exponent
+    \end{itemize}
+
+    \textbf{Experimental Procedure:}
+    \begin{enumerate}
+    \item For each event count $N \in \{100, 500, 1000, 5000, 10000\}$:
+    \item Generate 20 independent datasets with $N$ events each
+    \item Estimate parameters $\hat{\theta}$ for each dataset
+    \item Compute standard deviation across the 20 estimates
+    \end{enumerate}
+
+    \textbf{Interpretation:}
+    \begin{itemize}
+    \item \textbf{Adherence to theory}: Parameters following $N^{-0.5}$ scaling indicate well-behaved 
+      estimation with no systematic issues
+    \item \textbf{Deviations from theory}: Faster or slower scaling may indicate systematic effects, 
+      model misspecification, or numerical issues
+    \item \textbf{Practical implications}: The scaling relationship helps predict how much data is 
+      needed to achieve desired precision levels
+    \end{itemize}
+
+    This analysis is crucial for experimental design, helping determine optimal data collection 
+    strategies and computational resource allocation.
     """
     print("📈 Generating uncertainty scaling plot...")
     
@@ -796,55 +835,6 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
     plt.savefig(filepath, dpi=300, bbox_inches='tight')
     plt.close()
     
-    # LaTeX description
-    latex_desc = r"""
-\section{Uncertainty Scaling with Number of Events}
-
-This figure demonstrates how parameter estimation uncertainty decreases as the number of 
-events per experiment increases, illustrating the fundamental statistical relationship 
-between sample size and estimation precision.
-
-\textbf{Theoretical Expectation:}
-
-For most well-behaved estimators, the standard error should scale as:
-$$\sigma_{\hat{\theta}} \propto \frac{1}{\sqrt{N}}$$
-
-where $N$ is the number of events. This follows from the Central Limit Theorem and 
-the fact that the variance of a sample mean decreases as $1/N$.
-
-\textbf{Visualization Elements:}
-
-\begin{itemize}
-\item \textbf{Observed scaling} (blue circles): Empirical standard deviations computed from 
-  multiple parameter estimates at each event count
-\item \textbf{Theoretical scaling} (red dashed): Reference $1/\sqrt{N}$ scaling normalized 
-  to match the observed data at a reference point
-\item \textbf{Fitted scaling}: Power-law fit to the observed data showing the actual scaling exponent
-\end{itemize}
-
-\textbf{Experimental Procedure:}
-\begin{enumerate}
-\item For each event count $N \in \{100, 500, 1000, 5000, 10000\}$:
-\item Generate 20 independent datasets with $N$ events each
-\item Estimate parameters $\hat{\theta}$ for each dataset
-\item Compute standard deviation across the 20 estimates
-\end{enumerate}
-
-\textbf{Interpretation:}
-\begin{itemize}
-\item \textbf{Adherence to theory}: Parameters following $N^{-0.5}$ scaling indicate well-behaved 
-  estimation with no systematic issues
-\item \textbf{Deviations from theory}: Faster or slower scaling may indicate systematic effects, 
-  model misspecification, or numerical issues
-\item \textbf{Practical implications}: The scaling relationship helps predict how much data is 
-  needed to achieve desired precision levels
-\end{itemize}
-
-This analysis is crucial for experimental design, helping determine optimal data collection 
-strategies and computational resource allocation.
-"""
-    
-    save_latex_description(filepath, latex_desc)
     print(f"✅ Uncertainty scaling plot saved to: {filepath}")
 
 
