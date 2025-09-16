@@ -168,7 +168,7 @@ class SimpleCNF(nn.Module):
 # ---------------------------
 # Joint Training Function
 # ---------------------------
-def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
+def train_joint(model, param_prediction_model, train_dataloader, val_dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
     device = next(model.parameters()).device
     param_prediction_model = param_prediction_model.to(device)  # FIX: Move CNF to GPU before DDP
     opt = optim.Adam(list(model.parameters()) + list(param_prediction_model.parameters()), lr=lr, weight_decay=1e-4)
@@ -179,8 +179,11 @@ def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wan
     torch.backends.cudnn.benchmark = True
 
     for epoch in range(epochs):
-        total_loss = 0.0
-        for theta, x_sets in dataloader:
+        # Training phase
+        total_train_loss = 0.0
+        num_train_batches = 0
+        
+        for theta, x_sets in train_dataloader:
             x_sets = x_sets.to(torch.float32)
             B, n_repeat, num_points, feat_dim = x_sets.shape  # B = batch_size*n_repeat, N = num_points, F = feat_dim
             x_sets = x_sets.reshape(B*n_repeat, num_points, feat_dim)  # [B*N, F]
@@ -189,20 +192,53 @@ def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wan
             opt.zero_grad(set_to_none=True)
             with torch.cuda.amp.autocast(dtype=torch.float16):
                 emb = model(x_sets)  # [B*n_repeat, latent_dim]
-                # log_prob = cnf.module.log_prob(theta, emb)
-                # loss = -log_prob.mean()
                 predicted_theta = param_prediction_model(emb)  # [B*n_repeat, theta_dim]
                 loss = F.mse_loss(predicted_theta, theta)
             scaler.scale(loss).backward()
             scaler.step(opt)
             scaler.update()
-            total_loss += loss.item()
+            total_train_loss += loss.item()
+            num_train_batches += 1
+        
+        avg_train_loss = total_train_loss / num_train_batches if num_train_batches > 0 else 0.0
+        
+        # Validation phase
+        model.eval()
+        param_prediction_model.eval()
+        total_val_loss = 0.0
+        num_val_batches = 0
+        
+        with torch.no_grad():
+            for theta, x_sets in val_dataloader:
+                x_sets = x_sets.to(torch.float32)
+                B, n_repeat, num_points, feat_dim = x_sets.shape
+                x_sets = x_sets.reshape(B*n_repeat, num_points, feat_dim)
+                x_sets = x_sets.to(device)
+                theta = theta.repeat_interleave(n_repeat, dim=0).to(device)
+                
+                with torch.cuda.amp.autocast(dtype=torch.float16):
+                    emb = model(x_sets)
+                    predicted_theta = param_prediction_model(emb)
+                    val_loss = F.mse_loss(predicted_theta, theta)
+                
+                total_val_loss += val_loss.item()
+                num_val_batches += 1
+        
+        avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else 0.0
+        
+        # Switch back to training mode
+        model.train()
+        param_prediction_model.train()
 
         # Logging and checkpointing (only on rank 0)
         if rank == 0:
             if wandb_enabled:
-                wandb.log({"epoch": epoch + 1, "mse_loss": loss.item()})
-            print(f"Epoch {epoch + 1} | MSE Loss: {loss.item():.4f}")
+                wandb.log({
+                    "epoch": epoch + 1, 
+                    "train_mse_loss": avg_train_loss,
+                    "val_mse_loss": avg_val_loss
+                })
+            print(f"Epoch {epoch + 1:3d} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
             if (epoch + 1) % save_every == 0 or (epoch + 1) == epochs:
                 torch.save(model.state_dict(), os.path.join(output_dir, f"model_epoch_{epoch+1}.pth"))
@@ -212,7 +248,7 @@ def train_joint(model, param_prediction_model, dataloader, epochs, lr, rank, wan
         torch.save(param_prediction_model.state_dict(), os.path.join(output_dir, "final_params_model.pth"))
         from laplace import Laplace
         lap_transformer = Laplace(param_prediction_model, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
-        lap_transformer.fit(dataloader)
+        lap_transformer.fit(train_dataloader)  # Use training dataloader for Laplace fitting
         # after fitting:
         save_laplace(lap_transformer, output_dir,
                     filename="laplace_transformer.pt",
@@ -230,45 +266,52 @@ def setup(rank, world_size):
 def cleanup():
     dist.destroy_process_group()
 
-def main_worker(rank, world_size, args):
-    setup(rank, world_size)
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
-    device = torch.device(f"cuda:{rank}")
-
-    if args.experiment_name is None:
-        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
-
-    output_dir = os.path.join("experiments", args.experiment_name)
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Dataset and simulator setup
+def create_train_val_datasets(args, rank, world_size, device):
+    """
+    Create training and validation datasets with clear separation.
+    Training dataset uses args.num_samples, validation uses args.val_samples (default 1000).
+    """
+    val_samples = getattr(args, 'val_samples', 1000)
+    
     if hasattr(args, 'use_precomputed') and args.use_precomputed and PRECOMPUTED_AVAILABLE:
         print(f"Using precomputed data for {args.problem}")
         
-        # Check if precomputed data exists, generate if not
+        # Create training dataset
         try:
-            data_dir = generate_precomputed_data_if_needed(
+            train_data_dir = generate_precomputed_data_if_needed(
                 args.problem, 
                 args.num_samples, 
                 args.num_events, 
-                n_repeat=2,  # Default n_repeat value
+                n_repeat=2,
                 output_dir=args.precomputed_data_dir
             )
             
-            # Create distributed precomputed dataset
+            # Create validation dataset (separate from training)
+            val_data_dir = generate_precomputed_data_if_needed(
+                f"{args.problem}_val", 
+                val_samples, 
+                args.num_events, 
+                n_repeat=2,
+                output_dir=args.precomputed_data_dir
+            )
+            
+            # Create distributed datasets
             if world_size > 1:
-                dataset = DistributedPrecomputedDataset(
-                    data_dir, args.problem, rank, world_size, shuffle=True
+                train_dataset = DistributedPrecomputedDataset(
+                    train_data_dir, args.problem, rank, world_size, shuffle=True
+                )
+                val_dataset = DistributedPrecomputedDataset(
+                    val_data_dir, f"{args.problem}_val", rank, world_size, shuffle=False
                 )
             else:
-                dataset = PrecomputedDataset(data_dir, args.problem, shuffle=True)
+                train_dataset = PrecomputedDataset(train_data_dir, args.problem, shuffle=True)
+                val_dataset = PrecomputedDataset(val_data_dir, f"{args.problem}_val", shuffle=False)
             
             # Get input dimension from dataset metadata
-            metadata = dataset.get_metadata()
+            metadata = train_dataset.get_metadata()
             input_dim = metadata['feature_dim']
             
-            print(f"Loaded precomputed dataset: {metadata}")
+            print(f"Loaded precomputed datasets - Train: {metadata}, Val: {val_samples} samples")
             
         except Exception as e:
             print(f"Failed to use precomputed data: {e}")
@@ -281,27 +324,62 @@ def main_worker(rank, world_size, args):
         
         if args.problem == "simplified_dis":
             simulator = SimplifiedDIS(device=device)
-            dataset = DISDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            train_dataset = DISDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            val_dataset = DISDataset(simulator, val_samples, args.num_events, rank, world_size)
             input_dim = 6
         elif args.problem == "realistic_dis":
             simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
-            dataset = RealisticDISDataset(
+            train_dataset = RealisticDISDataset(
                 simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+            )
+            val_dataset = RealisticDISDataset(
+                simulator, val_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
             )
             input_dim = 6
         elif args.problem == "mceg":
             simulator = MCEGSimulator(device=device)
-            dataset = MCEGDISDataset(
+            train_dataset = MCEGDISDataset(
                 simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+            )
+            val_dataset = MCEGDISDataset(
+                simulator, val_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
             )
             input_dim = 2
         elif args.problem == "gaussian":
             simulator = Gaussian2DSimulator(device=device)
-            dataset = Gaussian2DDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            train_dataset = Gaussian2DDataset(simulator, args.num_samples, args.num_events, rank, world_size)
+            val_dataset = Gaussian2DDataset(simulator, val_samples, args.num_events, rank, world_size)
             input_dim = 2
+    
+    return train_dataset, val_dataset, input_dim
 
-    dataloader = DataLoader(
-        dataset,
+
+def main_worker(rank, world_size, args):
+    setup(rank, world_size)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    device = torch.device(f"cuda:{rank}")
+
+    if args.experiment_name is None:
+        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+
+    output_dir = os.path.join("experiments", args.experiment_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Create training and validation datasets
+    train_dataset, val_dataset, input_dim = create_train_val_datasets(args, rank, world_size, device)
+
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        num_workers=1,
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=4,
+    )
+    
+    val_dataloader = DataLoader(
+        val_dataset,
         batch_size=args.batch_size,
         num_workers=1,
         pin_memory=True,
@@ -310,7 +388,7 @@ def main_worker(rank, world_size, args):
     )
 
     # Get theta and feature dims from a batch
-    theta, x_sets = next(iter(dataloader))
+    theta, x_sets = next(iter(train_dataloader))
     B, n_repeat, num_points, feat_dim = x_sets.shape
     theta_dim = theta.shape[1]
     latent_dim = args.latent_dim
@@ -347,12 +425,13 @@ def main_worker(rank, world_size, args):
     if rank == 0 and args.wandb:
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
-    train_joint(model, param_prediction_model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
+    train_joint(model, param_prediction_model, train_dataloader, val_dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
     cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--num_samples", type=int, default=10000)
+    parser.add_argument("--num_samples", type=int, default=10000, help="Number of training samples")
+    parser.add_argument("--val_samples", type=int, default=1000, help="Number of validation samples")
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--num_epochs", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=32)
