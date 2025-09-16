@@ -1,0 +1,22 @@
+
+\section{Parameter-Space Uncertainty}
+
+This figure shows the posterior distribution of model parameters $p(\theta|\mathcal{D})$ 
+obtained through inference on simulated data. The uncertainty visualization includes:
+
+\begin{itemize}
+\item \textbf{Posterior histograms}: Density plots showing the inferred parameter distributions
+\item \textbf{True values}: Red dashed lines indicating the ground truth parameters used to generate the data
+\item \textbf{Posterior means}: Green solid lines showing the expected values $\mathbb{E}[\theta|\mathcal{D}]$
+\item \textbf{Confidence intervals}: Shaded regions showing $\pm 1\sigma$ and $\pm 2\sigma$ credible intervals
+\end{itemize}
+
+The parameter uncertainty is computed by sampling from the posterior distribution:
+$$p(\theta|\mathcal{D}) \propto p(\mathcal{D}|\theta) p(\theta)$$
+
+where $p(\mathcal{D}|\theta)$ is the likelihood of observing data $\mathcal{D}$ given parameters $\theta$, 
+and $p(\theta)$ is the prior distribution. The width of each posterior distribution indicates 
+the uncertainty in that parameter given the observed data.
+
+Statistics shown include the posterior mean and standard deviation for each parameter, 
+providing quantitative measures of the parameter inference uncertainty.

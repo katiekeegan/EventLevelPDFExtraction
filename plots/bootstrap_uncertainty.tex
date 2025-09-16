@@ -1,0 +1,31 @@
+
+\section{Bootstrap/Data Uncertainty}
+
+This figure demonstrates the parametric bootstrap procedure for estimating data (sampling) 
+uncertainty. The bootstrap quantifies how much our parameter estimates would vary if we 
+could repeat the experiment multiple times with the same true parameters.
+
+\textbf{Parametric Bootstrap Procedure:}
+\begin{enumerate}
+\item Generate $B$ independent datasets $\{\mathcal{D}_b\}_{b=1}^B$ using the same true parameters $\theta_{\text{true}}$
+\item For each dataset $\mathcal{D}_b$, estimate parameters $\hat{\theta}_b$ using the inference procedure
+\item Analyze the distribution of estimates $\{\hat{\theta}_b\}_{b=1}^B$
+\end{enumerate}
+
+The visualization shows:
+\begin{itemize}
+\item \textbf{Bootstrap histograms}: Distribution of parameter estimates across bootstrap samples
+\item \textbf{True values}: Red dashed lines showing the parameters used to generate all datasets
+\item \textbf{Bootstrap mean}: Green line showing the average estimate $\bar{\theta} = \frac{1}{B}\sum_{b=1}^B \hat{\theta}_b$
+\item \textbf{95\% confidence intervals}: Orange shaded regions containing 95\% of bootstrap estimates
+\end{itemize}
+
+\textbf{Key Statistics:}
+\begin{itemize}
+\item \textbf{Bias}: $\text{Bias} = \mathbb{E}[\hat{\theta}] - \theta_{\text{true}} \approx \bar{\theta} - \theta_{\text{true}}$
+\item \textbf{Standard error}: $\text{SE} = \sqrt{\text{Var}[\hat{\theta}]} \approx \sqrt{\frac{1}{B-1}\sum_{b=1}^B (\hat{\theta}_b - \bar{\theta})^2}$
+\end{itemize}
+
+This bootstrap uncertainty represents the intrinsic variability due to finite sample size, 
+independent of model uncertainty. It answers: "How much would my estimates vary if I 
+collected new data with the same experimental setup?"
