@@ -85,3 +85,7 @@ mceg4dis/
 # Keep demo files for testing, exclude large production datasets  
 precomputed_data/*_ns[0-9][0-9][0-9][0-9]*.npz
 precomputed_data/*_ns[0-9][0-9][0-9][0-9][0-9]*.npz
+
+# UQ plotting demo generated files
+test_plots/
+demo_plot_preview.png
