@@ -1,0 +1,29 @@
+
+\section{Function-Space (Predictive) Uncertainty}
+
+This figure demonstrates how parameter uncertainty propagates to function predictions, 
+showing the predictive uncertainty $p(f(x)|\mathcal{D})$ obtained by marginalizing 
+over the parameter posterior:
+
+$$p(f(x)|\mathcal{D}) = \int p(f(x)|\theta) p(\theta|\mathcal{D}) d\theta$$
+
+The visualization includes:
+
+\begin{itemize}
+\item \textbf{Uncertainty bands}: Shaded regions showing 50\% (dark) and 90\% (light) 
+  confidence intervals for function predictions at each $x$
+\item \textbf{Median prediction}: Blue solid line showing the median $f(x)$ across all posterior samples
+\item \textbf{True function}: Red dashed line showing the ground truth $f(x|\theta_{\text{true}})$
+\item \textbf{Sample functions}: Gray lines showing individual function realizations from posterior samples
+\end{itemize}
+
+The computation procedure:
+\begin{enumerate}
+\item Sample parameters $\{\theta^{(i)}\}$ from the posterior $p(\theta|\mathcal{D})$
+\item Evaluate function $f(x|\theta^{(i)})$ for each sample at all $x$ values
+\item Compute empirical quantiles across samples to form confidence bands
+\end{enumerate}
+
+The width of the uncertainty bands indicates how confident we are in our function 
+predictions given the observed data. Wider bands indicate higher uncertainty, 
+typically occurring in regions where the data provides less constraint.
