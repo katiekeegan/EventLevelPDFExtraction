@@ -413,6 +413,39 @@ Examples:
             laplace_model=laplace_model,  # For analytic uncertainty
             save_path="param_distributions.png"
         )
+        from uq_plotting_demo import (
+            plot_parameter_uncertainty,
+            plot_function_uncertainty,
+            plot_bootstrap_uncertainty,
+            plot_combined_uncertainty_decomposition,
+            plot_uncertainty_scaling
+        )
+        simulator=SimplifiedDIS(device=device)
+        true_events = simulator.sample(true_params.numpy(), args.num_events)
+        # Example 1: Parameter uncertainty plot
+        plot_parameter_uncertainty(
+            simulator,
+            true_params, 
+            true_events,
+            plot_dir
+        )
+
+        # Example 2: Function uncertainty plot
+        plot_function_uncertainty(
+            simulator,
+            true_params, 
+            true_events,
+            plot_dir
+        )
+
+        plot_bootstrap_uncertainty(simulator, true_params, 
+                                                   n_events=args.num_events, n_bootstrap=30, save_dir=save_dir)
+
+        plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_samples, 
+                                          bootstrap_estimates, save_dir)
+
+        plot_uncertainty_scaling(simulator, true_params, 
+                            event_counts=[1000, 5000, 10000, 50000, 100000], save_dir=save_dir)
         if args.problem != 'mceg':
             plot_PDF_distribution_single_same_plot(
                 model=model,
