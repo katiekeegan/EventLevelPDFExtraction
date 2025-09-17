@@ -72,6 +72,22 @@ COLORS = {
 # LaTeX descriptions are now included as comments within each plotting function
 
 
+def save_latex_description(plot_path, latex_content):
+    """
+    Save LaTeX description alongside the plot file.
+    
+    Parameters:
+    ----------
+    plot_path : str
+        Path to the plot file
+    latex_content : str
+        LaTeX content to save
+    """
+    tex_path = plot_path.replace('.png', '.tex').replace('.pdf', '.tex').replace('.jpg', '.tex')
+    with open(tex_path, 'w') as f:
+        f.write(latex_content)
+
+
 def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=1000):
     """
     Simple ABC-style posterior sampler for demonstration.
@@ -104,30 +120,80 @@ def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=10
     return torch.stack(samples) if samples else torch.randn(n_samples, n_dim)
 
 
-def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="plots"):
+def plot_parameter_uncertainty(
+    model=None,
+    pointnet_model=None,
+    true_params=None,
+    device=None,
+    num_events=2000,
+    problem='simplified_dis',
+    save_dir="plots",
+    save_path=None,
+    n_mc=100,
+    laplace_model=None,
+    # Backward compatibility - allow old API
+    simulator=None,
+    true_theta=None,
+    observed_data=None
+):
     """
     Plot parameter-space uncertainty showing posterior distribution of inferred parameters.
+    
+    This function supports both the new generator-style API and backward compatibility 
+    with the original API for custom data.
+    
+    New API Parameters:
+    ------------------
+    model : torch.nn.Module
+        Parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        PointNet feature extractor
+    true_params : torch.Tensor
+        Ground truth parameter values
+    device : torch.device
+        Device to run computations on
+    num_events : int
+        Number of events to generate for analysis
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'gaussian', 'mceg')
+    save_dir : str
+        Directory to save plots (used if save_path not provided)
+    save_path : str, optional
+        Full path to save plot (overrides save_dir)
+    n_mc : int
+        Number of Monte Carlo samples for uncertainty estimation
+    laplace_model : object, optional
+        Fitted Laplace approximation for analytic uncertainty
+        
+    Backward Compatibility Parameters:
+    ---------------------------------
+    simulator : object
+        Legacy simulator object
+    true_theta : torch.Tensor
+        Legacy true parameter tensor
+    observed_data : torch.Tensor
+        Legacy observed data tensor
     
     LaTeX Description:
     ==================
     
-    \section{Parameter-Space Uncertainty}
+    \\section{Parameter-Space Uncertainty}
 
-    This figure shows the posterior distribution of model parameters $p(\theta|\mathcal{D})$ 
+    This figure shows the posterior distribution of model parameters $p(\\theta|\\mathcal{D})$ 
     obtained through inference on simulated data. The uncertainty visualization includes:
 
-    \begin{itemize}
-    \item \textbf{Posterior histograms}: Density plots showing the inferred parameter distributions
-    \item \textbf{True values}: Red dashed lines indicating the ground truth parameters used to generate the data
-    \item \textbf{Posterior means}: Green solid lines showing the expected values $\mathbb{E}[\theta|\mathcal{D}]$
-    \item \textbf{Confidence intervals}: Shaded regions showing $\pm 1\sigma$ and $\pm 2\sigma$ credible intervals
-    \end{itemize}
+    \\begin{itemize}
+    \\item \\textbf{Posterior histograms}: Density plots showing the inferred parameter distributions
+    \\item \\textbf{True values}: Red dashed lines indicating the ground truth parameters used to generate the data
+    \\item \\textbf{Posterior means}: Green solid lines showing the expected values $\\mathbb{E}[\\theta|\\mathcal{D}]$
+    \\item \\textbf{Confidence intervals}: Shaded regions showing $\\pm 1\\sigma$ and $\\pm 2\\sigma$ credible intervals
+    \\end{itemize}
 
     The parameter uncertainty is computed by sampling from the posterior distribution:
-    $$p(\theta|\mathcal{D}) \propto p(\mathcal{D}|\theta) p(\theta)$$
+    $$p(\\theta|\\mathcal{D}) \\propto p(\\mathcal{D}|\\theta) p(\\theta)$$
 
-    where $p(\mathcal{D}|\theta)$ is the likelihood of observing data $\mathcal{D}$ given parameters $\theta$, 
-    and $p(\theta)$ is the prior distribution. The width of each posterior distribution indicates 
+    where $p(\\mathcal{D}|\\theta)$ is the likelihood of observing data $\\mathcal{D}$ given parameters $\\theta$, 
+    and $p(\\theta)$ is the prior distribution. The width of each posterior distribution indicates 
     the uncertainty in that parameter given the observed data.
 
     Statistics shown include the posterior mean and standard deviation for each parameter, 
@@ -135,16 +201,53 @@ def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="p
     """
     print("📊 Generating parameter-space uncertainty plot...")
     
+    # Handle backward compatibility
+    if simulator is not None and true_theta is not None and observed_data is not None:
+        # Legacy API - use provided simulator and data
+        print("   Using legacy API with provided simulator and data")
+        working_simulator = simulator
+        working_true_params = true_theta
+        working_observed_data = observed_data
+    else:
+        # New API - generate data internally
+        if model is None or pointnet_model is None or true_params is None or device is None:
+            raise ValueError("New API requires model, pointnet_model, true_params, and device")
+        
+        print("   Using new generator-style API")
+        # Create simulator based on problem type
+        if problem == 'simplified_dis':
+            working_simulator = SimplifiedDIS(device=device)
+        elif problem == 'realistic_dis':
+            working_simulator = RealisticDIS(device=device)
+        elif problem == 'gaussian':
+            working_simulator = Gaussian2DSimulator(device=device)
+        elif problem == 'mceg':
+            if MCEGSimulator is not None:
+                working_simulator = MCEGSimulator(device=device)
+            else:
+                raise ValueError("MCEGSimulator not available")
+        else:
+            raise ValueError(f"Unknown problem type: {problem}")
+        
+        working_true_params = true_params
+        # Generate observed data
+        working_observed_data = working_simulator.sample(true_params, num_events)
+    
     # Define prior bounds based on simulator type
-    if isinstance(simulator, SimplifiedDIS):
+    if isinstance(working_simulator, SimplifiedDIS):
         theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]  # [au, bu, ad, bd]
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    else:
+    elif isinstance(working_simulator, Gaussian2DSimulator):
         theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]  # Gaussian params
         param_names = [r'$\mu_x$', r'$\mu_y$', r'$\sigma_x$', r'$\sigma_y$', r'$\rho$']
+    else:
+        # Default bounds for other simulators
+        n_params = len(working_true_params)
+        theta_bounds = [(0.1, 10.0)] * n_params
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
     
     # Sample from posterior
-    posterior_samples = posterior_sampler(simulator, observed_data, theta_bounds, n_samples=500)
+    posterior_samples = posterior_sampler(working_simulator, working_observed_data, theta_bounds, n_samples=n_mc)
     
     n_params = len(param_names)
     fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
@@ -166,8 +269,8 @@ def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="p
         std_val = np.std(samples)
         
         # Plot true value
-        if i < len(true_theta):
-            ax.axvline(true_theta[i].item(), color=COLORS['red'], linestyle='--', 
+        if i < len(working_true_params):
+            ax.axvline(working_true_params[i].item(), color=COLORS['red'], linestyle='--', 
                       linewidth=2, label='True value')
         
         # Plot mean and confidence intervals
@@ -196,45 +299,100 @@ def plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir="p
         fig.delaxes(axes[i])
     
     plt.tight_layout()
-    filepath = os.path.join(save_dir, "parameter_uncertainty.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    
+    # Determine save path
+    if save_path is None:
+        save_path = os.path.join(save_dir, "parameter_uncertainty.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Parameter uncertainty plot saved to: {filepath}")
+    print(f"✅ Parameter uncertainty plot saved to: {save_path}")
     return posterior_samples
 
 
-def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir="plots"):
+def plot_function_uncertainty(
+    model=None,
+    pointnet_model=None,
+    true_params=None,
+    device=None,
+    num_events=2000,
+    problem='simplified_dis',
+    save_dir="plots",
+    save_path=None,
+    n_mc=100,
+    laplace_model=None,
+    # Backward compatibility
+    simulator=None,
+    posterior_samples=None,
+    true_theta=None
+):
     """
     Plot function-space (predictive) uncertainty by propagating parameter uncertainty.
+    
+    This function supports both the new generator-style API and backward compatibility 
+    with the original API for custom data.
+    
+    New API Parameters:
+    ------------------
+    model : torch.nn.Module
+        Parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        PointNet feature extractor
+    true_params : torch.Tensor
+        Ground truth parameter values
+    device : torch.device
+        Device to run computations on
+    num_events : int
+        Number of events to generate for analysis
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'gaussian', 'mceg')
+    save_dir : str
+        Directory to save plots (used if save_path not provided)
+    save_path : str, optional
+        Full path to save plot (overrides save_dir)
+    n_mc : int
+        Number of Monte Carlo samples for uncertainty estimation
+    laplace_model : object, optional
+        Fitted Laplace approximation for analytic uncertainty
+        
+    Backward Compatibility Parameters:
+    ---------------------------------
+    simulator : object
+        Legacy simulator object
+    posterior_samples : torch.Tensor
+        Legacy posterior samples
+    true_theta : torch.Tensor
+        Legacy true parameter tensor
     
     LaTeX Description:
     ==================
     
-    \section{Function-Space (Predictive) Uncertainty}
+    \\section{Function-Space (Predictive) Uncertainty}
 
     This figure demonstrates how parameter uncertainty propagates to function predictions, 
-    showing the predictive uncertainty $p(f(x)|\mathcal{D})$ obtained by marginalizing 
+    showing the predictive uncertainty $p(f(x)|\\mathcal{D})$ obtained by marginalizing 
     over the parameter posterior:
 
-    $$p(f(x)|\mathcal{D}) = \int p(f(x)|\theta) p(\theta|\mathcal{D}) d\theta$$
+    $$p(f(x)|\\mathcal{D}) = \\int p(f(x)|\\theta) p(\\theta|\\mathcal{D}) d\\theta$$
 
     The visualization includes:
 
-    \begin{itemize}
-    \item \textbf{Uncertainty bands}: Shaded regions showing 50\% (dark) and 90\% (light) 
+    \\begin{itemize}
+    \\item \\textbf{Uncertainty bands}: Shaded regions showing 50\\% (dark) and 90\\% (light) 
       confidence intervals for function predictions at each $x$
-    \item \textbf{Median prediction}: Blue solid line showing the median $f(x)$ across all posterior samples
-    \item \textbf{True function}: Red dashed line showing the ground truth $f(x|\theta_{\text{true}})$
-    \item \textbf{Sample functions}: Gray lines showing individual function realizations from posterior samples
-    \end{itemize}
+    \\item \\textbf{Median prediction}: Blue solid line showing the median $f(x)$ across all posterior samples
+    \\item \\textbf{True function}: Red dashed line showing the ground truth $f(x|\\theta_{\\text{true}})$
+    \\item \\textbf{Sample functions}: Gray lines showing individual function realizations from posterior samples
+    \\end{itemize}
 
     The computation procedure:
-    \begin{enumerate}
-    \item Sample parameters $\{\theta^{(i)}\}$ from the posterior $p(\theta|\mathcal{D})$
-    \item Evaluate function $f(x|\theta^{(i)})$ for each sample at all $x$ values
-    \item Compute empirical quantiles across samples to form confidence bands
-    \end{enumerate}
+    \\begin{enumerate}
+    \\item Sample parameters $\\{\\theta^{(i)}\\}$ from the posterior $p(\\theta|\\mathcal{D})$
+    \\item Evaluate function $f(x|\\theta^{(i)})$ for each sample at all $x$ values
+    \\item Compute empirical quantiles across samples to form confidence bands
+    \\end{enumerate}
 
     The width of the uncertainty bands indicates how confident we are in our function 
     predictions given the observed data. Wider bands indicate higher uncertainty, 
@@ -242,10 +400,55 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
     """
     print("📈 Generating function-space uncertainty plot...")
     
+    # Handle backward compatibility
+    if simulator is not None and posterior_samples is not None and true_theta is not None:
+        # Legacy API - use provided simulator and posterior samples
+        print("   Using legacy API with provided simulator and posterior samples")
+        working_simulator = simulator
+        working_true_params = true_theta
+        working_posterior_samples = posterior_samples
+    else:
+        # New API - generate data internally
+        if model is None or pointnet_model is None or true_params is None or device is None:
+            raise ValueError("New API requires model, pointnet_model, true_params, and device")
+        
+        print("   Using new generator-style API")
+        # Create simulator based on problem type
+        if problem == 'simplified_dis':
+            working_simulator = SimplifiedDIS(device=device)
+        elif problem == 'realistic_dis':
+            working_simulator = RealisticDIS(device=device)
+        elif problem == 'gaussian':
+            working_simulator = Gaussian2DSimulator(device=device)
+        elif problem == 'mceg':
+            if MCEGSimulator is not None:
+                working_simulator = MCEGSimulator(device=device)
+            else:
+                raise ValueError("MCEGSimulator not available")
+        else:
+            raise ValueError(f"Unknown problem type: {problem}")
+        
+        working_true_params = true_params
+        
+        # Generate observed data and get posterior samples
+        observed_data = working_simulator.sample(true_params, num_events)
+        
+        # Define prior bounds based on simulator type
+        if isinstance(working_simulator, SimplifiedDIS):
+            theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]
+        elif isinstance(working_simulator, Gaussian2DSimulator):
+            theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]
+        else:
+            n_params = len(working_true_params)
+            theta_bounds = [(0.1, 10.0)] * n_params
+        
+        # Generate posterior samples
+        working_posterior_samples = posterior_sampler(working_simulator, observed_data, theta_bounds, n_samples=n_mc)
+    
     # Define x grid for evaluation
     x_vals = torch.linspace(0.01, 0.99, 100)
     
-    if isinstance(simulator, SimplifiedDIS):
+    if isinstance(working_simulator, SimplifiedDIS):
         function_names = ['up', 'down']
         fig, axes = plt.subplots(1, 2, figsize=(14, 6))
     else:
@@ -258,11 +461,11 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
         
         # Evaluate function for all posterior samples
         func_samples = []
-        for theta in posterior_samples[:200]:  # Use subset for speed
-            if isinstance(simulator, SimplifiedDIS):
-                func_vals = simulator.f(x_vals, theta)[func_name]
+        for theta in working_posterior_samples[:200]:  # Use subset for speed
+            if isinstance(working_simulator, SimplifiedDIS):
+                func_vals = working_simulator.f(x_vals, theta)[func_name]
             else:
-                func_vals = simulator.f(x_vals, theta)
+                func_vals = working_simulator.f(x_vals, theta)
             func_samples.append(func_vals.detach().numpy())
         
         func_samples = np.array(func_samples)
@@ -283,10 +486,10 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
         ax.plot(x_np, median_vals, color=COLORS['blue'], linewidth=2, label='Median prediction')
         
         # Plot true function
-        if isinstance(simulator, SimplifiedDIS):
-            true_vals = simulator.f(x_vals, true_theta)[func_name]
+        if isinstance(working_simulator, SimplifiedDIS):
+            true_vals = working_simulator.f(x_vals, working_true_params)[func_name]
         else:
-            true_vals = simulator.f(x_vals, true_theta)
+            true_vals = working_simulator.f(x_vals, working_true_params)
         ax.plot(x_np, true_vals.detach().numpy(), color=COLORS['red'], 
                linestyle='--', linewidth=2, label='True function')
         
@@ -297,7 +500,7 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
         
         # Formatting
         ax.set_xlabel(r'$x$')
-        if isinstance(simulator, SimplifiedDIS):
+        if isinstance(working_simulator, SimplifiedDIS):
             ax.set_ylabel(f'{func_name}$(x)$')
             ax.set_title(f'{func_name.title()} quark PDF: $f(x|\\theta)$')
         else:
@@ -309,46 +512,96 @@ def plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir
         ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    filepath = os.path.join(save_dir, "function_uncertainty.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    
+    # Determine save path
+    if save_path is None:
+        save_path = os.path.join(save_dir, "function_uncertainty.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Function uncertainty plot saved to: {filepath}")
+    print(f"✅ Function uncertainty plot saved to: {save_path}")
 
 
-def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap=50, save_dir="plots"):
+def plot_bootstrap_uncertainty(
+    model=None,
+    pointnet_model=None,
+    true_params=None,
+    device=None,
+    num_events=1000,
+    n_bootstrap=50,
+    problem='simplified_dis',
+    save_dir="plots",
+    save_path=None,
+    # Backward compatibility
+    simulator=None,
+    true_theta=None,
+    n_events=None  # Legacy parameter name
+):
     """
     Demonstrate bootstrap/data uncertainty by generating multiple datasets.
+    
+    This function supports both the new generator-style API and backward compatibility 
+    with the original API.
+    
+    New API Parameters:
+    ------------------
+    model : torch.nn.Module
+        Parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        PointNet feature extractor
+    true_params : torch.Tensor
+        Ground truth parameter values
+    device : torch.device
+        Device to run computations on
+    num_events : int
+        Number of events per bootstrap sample
+    n_bootstrap : int
+        Number of bootstrap samples
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'gaussian', 'mceg')
+    save_dir : str
+        Directory to save plots (used if save_path not provided)
+    save_path : str, optional
+        Full path to save plot (overrides save_dir)
+        
+    Backward Compatibility Parameters:
+    ---------------------------------
+    simulator : object
+        Legacy simulator object
+    true_theta : torch.Tensor
+        Legacy true parameter tensor
     
     LaTeX Description:
     ==================
     
-    \section{Bootstrap/Data Uncertainty}
+    \\section{Bootstrap/Data Uncertainty}
 
     This figure demonstrates the parametric bootstrap procedure for estimating data (sampling) 
     uncertainty. The bootstrap quantifies how much our parameter estimates would vary if we 
     could repeat the experiment multiple times with the same true parameters.
 
-    \textbf{Parametric Bootstrap Procedure:}
-    \begin{enumerate}
-    \item Generate $B$ independent datasets $\{\mathcal{D}_b\}_{b=1}^B$ using the same true parameters $\theta_{\text{true}}$
-    \item For each dataset $\mathcal{D}_b$, estimate parameters $\hat{\theta}_b$ using the inference procedure
-    \item Analyze the distribution of estimates $\{\hat{\theta}_b\}_{b=1}^B$
-    \end{enumerate}
+    \\textbf{Parametric Bootstrap Procedure:}
+    \\begin{enumerate}
+    \\item Generate $B$ independent datasets $\\{\\mathcal{D}_b\\}_{b=1}^B$ using the same true parameters $\\theta_{\\text{true}}$
+    \\item For each dataset $\\mathcal{D}_b$, estimate parameters $\\hat{\\theta}_b$ using the inference procedure
+    \\item Analyze the distribution of estimates $\\{\\hat{\\theta}_b\\}_{b=1}^B$
+    \\end{enumerate}
 
     The visualization shows:
-    \begin{itemize}
-    \item \textbf{Bootstrap histograms}: Distribution of parameter estimates across bootstrap samples
-    \item \textbf{True values}: Red dashed lines showing the parameters used to generate all datasets
-    \item \textbf{Bootstrap mean}: Green line showing the average estimate $\bar{\theta} = \frac{1}{B}\sum_{b=1}^B \hat{\theta}_b$
-    \item \textbf{95\% confidence intervals}: Orange shaded regions containing 95\% of bootstrap estimates
-    \end{itemize}
+    \\begin{itemize}
+    \\item \\textbf{Bootstrap histograms}: Distribution of parameter estimates across bootstrap samples
+    \\item \\textbf{True values}: Red dashed lines showing the parameters used to generate all datasets
+    \\item \\textbf{Bootstrap mean}: Green line showing the average estimate $\\bar{\\theta} = \\frac{1}{B}\\sum_{b=1}^B \\hat{\\theta}_b$
+    \\item \\textbf{95\\% confidence intervals}: Orange shaded regions containing 95\\% of bootstrap estimates
+    \\end{itemize}
 
-    \textbf{Key Statistics:}
-    \begin{itemize}
-    \item \textbf{Bias}: $\text{Bias} = \mathbb{E}[\hat{\theta}] - \theta_{\text{true}} \approx \bar{\theta} - \theta_{\text{true}}$
-    \item \textbf{Standard error}: $\text{SE} = \sqrt{\text{Var}[\hat{\theta}]} \approx \sqrt{\frac{1}{B-1}\sum_{b=1}^B (\hat{\theta}_b - \bar{\theta})^2}$
-    \end{itemize}
+    \\textbf{Key Statistics:}
+    \\begin{itemize}
+    \\item \\textbf{Bias}: $\\text{Bias} = \\mathbb{E}[\\hat{\\theta}] - \\theta_{\\text{true}} \\approx \\bar{\\theta} - \\theta_{\\text{true}}$
+    \\item \\textbf{Standard error}: $\\text{SE} = \\sqrt{\\text{Var}[\\hat{\\theta}]} \\approx \\sqrt{\\frac{1}{B-1}\\sum_{b=1}^B (\\hat{\\theta}_b - \\bar{\\theta})^2}$
+    \\end{itemize}
 
     This bootstrap uncertainty represents the intrinsic variability due to finite sample size, 
     independent of model uncertainty. It answers: "How much would my estimates vary if I 
@@ -356,30 +609,68 @@ def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap
     """
     print("🔄 Generating bootstrap uncertainty plot...")
     
+    # Handle backward compatibility
+    if simulator is not None and true_theta is not None:
+        # Legacy API - use provided simulator
+        print("   Using legacy API with provided simulator")
+        working_simulator = simulator
+        working_true_params = true_theta
+        # Use legacy n_events parameter if provided, otherwise use num_events
+        working_num_events = n_events if n_events is not None else num_events
+    else:
+        # New API - generate data internally
+        if model is None or pointnet_model is None or true_params is None or device is None:
+            raise ValueError("New API requires model, pointnet_model, true_params, and device")
+        
+        print("   Using new generator-style API")
+        # Create simulator based on problem type
+        if problem == 'simplified_dis':
+            working_simulator = SimplifiedDIS(device=device)
+        elif problem == 'realistic_dis':
+            working_simulator = RealisticDIS(device=device)
+        elif problem == 'gaussian':
+            working_simulator = Gaussian2DSimulator(device=device)
+        elif problem == 'mceg':
+            if MCEGSimulator is not None:
+                working_simulator = MCEGSimulator(device=device)
+            else:
+                raise ValueError("MCEGSimulator not available")
+        else:
+            raise ValueError(f"Unknown problem type: {problem}")
+        
+        working_true_params = true_params
+        working_num_events = num_events
+    
     # Generate multiple bootstrap datasets
     bootstrap_theta_estimates = []
     
     for i in tqdm(range(n_bootstrap), desc="Bootstrap resampling"):
         # Generate new dataset with same true parameters
-        bootstrap_data = simulator.sample(true_theta, n_events)
+        bootstrap_data = working_simulator.sample(working_true_params, working_num_events)
         
         # Simple parameter estimation (in practice, use your trained model)
-        if isinstance(simulator, SimplifiedDIS):
+        if isinstance(working_simulator, SimplifiedDIS):
             theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]
-        else:
+        elif isinstance(working_simulator, Gaussian2DSimulator):
             theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]
+        else:
+            n_params = len(working_true_params)
+            theta_bounds = [(0.1, 10.0)] * n_params
         
         # Estimate parameters for this bootstrap sample
-        estimated_theta = posterior_sampler(simulator, bootstrap_data, theta_bounds, n_samples=10)[0]
+        estimated_theta = posterior_sampler(working_simulator, bootstrap_data, theta_bounds, n_samples=10)[0]
         bootstrap_theta_estimates.append(estimated_theta)
     
     bootstrap_theta_estimates = torch.stack(bootstrap_theta_estimates)
     
     # Plot bootstrap distribution
-    if isinstance(simulator, SimplifiedDIS):
+    if isinstance(working_simulator, SimplifiedDIS):
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    else:
+    elif isinstance(working_simulator, Gaussian2DSimulator):
         param_names = [r'$\mu_x$', r'$\mu_y$', r'$\sigma_x$', r'$\sigma_y$', r'$\rho$']
+    else:
+        n_params = len(working_true_params)
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
     
     n_params = len(param_names)
     fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
@@ -399,8 +690,8 @@ def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap
                density=True, label='Bootstrap distribution')
         
         # True value
-        if i < len(true_theta):
-            ax.axvline(true_theta[i].item(), color=COLORS['red'], linestyle='--', 
+        if i < len(working_true_params):
+            ax.axvline(working_true_params[i].item(), color=COLORS['red'], linestyle='--', 
                       linewidth=2, label='True value')
         
         # Bootstrap statistics
@@ -423,7 +714,11 @@ def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap
         ax.grid(True, alpha=0.3)
         
         # Statistics box
-        stats_text = f'Mean: {boot_mean:.3f}\nStd: {boot_std:.3f}\nBias: {boot_mean - true_theta[i].item():.3f}'
+        if i < len(working_true_params):
+            bias = boot_mean - working_true_params[i].item()
+            stats_text = f'Mean: {boot_mean:.3f}\nStd: {boot_std:.3f}\nBias: {bias:.3f}'
+        else:
+            stats_text = f'Mean: {boot_mean:.3f}\nStd: {boot_std:.3f}'
         ax.text(0.05, 0.95, stats_text, transform=ax.transAxes, 
                verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
@@ -432,66 +727,176 @@ def plot_bootstrap_uncertainty(simulator, true_theta, n_events=1000, n_bootstrap
         fig.delaxes(axes[i])
     
     plt.tight_layout()
-    filepath = os.path.join(save_dir, "bootstrap_uncertainty.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    
+    # Determine save path
+    if save_path is None:
+        save_path = os.path.join(save_dir, "bootstrap_uncertainty.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Bootstrap uncertainty plot saved to: {filepath}")
+    print(f"✅ Bootstrap uncertainty plot saved to: {save_path}")
     return bootstrap_theta_estimates
 
 
-def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_samples, 
-                                          bootstrap_estimates, save_dir="plots"):
+def plot_combined_uncertainty_decomposition(
+    model=None,
+    pointnet_model=None,
+    true_params=None,
+    device=None,
+    num_events=1000,
+    n_bootstrap=20,
+    problem='simplified_dis',
+    save_dir="plots",
+    save_path=None,
+    laplace_model=None,
+    # Backward compatibility
+    simulator=None,
+    true_theta=None,
+    posterior_samples=None,
+    bootstrap_estimates=None
+):
     """
     Plot combined uncertainty decomposition showing total variance and its components.
+    
+    This function supports both the new generator-style API and backward compatibility 
+    with the original API.
+    
+    New API Parameters:
+    ------------------
+    model : torch.nn.Module
+        Parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        PointNet feature extractor
+    true_params : torch.Tensor
+        Ground truth parameter values
+    device : torch.device
+        Device to run computations on
+    num_events : int
+        Number of events per bootstrap sample
+    n_bootstrap : int
+        Number of bootstrap samples
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'gaussian', 'mceg')
+    save_dir : str
+        Directory to save plots (used if save_path not provided)
+    save_path : str, optional
+        Full path to save plot (overrides save_dir)
+    laplace_model : object, optional
+        Fitted Laplace approximation for analytic uncertainty
+        
+    Backward Compatibility Parameters:
+    ---------------------------------
+    simulator : object
+        Legacy simulator object
+    true_theta : torch.Tensor
+        Legacy true parameter tensor
+    posterior_samples : torch.Tensor
+        Legacy posterior samples
+    bootstrap_estimates : torch.Tensor
+        Legacy bootstrap estimates
     
     LaTeX Description:
     ==================
     
-    \section{Combined Uncertainty Decomposition}
+    \\section{Combined Uncertainty Decomposition}
 
     This figure shows the decomposition of total prediction uncertainty into its constituent components, 
     following the variance decomposition formula:
 
-    $$\text{Var}_{\text{total}}[f(x)] = \mathbb{E}_b[\text{Var}_{\theta|b}[f(x|\theta)]] + \text{Var}_b[\mathbb{E}_{\theta|b}[f(x|\theta)]]$$
+    $$\\text{Var}_{\\text{total}}[f(x)] = \\mathbb{E}_b[\\text{Var}_{\\theta|b}[f(x|\\theta)]] + \\text{Var}_b[\\mathbb{E}_{\\theta|b}[f(x|\\theta)]]$$
 
-    where $b$ indexes bootstrap samples and $\theta|b$ represents the posterior distribution for bootstrap sample $b$.
+    where $b$ indexes bootstrap samples and $\\theta|b$ represents the posterior distribution for bootstrap sample $b$.
 
-    \textbf{Uncertainty Components:}
+    \\textbf{Uncertainty Components:}
 
-    \begin{itemize}
-    \item \textbf{Model uncertainty} (blue): $\mathbb{E}_b[\sigma_b^2(x)]$ - Average within-bootstrap variance representing 
+    \\begin{itemize}
+    \\item \\textbf{Model uncertainty} (blue): $\\mathbb{E}_b[\\sigma_b^2(x)]$ - Average within-bootstrap variance representing 
       uncertainty in our model predictions given a fixed dataset. This captures epistemic uncertainty 
       about the model parameters.
 
-    \item \textbf{Data uncertainty} (orange): $\text{Var}_b[\mu_b(x)]$ - Between-bootstrap variance representing 
+    \\item \\textbf{Data uncertainty} (orange): $\\text{Var}_b[\\mu_b(x)]$ - Between-bootstrap variance representing 
       uncertainty due to finite sample size. This captures aleatoric uncertainty arising from 
       sampling variability.
-    \end{itemize}
+    \\end{itemize}
 
-    \textbf{Left panels}: Absolute variance contributions showing how much each uncertainty source 
+    \\textbf{Left panels}: Absolute variance contributions showing how much each uncertainty source 
     contributes to the total variance at each $x$ value.
 
-    \textbf{Right panels}: Relative contributions showing the fraction of total variance attributable 
+    \\textbf{Right panels}: Relative contributions showing the fraction of total variance attributable 
     to each source, with values summing to 1.
 
-    \textbf{Interpretation:}
-    \begin{itemize}
-    \item Regions where model uncertainty dominates suggest the model is well-constrained by the data 
+    \\textbf{Interpretation:}
+    \\begin{itemize}
+    \\item Regions where model uncertainty dominates suggest the model is well-constrained by the data 
       but has inherent parameter uncertainty
-    \item Regions where data uncertainty dominates suggest more data would significantly reduce uncertainty
-    \item The relative importance can guide experimental design and model improvement strategies
-    \end{itemize}
+    \\item Regions where data uncertainty dominates suggest more data would significantly reduce uncertainty
+    \\item The relative importance can guide experimental design and model improvement strategies
+    \\end{itemize}
 
     This decomposition is essential for understanding whether uncertainty reduction efforts should 
     focus on improving the model or collecting more data.
     """
     print("🔬 Generating combined uncertainty decomposition plot...")
     
+    # Handle backward compatibility
+    if (simulator is not None and true_theta is not None and 
+        posterior_samples is not None and bootstrap_estimates is not None):
+        # Legacy API - use provided data
+        print("   Using legacy API with provided data")
+        working_simulator = simulator
+        working_true_params = true_theta
+        working_bootstrap_estimates = bootstrap_estimates
+    else:
+        # New API - generate data internally
+        if model is None or pointnet_model is None or true_params is None or device is None:
+            raise ValueError("New API requires model, pointnet_model, true_params, and device")
+        
+        print("   Using new generator-style API")
+        # Create simulator based on problem type
+        if problem == 'simplified_dis':
+            working_simulator = SimplifiedDIS(device=device)
+        elif problem == 'realistic_dis':
+            working_simulator = RealisticDIS(device=device)
+        elif problem == 'gaussian':
+            working_simulator = Gaussian2DSimulator(device=device)
+        elif problem == 'mceg':
+            if MCEGSimulator is not None:
+                working_simulator = MCEGSimulator(device=device)
+            else:
+                raise ValueError("MCEGSimulator not available")
+        else:
+            raise ValueError(f"Unknown problem type: {problem}")
+        
+        working_true_params = true_params
+        
+        # Generate bootstrap estimates
+        bootstrap_theta_estimates = []
+        
+        for i in tqdm(range(n_bootstrap), desc="Generating bootstrap samples for decomposition"):
+            # Generate new dataset with same true parameters
+            bootstrap_data = working_simulator.sample(true_params, num_events)
+            
+            # Define bounds
+            if isinstance(working_simulator, SimplifiedDIS):
+                theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]
+            elif isinstance(working_simulator, Gaussian2DSimulator):
+                theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]
+            else:
+                n_params = len(true_params)
+                theta_bounds = [(0.1, 10.0)] * n_params
+            
+            # Estimate parameters for this bootstrap sample
+            estimated_theta = posterior_sampler(working_simulator, bootstrap_data, theta_bounds, n_samples=10)[0]
+            bootstrap_theta_estimates.append(estimated_theta)
+        
+        working_bootstrap_estimates = torch.stack(bootstrap_theta_estimates)
+    
     # For function uncertainty decomposition
     x_vals = torch.linspace(0.01, 0.99, 50)  # Coarser grid for computational efficiency
     
-    if isinstance(simulator, SimplifiedDIS):
+    if isinstance(working_simulator, SimplifiedDIS):
         function_names = ['up', 'down']
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     else:
@@ -507,10 +912,10 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
         within_bootstrap_vars = []
         between_bootstrap_means = []
         
-        n_bootstrap_subset = min(20, len(bootstrap_estimates))  # Use subset for speed
+        n_bootstrap_subset = min(20, len(working_bootstrap_estimates))  # Use subset for speed
         
         for i in range(n_bootstrap_subset):
-            theta_boot = bootstrap_estimates[i]
+            theta_boot = working_bootstrap_estimates[i]
             
             # Generate posterior samples around this bootstrap estimate (simulate model uncertainty)
             local_posterior = theta_boot.unsqueeze(0).repeat(50, 1) + \
@@ -519,10 +924,10 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
             # Evaluate function for these samples
             func_vals_local = []
             for theta in local_posterior:
-                if isinstance(simulator, SimplifiedDIS):
-                    func_val = simulator.f(x_vals, theta)[func_name]
+                if isinstance(working_simulator, SimplifiedDIS):
+                    func_val = working_simulator.f(x_vals, theta)[func_name]
                 else:
-                    func_val = simulator.f(x_vals, theta)
+                    func_val = working_simulator.f(x_vals, theta)
                 func_vals_local.append(func_val.detach().numpy())
             
             func_vals_local = np.array(func_vals_local)
@@ -557,7 +962,7 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
         
         ax_main.set_xlabel(r'$x$')
         ax_main.set_ylabel('Variance')
-        if isinstance(simulator, SimplifiedDIS):
+        if isinstance(working_simulator, SimplifiedDIS):
             ax_main.set_title(f'{func_name.title()} PDF: Uncertainty Decomposition')
         else:
             ax_main.set_title('Function: Uncertainty Decomposition')
@@ -586,87 +991,169 @@ def plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_sam
         ax_rel.set_ylim(0, 1)
     
     plt.tight_layout()
-    filepath = os.path.join(save_dir, "uncertainty_decomposition.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    
+    # Determine save path
+    if save_path is None:
+        save_path = os.path.join(save_dir, "uncertainty_decomposition.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Uncertainty decomposition plot saved to: {filepath}")
+    print(f"✅ Uncertainty decomposition plot saved to: {save_path}")
 
 
-def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000, 5000, 10000], 
-                           save_dir="plots"):
+def plot_uncertainty_scaling(
+    model=None,
+    pointnet_model=None,
+    true_params=None,
+    device=None,
+    event_counts=None,
+    n_bootstrap=20,
+    problem='simplified_dis',
+    save_dir="plots",
+    save_path=None,
+    # Backward compatibility
+    simulator=None,
+    true_theta=None
+):
     """
     Plot how uncertainty scales with the number of events per experiment.
+    
+    This function supports both the new generator-style API and backward compatibility 
+    with the original API.
+    
+    New API Parameters:
+    ------------------
+    model : torch.nn.Module
+        Parameter prediction model (head)
+    pointnet_model : torch.nn.Module
+        PointNet feature extractor
+    true_params : torch.Tensor
+        Ground truth parameter values
+    device : torch.device
+        Device to run computations on
+    event_counts : list, optional
+        List of event counts to test (default: [100, 500, 1000, 5000, 10000])
+    n_bootstrap : int
+        Number of bootstrap samples per event count
+    problem : str
+        Problem type ('simplified_dis', 'realistic_dis', 'gaussian', 'mceg')
+    save_dir : str
+        Directory to save plots (used if save_path not provided)
+    save_path : str, optional
+        Full path to save plot (overrides save_dir)
+        
+    Backward Compatibility Parameters:
+    ---------------------------------
+    simulator : object
+        Legacy simulator object
+    true_theta : torch.Tensor
+        Legacy true parameter tensor
     
     LaTeX Description:
     ==================
     
-    \section{Uncertainty Scaling with Number of Events}
+    \\section{Uncertainty Scaling with Number of Events}
 
     This figure demonstrates how parameter estimation uncertainty decreases as the number of 
     events per experiment increases, illustrating the fundamental statistical relationship 
     between sample size and estimation precision.
 
-    \textbf{Theoretical Expectation:}
+    \\textbf{Theoretical Expectation:}
 
     For most well-behaved estimators, the standard error should scale as:
-    $$\sigma_{\hat{\theta}} \propto \frac{1}{\sqrt{N}}$$
+    $$\\sigma_{\\hat{\\theta}} \\propto \\frac{1}{\\sqrt{N}}$$
 
     where $N$ is the number of events. This follows from the Central Limit Theorem and 
     the fact that the variance of a sample mean decreases as $1/N$.
 
-    \textbf{Visualization Elements:}
+    \\textbf{Visualization Elements:}
 
-    \begin{itemize}
-    \item \textbf{Observed scaling} (blue circles): Empirical standard deviations computed from 
+    \\begin{itemize}
+    \\item \\textbf{Observed scaling} (blue circles): Empirical standard deviations computed from 
       multiple parameter estimates at each event count
-    \item \textbf{Theoretical scaling} (red dashed): Reference $1/\sqrt{N}$ scaling normalized 
+    \\item \\textbf{Theoretical scaling} (red dashed): Reference $1/\\sqrt{N}$ scaling normalized 
       to match the observed data at a reference point
-    \item \textbf{Fitted scaling}: Power-law fit to the observed data showing the actual scaling exponent
-    \end{itemize}
+    \\item \\textbf{Fitted scaling}: Power-law fit to the observed data showing the actual scaling exponent
+    \\end{itemize}
 
-    \textbf{Experimental Procedure:}
-    \begin{enumerate}
-    \item For each event count $N \in \{100, 500, 1000, 5000, 10000\}$:
-    \item Generate 20 independent datasets with $N$ events each
-    \item Estimate parameters $\hat{\theta}$ for each dataset
-    \item Compute standard deviation across the 20 estimates
-    \end{enumerate}
+    \\textbf{Experimental Procedure:}
+    \\begin{enumerate}
+    \\item For each event count $N \\in \\{100, 500, 1000, 5000, 10000\\}$:
+    \\item Generate 20 independent datasets with $N$ events each
+    \\item Estimate parameters $\\hat{\\theta}$ for each dataset
+    \\item Compute standard deviation across the 20 estimates
+    \\end{enumerate}
 
-    \textbf{Interpretation:}
-    \begin{itemize}
-    \item \textbf{Adherence to theory}: Parameters following $N^{-0.5}$ scaling indicate well-behaved 
+    \\textbf{Interpretation:}
+    \\begin{itemize}
+    \\item \\textbf{Adherence to theory}: Parameters following $N^{-0.5}$ scaling indicate well-behaved 
       estimation with no systematic issues
-    \item \textbf{Deviations from theory}: Faster or slower scaling may indicate systematic effects, 
+    \\item \\textbf{Deviations from theory}: Faster or slower scaling may indicate systematic effects, 
       model misspecification, or numerical issues
-    \item \textbf{Practical implications}: The scaling relationship helps predict how much data is 
+    \\item \\textbf{Practical implications}: The scaling relationship helps predict how much data is 
       needed to achieve desired precision levels
-    \end{itemize}
+    \\end{itemize}
 
     This analysis is crucial for experimental design, helping determine optimal data collection 
     strategies and computational resource allocation.
     """
     print("📈 Generating uncertainty scaling plot...")
     
-    # Store results for different event counts
-    std_results = {count: [] for count in event_counts}
+    # Handle backward compatibility
+    if simulator is not None and true_theta is not None:
+        # Legacy API - use provided simulator
+        print("   Using legacy API with provided simulator")
+        working_simulator = simulator
+        working_true_params = true_theta
+        working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
+    else:
+        # New API - generate data internally
+        if model is None or pointnet_model is None or true_params is None or device is None:
+            raise ValueError("New API requires model, pointnet_model, true_params, and device")
+        
+        print("   Using new generator-style API")
+        # Create simulator based on problem type
+        if problem == 'simplified_dis':
+            working_simulator = SimplifiedDIS(device=device)
+        elif problem == 'realistic_dis':
+            working_simulator = RealisticDIS(device=device)
+        elif problem == 'gaussian':
+            working_simulator = Gaussian2DSimulator(device=device)
+        elif problem == 'mceg':
+            if MCEGSimulator is not None:
+                working_simulator = MCEGSimulator(device=device)
+            else:
+                raise ValueError("MCEGSimulator not available")
+        else:
+            raise ValueError(f"Unknown problem type: {problem}")
+        
+        working_true_params = true_params
+        working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
     
-    for n_events in tqdm(event_counts, desc="Testing event counts"):
+    # Store results for different event counts
+    std_results = {count: [] for count in working_event_counts}
+    
+    for n_events in tqdm(working_event_counts, desc="Testing event counts"):
         # Generate multiple estimates for this event count
         estimates = []
         
-        for trial in range(20):  # Multiple trials per event count
+        for trial in range(n_bootstrap):  # Multiple trials per event count
             # Generate dataset
-            data = simulator.sample(true_theta, n_events)
+            data = working_simulator.sample(working_true_params, n_events)
             
             # Estimate parameters (simplified approach)
-            if isinstance(simulator, SimplifiedDIS):
+            if isinstance(working_simulator, SimplifiedDIS):
                 theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]
-            else:
+            elif isinstance(working_simulator, Gaussian2DSimulator):
                 theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]
+            else:
+                n_params = len(working_true_params)
+                theta_bounds = [(0.1, 10.0)] * n_params
             
             # Quick estimate (using fewer samples for speed)
-            estimated_theta = posterior_sampler(simulator, data, theta_bounds, n_samples=5)[0]
+            estimated_theta = posterior_sampler(working_simulator, data, theta_bounds, n_samples=5)[0]
             estimates.append(estimated_theta)
         
         estimates = torch.stack(estimates)
@@ -676,10 +1163,13 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
         std_results[n_events] = param_stds.numpy()
     
     # Plot scaling results
-    if isinstance(simulator, SimplifiedDIS):
+    if isinstance(working_simulator, SimplifiedDIS):
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    else:
+    elif isinstance(working_simulator, Gaussian2DSimulator):
         param_names = [r'$\mu_x$', r'$\mu_y$', r'$\sigma_x$', r'$\sigma_y$', r'$\rho$']
+    else:
+        n_params = len(working_true_params)
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
     
     n_params = len(param_names)
     fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
@@ -692,18 +1182,18 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
         ax = axes[i]
         
         # Extract standard deviations for this parameter
-        stds = [std_results[count][i] for count in event_counts]
+        stds = [std_results[count][i] for count in working_event_counts]
         
         # Plot scaling
-        ax.loglog(event_counts, stds, 'o-', color=COLORS['blue'], 
+        ax.loglog(working_event_counts, stds, 'o-', color=COLORS['blue'], 
                  linewidth=2, markersize=8, label='Observed scaling')
         
         # Theoretical 1/sqrt(N) scaling
-        reference_std = stds[2]  # Use middle point as reference
-        reference_N = event_counts[2]
-        theoretical = reference_std * np.sqrt(reference_N / np.array(event_counts))
+        reference_std = stds[2] if len(stds) > 2 else stds[0]  # Use middle point as reference
+        reference_N = working_event_counts[2] if len(working_event_counts) > 2 else working_event_counts[0]
+        theoretical = reference_std * np.sqrt(reference_N / np.array(working_event_counts))
         
-        ax.loglog(event_counts, theoretical, '--', color=COLORS['red'], 
+        ax.loglog(working_event_counts, theoretical, '--', color=COLORS['red'], 
                  linewidth=2, label=r'$1/\sqrt{N}$ scaling')
         
         # Formatting
@@ -714,9 +1204,9 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
         ax.grid(True, alpha=0.3, which='both')
         
         # Add scaling annotation
-        if len(event_counts) > 2:
+        if len(working_event_counts) > 2:
             # Fit power law to estimate actual scaling
-            log_N = np.log(event_counts)
+            log_N = np.log(working_event_counts)
             log_std = np.log(stds)
             slope, intercept = np.polyfit(log_N, log_std, 1)
             
@@ -729,11 +1219,16 @@ def plot_uncertainty_scaling(simulator, true_theta, event_counts=[100, 500, 1000
         fig.delaxes(axes[i])
     
     plt.tight_layout()
-    filepath = os.path.join(save_dir, "uncertainty_scaling.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
+    
+    # Determine save path
+    if save_path is None:
+        save_path = os.path.join(save_dir, "uncertainty_scaling.png")
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    
+    plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Uncertainty scaling plot saved to: {filepath}")
+    print(f"✅ Uncertainty scaling plot saved to: {save_path}")
 
 
 def main():

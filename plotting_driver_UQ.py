@@ -422,30 +422,64 @@ Examples:
         )
         simulator=SimplifiedDIS(device=device)
         true_events = simulator.sample(true_params.numpy(), args.num_events)
-        # Example 1: Parameter uncertainty plot
+        # Example 1: Parameter uncertainty plot - use new API
         plot_parameter_uncertainty(
-            simulator,
-            true_params, 
-            true_events,
-            plot_dir
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir
         )
 
-        # Example 2: Function uncertainty plot
+        # Example 2: Function uncertainty plot - use new API
         plot_function_uncertainty(
-            simulator,
-            true_params, 
-            true_events,
-            plot_dir
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir
         )
 
-        plot_bootstrap_uncertainty(simulator, true_params, 
-                                                   n_events=args.num_events, n_bootstrap=30, save_dir=save_dir)
+        # Example 3: Bootstrap uncertainty plot - use new API
+        plot_bootstrap_uncertainty(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            n_bootstrap=30,
+            problem=args.problem,
+            save_dir=plot_dir
+        )
 
-        plot_combined_uncertainty_decomposition(simulator, true_theta, posterior_samples, 
-                                          bootstrap_estimates, save_dir)
+        # Example 4: Combined uncertainty decomposition - use new API
+        plot_combined_uncertainty_decomposition(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            n_bootstrap=30,
+            problem=args.problem,
+            save_dir=plot_dir,
+            laplace_model=laplace_model
+        )
 
-        plot_uncertainty_scaling(simulator, true_params, 
-                            event_counts=[1000, 5000, 10000, 50000, 100000], save_dir=save_dir)
+        # Example 5: Uncertainty scaling - use new API
+        plot_uncertainty_scaling(
+            model=model,
+            pointnet_model=pointnet_model,
+            true_params=true_params,
+            device=device,
+            event_counts=[1000, 5000, 10000, 50000, 100000],
+            n_bootstrap=20,
+            problem=args.problem,
+            save_dir=plot_dir
+        )
         if args.problem != 'mceg':
             plot_PDF_distribution_single_same_plot(
                 model=model,
