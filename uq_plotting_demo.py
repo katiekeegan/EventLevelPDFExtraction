@@ -32,6 +32,9 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+# Import simulator classes from the main simulator module
+from simulator import SimplifiedDIS, RealisticDIS, MCEGSimulator, Gaussian2DSimulator
+
 # Set up matplotlib for high-quality plots
 plt.style.use('default')
 plt.rcParams.update({
@@ -65,111 +68,6 @@ COLORS = {
     'olive': '#bcbd22',
     'cyan': '#17becf'
 }
-
-class SimplifiedDIS:
-    """
-    Simplified Deep Inelastic Scattering simulator for PDF parameter inference.
-    
-    This simulator generates events based on up and down quark PDFs parameterized as:
-    up(x) = Nu * x^au * (1-x)^bu
-    down(x) = Nd * x^ad * (1-x)^bd
-    
-    Parameters:
-        theta = [au, bu, ad, bd] (4-dimensional parameter vector)
-    """
-    
-    def __init__(self, device=None, smear=False, smear_std=0.05):
-        self.device = device or torch.device('cpu')
-        self.smear = smear
-        self.smear_std = smear_std
-        self.Nu = 1.0  # Normalization for up quark
-        self.Nd = 2.0  # Normalization for down quark
-        self.au, self.bu, self.ad, self.bd = None, None, None, None
-        
-    def init(self, params):
-        """Initialize simulator with parameters."""
-        self.au, self.bu, self.ad, self.bd = [
-            torch.tensor(p, device=self.device) if not torch.is_tensor(p) else p.to(self.device)
-            for p in params
-        ]
-        
-    def up(self, x):
-        """Up quark PDF: Nu * x^au * (1-x)^bu"""
-        return self.Nu * (x ** self.au) * ((1 - x) ** self.bu)
-        
-    def down(self, x):
-        """Down quark PDF: Nd * x^ad * (1-x)^bd"""
-        return self.Nd * (x ** self.ad) * ((1 - x) ** self.bd)
-        
-    def f(self, x, theta):
-        """Evaluate PDF functions f(x|theta). Returns dict with 'up' and 'down'."""
-        self.init(theta)
-        return {
-            'up': self.up(x),
-            'down': self.down(x)
-        }
-        
-    def sample(self, theta, n_events=1000):
-        """
-        Generate simulated events based on parameters theta.
-        
-        Args:
-            theta: Parameter vector [au, bu, ad, bd]
-            n_events: Number of events to generate
-            
-        Returns:
-            Tensor of shape (n_events, 2) with [sigma_p, sigma_n] cross-sections
-        """
-        self.init(theta)
-        eps = 1e-6
-        
-        # Generate random x values
-        rand = lambda: torch.clamp(torch.rand(n_events, device=self.device), min=eps, max=1 - eps)
-        
-        # Add optional smearing
-        smear_noise = lambda s: s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
-        
-        xs_p, xs_n = rand(), rand()
-        
-        # Compute cross-sections: proton-like (4*up + down), neutron-like (4*down + up)
-        sigma_p = smear_noise(4 * self.up(xs_p) + self.down(xs_p))
-        sigma_p = torch.nan_to_num(sigma_p, nan=0.0, posinf=1e8, neginf=0.0)
-        
-        sigma_n = smear_noise(4 * self.down(xs_n) + self.up(xs_n))
-        sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
-        
-        return torch.stack([sigma_p, sigma_n], dim=-1)
-
-
-class Gaussian2DSimulator:
-    """
-    2D Gaussian simulator for testing and comparison.
-    
-    Parameters:
-        theta = [mu_x, mu_y, sigma_x, sigma_y, rho] (5-dimensional parameter vector)
-    """
-    
-    def __init__(self, device=None):
-        self.device = device or torch.device('cpu')
-        
-    def sample(self, theta, n_events=1000):
-        """Generate 2D Gaussian samples."""
-        mu_x, mu_y, sigma_x, sigma_y, rho = theta
-        mean = torch.tensor([mu_x, mu_y], device=self.device)
-        cov = torch.tensor([
-            [sigma_x**2, rho * sigma_x * sigma_y],
-            [rho * sigma_x * sigma_y, sigma_y**2]
-        ], device=self.device)
-        
-        samples = torch.distributions.MultivariateNormal(mean, cov).sample((n_events,))
-        return samples
-        
-    def f(self, x, theta):
-        """For Gaussian, f could be the density at x."""
-        mu_x, mu_y, sigma_x, sigma_y, rho = theta
-        # Simple 1D marginal for plotting
-        return torch.exp(-0.5 * ((x - mu_x) / sigma_x)**2) / (sigma_x * np.sqrt(2 * np.pi))
-
 
 # LaTeX descriptions are now included as comments within each plotting function
 
