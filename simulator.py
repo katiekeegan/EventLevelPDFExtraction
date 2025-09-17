@@ -2,30 +2,36 @@ import torch
 from torch.distributions import Uniform, Distribution
 import numpy as np
 
+# Basic imports that should always work
 import sys
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from scipy.integrate import quad,fixed_quad
-import os, sys
-sys.path.append(os.path.abspath("mceg4dis"))
+from scipy.integrate import quad, fixed_quad
+import os
 
-#--matplotlib
-import matplotlib
-from matplotlib.lines import Line2D
-matplotlib.rc('text',usetex=True)
-import pylab as py
-from matplotlib import colors
-import matplotlib.gridspec as gridspec
+# Try to import optional dependencies for advanced simulators
+try:
+    sys.path.append(os.path.abspath("mceg4dis"))
+    
+    #--matplotlib
+    import matplotlib
+    from matplotlib.lines import Line2D
+    matplotlib.rc('text',usetex=True)
+    import pylab as py
+    from matplotlib import colors
+    import matplotlib.gridspec as gridspec
 
-import params as par 
-import cfg
-from alphaS  import ALPHAS
-from eweak   import EWEAK
-from pdf     import PDF
-from mellin  import MELLIN
-from idis    import THEORY
-from mceg    import MCEG
+    import params as par 
+    import cfg
+    from alphaS  import ALPHAS
+    from eweak   import EWEAK
+    from pdf     import PDF
+    from mellin  import MELLIN
+    from idis    import THEORY
+    from mceg    import MCEG
+    HAS_MCEG_DEPS = True
+except ImportError:
+    HAS_MCEG_DEPS = False
 
 class Gaussian2DSimulator:
     """
@@ -35,10 +41,10 @@ class Gaussian2DSimulator:
     def __init__(self, device=None):
         self.device = device or torch.device("cpu")
 
-    def sample(self, theta, nevents=1000):
+    def sample(self, theta, n_events=1000):
         """
         theta: torch.tensor of shape (5,) -- [mu_x, mu_y, sigma_x, sigma_y, rho]
-        Returns: torch.tensor of shape (nevents, 2)
+        Returns: torch.tensor of shape (n_events, 2)
         """
         mu_x, mu_y, sigma_x, sigma_y, rho = theta
         mean = torch.tensor([mu_x, mu_y], device=self.device)
@@ -46,8 +52,14 @@ class Gaussian2DSimulator:
             [sigma_x**2, rho * sigma_x * sigma_y],
             [rho * sigma_x * sigma_y, sigma_y**2]
         ], device=self.device)
-        samples = torch.distributions.MultivariateNormal(mean, cov).sample((nevents,))
+        samples = torch.distributions.MultivariateNormal(mean, cov).sample((n_events,))
         return samples
+    
+    def f(self, x, theta):
+        """Evaluate function f(x|theta) for 1D marginal."""
+        mu_x, mu_y, sigma_x, sigma_y, rho = theta
+        # Return 1D marginal PDF for plotting
+        return torch.exp(-0.5 * ((x - mu_x) / sigma_x) ** 2) / (sigma_x * torch.sqrt(2 * torch.tensor(torch.pi)))
 
 class SimplifiedDIS:
     def __init__(self, device=None, smear=False, smear_std=0.05):
@@ -70,10 +82,18 @@ class SimplifiedDIS:
     def down(self, x):
         return self.Nd * (x ** self.ad) * ((1 - x) ** self.bd)
 
-    def sample(self, params, nevents=1):
+    def f(self, x, theta):
+        """Evaluate PDF functions f(x|theta). Returns dict with 'up' and 'down'."""
+        self.init(theta)
+        return {
+            'up': self.up(x),
+            'down': self.down(x)
+        }
+
+    def sample(self, params, n_events=1000):
         self.init(params)
         eps = 1e-6
-        rand = lambda: torch.clamp(torch.rand(nevents, device=self.device), min=eps, max=1 - eps)
+        rand = lambda: torch.clamp(torch.rand(n_events, device=self.device), min=eps, max=1 - eps)
         smear_noise = lambda s: s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
 
         xs_p, xs_n = rand(), rand()
@@ -83,39 +103,43 @@ class SimplifiedDIS:
         sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
         return torch.stack([sigma_p, sigma_n], dim=-1)
 
-class MCEGSimulator:
-    def __init__(self, device=None):
-        self.device = device
-        # Initialize MCEG Sampler with default parameters
-        self.mellin = MELLIN(npts=8)
-        self.alphaS = ALPHAS()
-        self.eweak  = EWEAK()
-        self.pdf    = PDF(self.mellin, self.alphaS)
-        self.idis   = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
+# MCEGSimulator: Only available if MCEG dependencies are installed
+if HAS_MCEG_DEPS:
+    class MCEGSimulator:
+        def __init__(self, device=None):
+            self.device = device
+            # Initialize MCEG Sampler with default parameters
+            self.mellin = MELLIN(npts=8)
+            self.alphaS = ALPHAS()
+            self.eweak  = EWEAK()
+            self.pdf    = PDF(self.mellin, self.alphaS)
+            self.idis   = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
-    def init(self, params):
-        # Take in new parameters and update MCEG class
-        new_cpar = self.pdf.get_current_par_array()[::]
-        # Assume parameters are only corresponding to 'uv1' parameters
-        if not isinstance(params, torch.Tensor):
-            new_cpar[4:8] = params
-        else:
-            new_cpar[4:8] = params.cpu().numpy()  # Update uv1 parameters
-        self.pdf.setup(new_cpar)
-        self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
+        def init(self, params):
+            # Take in new parameters and update MCEG class
+            new_cpar = self.pdf.get_current_par_array()[::]
+            # Assume parameters are only corresponding to 'uv1' parameters
+            if not isinstance(params, torch.Tensor):
+                new_cpar[4:8] = params
+            else:
+                new_cpar[4:8] = params.cpu().numpy()  # Update uv1 parameters
+            self.pdf.setup(new_cpar)
+            self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
-    def sample(self, params, nevents=1):
-        assert nevents > 0, "Number of events must be positive"
-        if not isinstance(params, torch.Tensor):
-            params = torch.tensor(params, dtype=torch.float32, device=self.device)
-        self.init(params)  # Take in new parameters
-        # Initialize Monte Carlo Event Generator
-        mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
-        # TODO: negative probabilities may arise with certain parameters.
-        # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
-        samples = torch.tensor(mceg.gen_events(nevents, verb=False)).to(self.device)
-        self.clip_alert = mceg.clip_alert
-        return samples
+        def sample(self, params, n_events=1000):
+            assert n_events > 0, "Number of events must be positive"
+            if not isinstance(params, torch.Tensor):
+                params = torch.tensor(params, dtype=torch.float32, device=self.device)
+            self.init(params)  # Take in new parameters
+            # Initialize Monte Carlo Event Generator
+            mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
+            # TODO: negative probabilities may arise with certain parameters.
+            # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
+            samples = torch.tensor(mceg.gen_events(n_events, verb=False)).to(self.device)
+            self.clip_alert = mceg.clip_alert
+            return samples
+else:
+    MCEGSimulator = None
 
 def up(x, params):
     return (x ** params[0]) * ((1 - x) ** params[1])
@@ -173,12 +197,12 @@ class RealisticDIS:
     def F2(self, x, Q2):
         return x * self.q(x, Q2)
 
-    def sample(self, params, nevents=1000, x_range=(1e-3, 0.9), Q2_range=(1.0, 1000.0)):
+    def sample(self, params, n_events=1000, x_range=(1e-3, 0.9), Q2_range=(1.0, 1000.0)):
         self.init(params)
 
         # Sample x ~ Uniform, Q2 ~ LogUniform
-        x = torch.rand(nevents, device=self.device) * (x_range[1] - x_range[0]) + x_range[0]
-        logQ2 = torch.rand(nevents, device=self.device) * (
+        x = torch.rand(n_events, device=self.device) * (x_range[1] - x_range[0]) + x_range[0]
+        logQ2 = torch.rand(n_events, device=self.device) * (
             np.log10(Q2_range[1]) - np.log10(Q2_range[0])
         ) + np.log10(Q2_range[0])
         Q2 = 10 ** logQ2
@@ -190,4 +214,4 @@ class RealisticDIS:
             f2 = f2 + noise
             f2f = f2.clamp(min=1e-6)
 
-        return torch.stack([x, Q2, f2], dim=1)  # shape: [nevents, 3]
+        return torch.stack([x, Q2, f2], dim=1)  # shape: [n_events, 3]
