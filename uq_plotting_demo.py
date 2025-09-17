@@ -248,6 +248,24 @@ def plot_parameter_uncertainty(
     
     print(f"   Mode: {mode}")
     
+    # Handle backward compatibility - detect legacy positional arguments
+    # If the first argument looks like a simulator and we have tensor arguments, treat as legacy API
+    if (model is not None and hasattr(model, 'sample') and hasattr(model, 'init') and 
+        pointnet_model is not None and isinstance(pointnet_model, torch.Tensor) and
+        true_params is not None and isinstance(true_params, torch.Tensor)):
+        # Legacy positional call: plot_parameter_uncertainty(simulator, true_theta, observed_data, save_dir, ...)
+        print("   Using legacy API with positional arguments")
+        simulator = model  # First arg is actually simulator
+        true_theta = pointnet_model  # Second arg is actually true_theta
+        observed_data = true_params  # Third arg is actually observed_data
+        save_dir = device if isinstance(device, str) else save_dir  # Fourth arg might be save_dir
+        
+        # Reset new API parameters to None
+        model = None
+        pointnet_model = None
+        true_params = None
+        device = None
+    
     # Handle backward compatibility
     if simulator is not None and true_theta is not None and observed_data is not None:
         # Legacy API - use provided simulator and data
@@ -614,6 +632,30 @@ def plot_function_uncertainty(
         raise ValueError(f"mode must be one of {valid_modes}, got: {mode}")
     
     print(f"   Mode: {mode}")
+    
+    # Handle backward compatibility - detect legacy positional arguments
+    # If the first argument looks like a simulator and we have tensor/array arguments, treat as legacy API
+    if (model is not None and hasattr(model, 'sample') and hasattr(model, 'init') and 
+        pointnet_model is not None and (isinstance(pointnet_model, torch.Tensor) or hasattr(pointnet_model, 'shape')) and
+        true_params is not None and (isinstance(true_params, torch.Tensor) or hasattr(true_params, 'shape'))):
+        # Legacy positional call: plot_function_uncertainty(simulator, posterior_samples, true_theta, save_dir, ...)
+        print("   Using legacy API with positional arguments")
+        simulator = model  # First arg is actually simulator
+        posterior_samples = pointnet_model  # Second arg is actually posterior_samples
+        true_theta = true_params  # Third arg is actually true_theta
+        save_dir = device if isinstance(device, str) else save_dir  # Fourth arg might be save_dir
+        
+        # Convert to torch tensors if needed
+        if not isinstance(posterior_samples, torch.Tensor):
+            posterior_samples = torch.from_numpy(posterior_samples).float()
+        if not isinstance(true_theta, torch.Tensor):
+            true_theta = torch.from_numpy(true_theta).float()
+        
+        # Reset new API parameters to None
+        model = None
+        pointnet_model = None
+        true_params = None
+        device = None
     
     # Handle backward compatibility
     if simulator is not None and posterior_samples is not None and true_theta is not None:
