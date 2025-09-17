@@ -421,11 +421,13 @@ Examples:
             plot_uncertainty_scaling
         )
         simulator=SimplifiedDIS(device=device)
-        true_events = simulator.sample(true_params.numpy(), args.num_events)
+        true_events = simulator.sample(true_params.numpy(), args.num_events).to(device)
+        true_params = true_params.to(device)
         # Example 1: Parameter uncertainty plot - use new API
         plot_parameter_uncertainty(
             model=model,
             pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
             true_params=true_params,
             device=device,
             num_events=args.num_events,
@@ -433,10 +435,10 @@ Examples:
             save_dir=plot_dir
         )
 
-        # Example 2: Function uncertainty plot - use new API
         plot_function_uncertainty(
             model=model,
             pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
             true_params=true_params,
             device=device,
             num_events=args.num_events,
@@ -444,35 +446,34 @@ Examples:
             save_dir=plot_dir
         )
 
-        # Example 3: Bootstrap uncertainty plot - use new API
         plot_bootstrap_uncertainty(
             model=model,
             pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
             true_params=true_params,
             device=device,
             num_events=args.num_events,
-            n_bootstrap=30,
+            n_bootstrap=20,
             problem=args.problem,
             save_dir=plot_dir
         )
 
-        # Example 4: Combined uncertainty decomposition - use new API
         plot_combined_uncertainty_decomposition(
             model=model,
             pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
             true_params=true_params,
             device=device,
             num_events=args.num_events,
-            n_bootstrap=30,
+            n_bootstrap=20,
             problem=args.problem,
-            save_dir=plot_dir,
-            laplace_model=laplace_model
+            save_dir=plot_dir
         )
 
-        # Example 5: Uncertainty scaling - use new API
         plot_uncertainty_scaling(
             model=model,
             pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
             true_params=true_params,
             device=device,
             event_counts=[1000, 5000, 10000, 50000, 100000],

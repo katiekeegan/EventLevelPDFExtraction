@@ -34,6 +34,7 @@ warnings.filterwarnings('ignore')
 
 # Import simulator classes from the main simulator module
 from simulator import SimplifiedDIS, RealisticDIS, MCEGSimulator, Gaussian2DSimulator
+from simulator import advanced_feature_engineering
 
 # Set up matplotlib for high-quality plots
 plt.style.use('default')
@@ -88,36 +89,59 @@ def save_latex_description(plot_path, latex_content):
         f.write(latex_content)
 
 
-def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=1000):
+def posterior_sampler(
+    observed_data,
+    pointnet_model,
+    model,
+    laplace_model,
+    n_samples=1000,
+    device=None
+):
     """
-    Simple ABC-style posterior sampler for demonstration.
-    
-    In practice, this would be replaced by your trained neural network or
-    other inference method.
+    Sample parameter vectors from the Laplace-approximated posterior given observed data.
+
+    Args:
+        observed_data: torch.Tensor of shape [num_events, ...], your raw data batch.
+        pointnet_model: feature extractor network.
+        model: parameter prediction head (MLP, Transformer, etc).
+        laplace_model: fitted Laplace object for epistemic uncertainty.
+        n_samples: number of posterior samples to draw.
+        device: torch device.
+
+    Returns:
+        theta_samples: torch.Tensor of shape [n_samples, param_dim]
     """
-    samples = []
-    n_dim = len(theta_prior_bounds)
-    
-    # Generate prior samples
-    for _ in range(n_samples * 10):  # Oversample for rejection
-        # Sample from uniform prior
-        theta = torch.tensor([
-            np.random.uniform(low, high) 
-            for low, high in theta_prior_bounds
-        ])
-        
-        # Simple distance-based acceptance (ABC)
-        sim_data = simulator.sample(theta, observed_data.shape[0])
-        distance = torch.norm(sim_data - observed_data)
-        
-        # Accept if distance is small (simplified ABC)
-        if distance < np.percentile([torch.norm(simulator.sample(theta, observed_data.shape[0]) - observed_data).item() 
-                                   for _ in range(10)], 30):
-            samples.append(theta)
-            if len(samples) >= n_samples:
-                break
-                
-    return torch.stack(samples) if samples else torch.randn(n_samples, n_dim)
+    if device is None:
+        device = observed_data.device
+
+    # 1. Get latent embedding from pointnet
+    observed_data = observed_data.to(device)
+    if observed_data.ndim == 2:
+        observed_data = observed_data.unsqueeze(0)  # [1, num_events, features]
+    observed_data = advanced_feature_engineering(observed_data)
+    latent = pointnet_model(observed_data)           # shape: [1, latent_dim]
+
+    # 2. Get Laplace mean and covariance (analytic uncertainty)
+    # You may already have a helper like get_analytic_uncertainty but want the full covariance!
+    laplace_predictive_fn = getattr(laplace_model, "predictive_distribution", None)
+    if laplace_predictive_fn is not None:
+        dist = laplace_predictive_fn(latent)
+        mean = dist.loc.squeeze(0)
+        cov = dist.covariance_matrix.squeeze(0)
+    else:
+        # Fallback: use Laplace call output, try to extract mean/cov
+        out = laplace_model(latent, joint=True)
+        if isinstance(out, tuple) and len(out) == 2:
+            mean, cov = out
+            mean = mean.squeeze(0)
+            cov = cov.squeeze(0)
+        else:
+            raise RuntimeError("Laplace model did not return (mean, cov).")
+
+    # 3. Sample from the multivariate normal (joint, not i.i.d.)
+    mvn = torch.distributions.MultivariateNormal(mean, cov)
+    theta_samples = mvn.sample((n_samples,))  # [n_samples, param_dim]
+    return theta_samples.cpu()
 
 
 def plot_parameter_uncertainty(
@@ -247,7 +271,12 @@ def plot_parameter_uncertainty(
         param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
     
     # Sample from posterior
-    posterior_samples = posterior_sampler(working_simulator, working_observed_data, theta_bounds, n_samples=n_mc)
+    posterior_samples = posterior_sampler(
+        working_observed_data,
+        pointnet_model,
+        model,
+        laplace_model,
+        n_samples=n_mc)
     
     n_params = len(param_names)
     fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
@@ -443,10 +472,15 @@ def plot_function_uncertainty(
             theta_bounds = [(0.1, 10.0)] * n_params
         
         # Generate posterior samples
-        working_posterior_samples = posterior_sampler(working_simulator, observed_data, theta_bounds, n_samples=n_mc)
+        working_posterior_samples = posterior_sampler(
+            observed_data,
+            pointnet_model,
+            model,
+            laplace_model,
+            n_samples=n_mc)
     
     # Define x grid for evaluation
-    x_vals = torch.linspace(0.01, 0.99, 100)
+    x_vals = torch.linspace(0.01, 0.99, 100).to(device)
     
     if isinstance(working_simulator, SimplifiedDIS):
         function_names = ['up', 'down']
@@ -462,11 +496,12 @@ def plot_function_uncertainty(
         # Evaluate function for all posterior samples
         func_samples = []
         for theta in working_posterior_samples[:200]:  # Use subset for speed
+            theta = theta.to(device)
             if isinstance(working_simulator, SimplifiedDIS):
                 func_vals = working_simulator.f(x_vals, theta)[func_name]
             else:
                 func_vals = working_simulator.f(x_vals, theta)
-            func_samples.append(func_vals.detach().numpy())
+            func_samples.append(func_vals.cpu().detach().numpy())
         
         func_samples = np.array(func_samples)
         
@@ -478,7 +513,7 @@ def plot_function_uncertainty(
         q95 = np.percentile(func_samples, 95, axis=0)
         
         # Plot uncertainty bands
-        x_np = x_vals.numpy()
+        x_np = x_vals.cpu().numpy()
         ax.fill_between(x_np, q5, q95, alpha=0.2, color=COLORS['blue'], label='90% confidence')
         ax.fill_between(x_np, q25, q75, alpha=0.4, color=COLORS['blue'], label='50% confidence')
         
@@ -490,7 +525,7 @@ def plot_function_uncertainty(
             true_vals = working_simulator.f(x_vals, working_true_params)[func_name]
         else:
             true_vals = working_simulator.f(x_vals, working_true_params)
-        ax.plot(x_np, true_vals.detach().numpy(), color=COLORS['red'], 
+        ax.plot(x_np, true_vals.cpu().detach().numpy(), color=COLORS['red'], 
                linestyle='--', linewidth=2, label='True function')
         
         # Individual samples (show a few)
@@ -531,6 +566,7 @@ def plot_bootstrap_uncertainty(
     device=None,
     num_events=1000,
     n_bootstrap=50,
+    laplace_model=None,
     problem='simplified_dis',
     save_dir="plots",
     save_path=None,
@@ -658,7 +694,11 @@ def plot_bootstrap_uncertainty(
             theta_bounds = [(0.1, 10.0)] * n_params
         
         # Estimate parameters for this bootstrap sample
-        estimated_theta = posterior_sampler(working_simulator, bootstrap_data, theta_bounds, n_samples=10)[0]
+        estimated_theta = posterior_sampler(
+            bootstrap_data,
+            pointnet_model,
+            model,
+            laplace_model)[0]
         bootstrap_theta_estimates.append(estimated_theta)
     
     bootstrap_theta_estimates = torch.stack(bootstrap_theta_estimates)
@@ -888,13 +928,18 @@ def plot_combined_uncertainty_decomposition(
                 theta_bounds = [(0.1, 10.0)] * n_params
             
             # Estimate parameters for this bootstrap sample
-            estimated_theta = posterior_sampler(working_simulator, bootstrap_data, theta_bounds, n_samples=10)[0]
+            estimated_theta = posterior_sampler(
+                bootstrap_data,
+                pointnet_model,
+                model,
+                laplace_model)[0]
             bootstrap_theta_estimates.append(estimated_theta)
         
         working_bootstrap_estimates = torch.stack(bootstrap_theta_estimates)
     
     # For function uncertainty decomposition
     x_vals = torch.linspace(0.01, 0.99, 50)  # Coarser grid for computational efficiency
+    x_vals = x_vals.to(device)
     
     if isinstance(working_simulator, SimplifiedDIS):
         function_names = ['up', 'down']
@@ -924,11 +969,12 @@ def plot_combined_uncertainty_decomposition(
             # Evaluate function for these samples
             func_vals_local = []
             for theta in local_posterior:
+                theta = theta.to(device)
                 if isinstance(working_simulator, SimplifiedDIS):
                     func_val = working_simulator.f(x_vals, theta)[func_name]
                 else:
                     func_val = working_simulator.f(x_vals, theta)
-                func_vals_local.append(func_val.detach().numpy())
+                func_vals_local.append(func_val.cpu().detach().numpy())
             
             func_vals_local = np.array(func_vals_local)
             
@@ -953,7 +999,7 @@ def plot_combined_uncertainty_decomposition(
         total_var = avg_within_var + between_var
         
         # Plot variance decomposition
-        x_np = x_vals.numpy()
+        x_np = x_vals.cpu().numpy()
         ax_main.fill_between(x_np, 0, avg_within_var, alpha=0.6, 
                            color=COLORS['blue'], label='Model uncertainty')
         ax_main.fill_between(x_np, avg_within_var, total_var, alpha=0.6, 
@@ -1010,6 +1056,7 @@ def plot_uncertainty_scaling(
     device=None,
     event_counts=None,
     n_bootstrap=20,
+    laplace_model=None,
     problem='simplified_dis',
     save_dir="plots",
     save_path=None,
@@ -1153,7 +1200,11 @@ def plot_uncertainty_scaling(
                 theta_bounds = [(0.1, 10.0)] * n_params
             
             # Quick estimate (using fewer samples for speed)
-            estimated_theta = posterior_sampler(working_simulator, data, theta_bounds, n_samples=5)[0]
+            estimated_theta = posterior_sampler(
+                data,
+                pointnet_model,
+                model,
+                laplace_model)[0]
             estimates.append(estimated_theta)
         
         estimates = torch.stack(estimates)
