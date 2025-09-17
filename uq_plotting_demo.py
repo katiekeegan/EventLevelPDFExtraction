@@ -72,6 +72,22 @@ COLORS = {
 # LaTeX descriptions are now included as comments within each plotting function
 
 
+def save_latex_description(plot_path, latex_content):
+    """
+    Save LaTeX description alongside the plot file.
+    
+    Parameters:
+    ----------
+    plot_path : str
+        Path to the plot file
+    latex_content : str
+        LaTeX content to save
+    """
+    tex_path = plot_path.replace('.png', '.tex').replace('.pdf', '.tex').replace('.jpg', '.tex')
+    with open(tex_path, 'w') as f:
+        f.write(latex_content)
+
+
 def posterior_sampler(simulator, observed_data, theta_prior_bounds, n_samples=1000):
     """
     Simple ABC-style posterior sampler for demonstration.
@@ -520,7 +536,8 @@ def plot_bootstrap_uncertainty(
     save_path=None,
     # Backward compatibility
     simulator=None,
-    true_theta=None
+    true_theta=None,
+    n_events=None  # Legacy parameter name
 ):
     """
     Demonstrate bootstrap/data uncertainty by generating multiple datasets.
@@ -598,7 +615,8 @@ def plot_bootstrap_uncertainty(
         print("   Using legacy API with provided simulator")
         working_simulator = simulator
         working_true_params = true_theta
-        working_num_events = n_events
+        # Use legacy n_events parameter if provided, otherwise use num_events
+        working_num_events = n_events if n_events is not None else num_events
     else:
         # New API - generate data internally
         if model is None or pointnet_model is None or true_params is None or device is None:
