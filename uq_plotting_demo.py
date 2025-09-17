@@ -1176,10 +1176,20 @@ def plot_uncertainty_scaling(
     
     print(f"   Mode: {mode}")
     
-    # Handle backward compatibility
-    if simulator is not None and true_theta is not None:
-        # Legacy API - use provided simulator
-        print("   Using legacy API with provided simulator")
+    # Handle backward compatibility - detect legacy positional arguments
+    # If the first argument is a simulator-like object and second is a tensor, treat as legacy API
+    if (model is not None and hasattr(model, 'sample') and hasattr(model, 'init') and 
+        pointnet_model is not None and isinstance(pointnet_model, torch.Tensor)):
+        # Legacy positional call: plot_uncertainty_scaling(simulator, true_theta, ...)
+        print("   Using legacy API with positional arguments")
+        working_simulator = model  # First arg is actually simulator
+        working_true_params = pointnet_model  # Second arg is actually true_theta
+        working_event_counts = true_params if true_params is not None else [100, 500, 1000, 5000, 10000]
+        if isinstance(working_event_counts, torch.Tensor):
+            working_event_counts = [100, 500, 1000, 5000, 10000]  # Reset to default if true_params was a tensor
+    elif simulator is not None and true_theta is not None:
+        # Legacy keyword call: plot_uncertainty_scaling(simulator=..., true_theta=...)
+        print("   Using legacy API with keyword arguments")
         working_simulator = simulator
         working_true_params = true_theta
         working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
@@ -1208,10 +1218,19 @@ def plot_uncertainty_scaling(
         working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
     
     # Compute parameter and function uncertainties based on mode
-    param_uncertainties, function_uncertainties = _compute_uncertainties_by_mode(
-        mode, working_simulator, working_true_params, working_event_counts, 
-        n_bootstrap, model, pointnet_model, laplace_model, device, problem
-    )
+    # For legacy API, pass None for the neural network models
+    if (model is not None and hasattr(model, 'sample')) or simulator is not None:
+        # Legacy API - no neural network models available
+        param_uncertainties, function_uncertainties = _compute_uncertainties_by_mode(
+            mode, working_simulator, working_true_params, working_event_counts, 
+            n_bootstrap, None, None, None, device, problem
+        )
+    else:
+        # New API - neural network models available
+        param_uncertainties, function_uncertainties = _compute_uncertainties_by_mode(
+            mode, working_simulator, working_true_params, working_event_counts, 
+            n_bootstrap, model, pointnet_model, laplace_model, device, problem
+        )
     
     # Create two-panel plot: parameter uncertainty (left) and function uncertainty (right)
     _create_uncertainty_scaling_plots(
