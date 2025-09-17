@@ -1252,16 +1252,17 @@ def _compute_uncertainties_by_mode(
     """
     param_uncertainties = {}
     function_uncertainties = {}
+    true_params = true_params.to(device)
     
     # Define x_vals grid for function evaluation
     if isinstance(simulator, SimplifiedDIS):
-        x_vals = torch.linspace(1e-3, 1-1e-3, 100)
+        x_vals = torch.linspace(1e-3, 1-1e-3, 100).to(device)
         function_names = ['up', 'down']
     elif isinstance(simulator, Gaussian2DSimulator):
-        x_vals = torch.linspace(-3, 3, 100)  # For Gaussian
+        x_vals = torch.linspace(-3, 3, 100).to(device)  # For Gaussian
         function_names = ['pdf']
     else:
-        x_vals = torch.linspace(0.01, 0.99, 100)
+        x_vals = torch.linspace(0.01, 0.99, 100).to(device)
         function_names = ['function']
     
     for n_events in tqdm(event_counts, desc="Testing event counts"):

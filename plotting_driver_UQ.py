@@ -479,7 +479,32 @@ Examples:
             event_counts=[1000, 5000, 10000, 50000, 100000],
             n_bootstrap=20,
             problem=args.problem,
-            save_dir=plot_dir
+            save_dir=plot_dir,
+            mode='bootstrap' 
+        )
+        plot_uncertainty_scaling(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            event_counts=[1000, 5000, 10000, 50000, 100000],
+            n_bootstrap=20,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='parameter' 
+        )
+        plot_uncertainty_scaling(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            event_counts=[1000, 5000, 10000, 50000, 100000],
+            n_bootstrap=20,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='combined' 
         )
         if args.problem != 'mceg':
             plot_PDF_distribution_single_same_plot(
