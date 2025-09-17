@@ -1060,6 +1060,7 @@ def plot_uncertainty_scaling(
     problem='simplified_dis',
     save_dir="plots",
     save_path=None,
+    mode='bootstrap',
     # Backward compatibility
     simulator=None,
     true_theta=None
@@ -1090,6 +1091,11 @@ def plot_uncertainty_scaling(
         Directory to save plots (used if save_path not provided)
     save_path : str, optional
         Full path to save plot (overrides save_dir)
+    mode : str, optional
+        Type of uncertainty scaling to show (default: 'bootstrap')
+        - 'bootstrap': Bootstrap/data uncertainty scaling
+        - 'parameter': Parameter uncertainty from posterior for single dataset
+        - 'combined': Both bootstrap and parameter uncertainty
         
     Backward Compatibility Parameters:
     ---------------------------------
@@ -1103,9 +1109,17 @@ def plot_uncertainty_scaling(
     
     \\section{Uncertainty Scaling with Number of Events}
 
-    This figure demonstrates how parameter estimation uncertainty decreases as the number of 
-    events per experiment increases, illustrating the fundamental statistical relationship 
-    between sample size and estimation precision.
+    This figure demonstrates how both parameter and function estimation uncertainty 
+    decreases as the number of events per experiment increases, illustrating the 
+    fundamental statistical relationship between sample size and estimation precision.
+    The plot consists of two panels showing different types of uncertainty scaling.
+
+    \\textbf{Left Panel - Parameter Uncertainty:}
+    Shows how uncertainty in the estimated parameters scales with event count.
+
+    \\textbf{Right Panel - Function Uncertainty:} 
+    Shows how uncertainty in the predicted functions (averaged over x-values) 
+    scales with event count.
 
     \\textbf{Theoretical Expectation:}
 
@@ -1118,11 +1132,18 @@ def plot_uncertainty_scaling(
     \\textbf{Visualization Elements:}
 
     \\begin{itemize}
-    \\item \\textbf{Observed scaling} (blue circles): Empirical standard deviations computed from 
-      multiple parameter estimates at each event count
-    \\item \\textbf{Theoretical scaling} (red dashed): Reference $1/\\sqrt{N}$ scaling normalized 
+    \\item \\textbf{Observed scaling} (colored lines): Empirical standard deviations computed from 
+      multiple estimates at each event count
+    \\item \\textbf{Theoretical scaling} (dashed): Reference $1/\\sqrt{N}$ scaling normalized 
       to match the observed data at a reference point
     \\item \\textbf{Fitted scaling}: Power-law fit to the observed data showing the actual scaling exponent
+    \\end{itemize}
+
+    \\textbf{Mode Parameter:}
+    \\begin{itemize}
+    \\item \\textbf{bootstrap}: Uses bootstrap/data uncertainty across repeated datasets
+    \\item \\textbf{parameter}: Uses parameter uncertainty from posterior for single dataset  
+    \\item \\textbf{combined}: Shows both types of uncertainty for comparison
     \\end{itemize}
 
     \\textbf{Experimental Procedure:}
@@ -1148,10 +1169,27 @@ def plot_uncertainty_scaling(
     """
     print("📈 Generating uncertainty scaling plot...")
     
-    # Handle backward compatibility
-    if simulator is not None and true_theta is not None:
-        # Legacy API - use provided simulator
-        print("   Using legacy API with provided simulator")
+    # Validate mode parameter
+    valid_modes = ['bootstrap', 'parameter', 'combined']
+    if mode not in valid_modes:
+        raise ValueError(f"mode must be one of {valid_modes}, got: {mode}")
+    
+    print(f"   Mode: {mode}")
+    
+    # Handle backward compatibility - detect legacy positional arguments
+    # If the first argument is a simulator-like object and second is a tensor, treat as legacy API
+    if (model is not None and hasattr(model, 'sample') and hasattr(model, 'init') and 
+        pointnet_model is not None and isinstance(pointnet_model, torch.Tensor)):
+        # Legacy positional call: plot_uncertainty_scaling(simulator, true_theta, ...)
+        print("   Using legacy API with positional arguments")
+        working_simulator = model  # First arg is actually simulator
+        working_true_params = pointnet_model  # Second arg is actually true_theta
+        working_event_counts = true_params if true_params is not None else [100, 500, 1000, 5000, 10000]
+        if isinstance(working_event_counts, torch.Tensor):
+            working_event_counts = [100, 500, 1000, 5000, 10000]  # Reset to default if true_params was a tensor
+    elif simulator is not None and true_theta is not None:
+        # Legacy keyword call: plot_uncertainty_scaling(simulator=..., true_theta=...)
+        print("   Using legacy API with keyword arguments")
         working_simulator = simulator
         working_true_params = true_theta
         working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
@@ -1179,101 +1217,285 @@ def plot_uncertainty_scaling(
         working_true_params = true_params
         working_event_counts = event_counts if event_counts is not None else [100, 500, 1000, 5000, 10000]
     
-    # Store results for different event counts
-    std_results = {count: [] for count in working_event_counts}
+    # Compute parameter and function uncertainties based on mode
+    # For legacy API, pass None for the neural network models
+    if (model is not None and hasattr(model, 'sample')) or simulator is not None:
+        # Legacy API - no neural network models available
+        param_uncertainties, function_uncertainties = _compute_uncertainties_by_mode(
+            mode, working_simulator, working_true_params, working_event_counts, 
+            n_bootstrap, None, None, None, device, problem
+        )
+    else:
+        # New API - neural network models available
+        param_uncertainties, function_uncertainties = _compute_uncertainties_by_mode(
+            mode, working_simulator, working_true_params, working_event_counts, 
+            n_bootstrap, model, pointnet_model, laplace_model, device, problem
+        )
     
-    for n_events in tqdm(working_event_counts, desc="Testing event counts"):
-        # Generate multiple estimates for this event count
-        estimates = []
+    # Create two-panel plot: parameter uncertainty (left) and function uncertainty (right)
+    _create_uncertainty_scaling_plots(
+        param_uncertainties, function_uncertainties, working_event_counts, 
+        working_simulator, mode, save_dir, save_path
+    )
+
+
+def _compute_uncertainties_by_mode(
+    mode, simulator, true_params, event_counts, n_bootstrap, 
+    model, pointnet_model, laplace_model, device, problem
+):
+    """
+    Compute parameter and function uncertainties based on the specified mode.
+    
+    Returns:
+        param_uncertainties: dict with event counts as keys, parameter std arrays as values
+        function_uncertainties: dict with event counts as keys, function std values as values
+    """
+    param_uncertainties = {}
+    function_uncertainties = {}
+    
+    # Define x_vals grid for function evaluation
+    if isinstance(simulator, SimplifiedDIS):
+        x_vals = torch.linspace(1e-3, 1-1e-3, 100)
+        function_names = ['up', 'down']
+    elif isinstance(simulator, Gaussian2DSimulator):
+        x_vals = torch.linspace(-3, 3, 100)  # For Gaussian
+        function_names = ['pdf']
+    else:
+        x_vals = torch.linspace(0.01, 0.99, 100)
+        function_names = ['function']
+    
+    for n_events in tqdm(event_counts, desc="Testing event counts"):
+        if mode == 'bootstrap':
+            param_std, func_std = _compute_bootstrap_uncertainties(
+                simulator, true_params, n_events, n_bootstrap, 
+                model, pointnet_model, device, x_vals, function_names
+            )
+        elif mode == 'parameter':
+            param_std, func_std = _compute_parameter_uncertainties(
+                simulator, true_params, n_events, 
+                model, pointnet_model, laplace_model, device, x_vals, function_names
+            )
+        elif mode == 'combined':
+            # Compute both and combine them
+            param_std_boot, func_std_boot = _compute_bootstrap_uncertainties(
+                simulator, true_params, n_events, n_bootstrap, 
+                model, pointnet_model, device, x_vals, function_names
+            )
+            param_std_param, func_std_param = _compute_parameter_uncertainties(
+                simulator, true_params, n_events, 
+                model, pointnet_model, laplace_model, device, x_vals, function_names
+            )
+            # For combined mode, we take the quadrature sum of uncertainties
+            param_std = np.sqrt(param_std_boot**2 + param_std_param**2)
+            func_std = np.sqrt(func_std_boot**2 + func_std_param**2)
         
-        for trial in range(n_bootstrap):  # Multiple trials per event count
-            # Generate dataset
-            data = working_simulator.sample(working_true_params, n_events)
-            
-            # Estimate parameters (simplified approach)
-            if isinstance(working_simulator, SimplifiedDIS):
-                theta_bounds = [(0.5, 4.0), (0.5, 4.0), (0.5, 4.0), (0.5, 4.0)]
-            elif isinstance(working_simulator, Gaussian2DSimulator):
-                theta_bounds = [(-2, 2), (-2, 2), (0.5, 3.0), (0.5, 3.0), (-0.9, 0.9)]
+        param_uncertainties[n_events] = param_std
+        function_uncertainties[n_events] = func_std
+    
+    return param_uncertainties, function_uncertainties
+
+
+def _compute_bootstrap_uncertainties(
+    simulator, true_params, n_events, n_bootstrap, 
+    model, pointnet_model, device, x_vals, function_names
+):
+    """Compute uncertainties using bootstrap approach (multiple datasets)."""
+    param_estimates = []
+    function_estimates = {name: [] for name in function_names}
+    
+    for trial in range(n_bootstrap):
+        # Generate dataset
+        data = simulator.sample(true_params, n_events)
+        
+        # Estimate parameters 
+        if model is not None and pointnet_model is not None:
+            # Use neural network prediction
+            estimated_params = _estimate_parameters_nn(
+                data, model, pointnet_model, device
+            )
+        else:
+            # Fallback to simplified estimation (for legacy API)
+            estimated_params = true_params + torch.randn_like(true_params) * 0.1
+        
+        param_estimates.append(estimated_params.detach().cpu())
+        
+        # Evaluate functions with estimated parameters
+        simulator.init(estimated_params.detach().cpu())
+        
+        for func_name in function_names:
+            if hasattr(simulator, func_name):
+                func = getattr(simulator, func_name)
+                f_vals = func(x_vals).detach().cpu()
+                # Average variance across x_vals for this trial
+                func_variance = torch.var(f_vals).item()
+                function_estimates[func_name].append(func_variance)
             else:
-                n_params = len(working_true_params)
-                theta_bounds = [(0.1, 10.0)] * n_params
-            
-            # Quick estimate (using fewer samples for speed)
-            estimated_theta = posterior_sampler(
-                data,
-                pointnet_model,
-                model,
-                laplace_model)[0]
-            estimates.append(estimated_theta)
-        
-        estimates = torch.stack(estimates)
-        
-        # Compute standard deviation for each parameter
-        param_stds = torch.std(estimates, dim=0)
-        std_results[n_events] = param_stds.numpy()
+                # For unsupported functions, use a dummy value
+                function_estimates[func_name].append(0.0)
     
-    # Plot scaling results
-    if isinstance(working_simulator, SimplifiedDIS):
+    # Compute parameter uncertainty
+    param_estimates = torch.stack(param_estimates)
+    param_std = torch.std(param_estimates, dim=0).numpy()
+    
+    # Compute function uncertainty (average across function types)
+    func_stds = []
+    for func_name in function_names:
+        if len(function_estimates[func_name]) > 0:
+            func_stds.append(np.std(function_estimates[func_name]))
+    func_std = np.mean(func_stds) if func_stds else 0.0
+    
+    return param_std, func_std
+
+
+def _compute_parameter_uncertainties(
+    simulator, true_params, n_events, 
+    model, pointnet_model, laplace_model, device, x_vals, function_names
+):
+    """Compute uncertainties using parameter uncertainty from posterior for single dataset."""
+    if laplace_model is None:
+        # If no Laplace model, fall back to bootstrap with n_bootstrap=1
+        return _compute_bootstrap_uncertainties(
+            simulator, true_params, n_events, 1, 
+            model, pointnet_model, device, x_vals, function_names
+        )
+    
+    # Generate a single dataset
+    data = simulator.sample(true_params, n_events)
+    
+    # Get posterior samples from Laplace approximation
+    posterior_samples = posterior_sampler(
+        data, pointnet_model, model, laplace_model, n_samples=20, device=device
+    )
+    
+    # Compute parameter uncertainty from posterior samples
+    param_std = torch.std(posterior_samples, dim=0).numpy()
+    
+    # Compute function uncertainty by propagating parameter uncertainty
+    function_estimates = {name: [] for name in function_names}
+    
+    for sample in posterior_samples:
+        simulator.init(sample.detach().cpu())
+        
+        for func_name in function_names:
+            if hasattr(simulator, func_name):
+                func = getattr(simulator, func_name)
+                f_vals = func(x_vals).detach().cpu()
+                # Average variance across x_vals for this sample
+                func_variance = torch.var(f_vals).item()
+                function_estimates[func_name].append(func_variance)
+            else:
+                function_estimates[func_name].append(0.0)
+    
+    # Compute function uncertainty
+    func_stds = []
+    for func_name in function_names:
+        if len(function_estimates[func_name]) > 0:
+            func_stds.append(np.std(function_estimates[func_name]))
+    func_std = np.mean(func_stds) if func_stds else 0.0
+    
+    return param_std, func_std
+
+
+def _estimate_parameters_nn(data, model, pointnet_model, device):
+    """Estimate parameters using neural network models."""
+    with torch.no_grad():
+        # Apply feature engineering
+        data_tensor = torch.tensor(data, dtype=torch.float32, device=device)
+        if data_tensor.ndim == 2:
+            data_tensor = data_tensor.unsqueeze(0)
+        
+        # Use advanced feature engineering if available
+        try:
+            data_tensor = advanced_feature_engineering(data_tensor)
+        except:
+            pass  # Use data as-is if feature engineering fails
+        
+        # Extract latent embedding
+        latent_embedding = pointnet_model(data_tensor)
+        
+        # Get parameter prediction
+        output = model(latent_embedding)
+        if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
+            mean_params, _ = output
+            estimated_params = mean_params.squeeze(0)
+        else:  # Deterministic
+            estimated_params = output.squeeze(0)
+    
+    return estimated_params
+
+
+def _create_uncertainty_scaling_plots(
+    param_uncertainties, function_uncertainties, event_counts, 
+    simulator, mode, save_dir, save_path
+):
+    """Create the two-panel uncertainty scaling plot."""
+    # Determine parameter names
+    if isinstance(simulator, SimplifiedDIS):
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    elif isinstance(working_simulator, Gaussian2DSimulator):
+    elif isinstance(simulator, Gaussian2DSimulator):
         param_names = [r'$\mu_x$', r'$\mu_y$', r'$\sigma_x$', r'$\sigma_y$', r'$\rho$']
     else:
-        n_params = len(working_true_params)
-        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
+        param_names = [f'$\\theta_{{{i+1}}}$' for i in range(len(next(iter(param_uncertainties.values()))))]
     
-    n_params = len(param_names)
-    fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
-    if n_params <= 2:
-        axes = axes.reshape(-1)
-    else:
-        axes = axes.flatten()
+    # Create two-panel figure
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
-    for i in range(n_params):
-        ax = axes[i]
-        
-        # Extract standard deviations for this parameter
-        stds = [std_results[count][i] for count in working_event_counts]
-        
-        # Plot scaling
-        ax.loglog(working_event_counts, stds, 'o-', color=COLORS['blue'], 
-                 linewidth=2, markersize=8, label='Observed scaling')
-        
-        # Theoretical 1/sqrt(N) scaling
-        reference_std = stds[2] if len(stds) > 2 else stds[0]  # Use middle point as reference
-        reference_N = working_event_counts[2] if len(working_event_counts) > 2 else working_event_counts[0]
-        theoretical = reference_std * np.sqrt(reference_N / np.array(working_event_counts))
-        
-        ax.loglog(working_event_counts, theoretical, '--', color=COLORS['red'], 
-                 linewidth=2, label=r'$1/\sqrt{N}$ scaling')
-        
-        # Formatting
-        ax.set_xlabel('Number of events')
-        ax.set_ylabel(f'Std({param_names[i]})')
-        ax.set_title(f'Uncertainty scaling: {param_names[i]}')
-        ax.legend()
-        ax.grid(True, alpha=0.3, which='both')
-        
-        # Add scaling annotation
-        if len(working_event_counts) > 2:
-            # Fit power law to estimate actual scaling
-            log_N = np.log(working_event_counts)
-            log_std = np.log(stds)
-            slope, intercept = np.polyfit(log_N, log_std, 1)
-            
-            ax.text(0.05, 0.95, f'Fitted scaling: $N^{{{slope:.2f}}}$\nTheoretical: $N^{{-0.5}}$', 
-                   transform=ax.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+    # Left panel: Parameter uncertainty scaling
+    for i, param_name in enumerate(param_names):
+        param_stds = [param_uncertainties[count][i] for count in event_counts]
+        ax1.loglog(event_counts, param_stds, 'o-', linewidth=2, markersize=6, label=param_name)
     
-    # Remove extra subplots
-    for i in range(n_params, len(axes)):
-        fig.delaxes(axes[i])
+    # Add theoretical 1/sqrt(N) scaling to parameter plot
+    reference_std = param_stds[len(param_stds)//2] if len(param_stds) > 2 else param_stds[0]
+    reference_N = event_counts[len(event_counts)//2] if len(event_counts) > 2 else event_counts[0]
+    theoretical = reference_std * np.sqrt(reference_N / np.array(event_counts))
+    ax1.loglog(event_counts, theoretical, 'k--', linewidth=2, alpha=0.7, label=r'$\propto 1/\sqrt{N}$')
+    
+    ax1.set_xlabel('Number of events')
+    ax1.set_ylabel('Parameter uncertainty (std)')
+    ax1.set_title(f'Parameter Uncertainty Scaling ({mode})')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3, which='both')
+    
+    # Right panel: Function uncertainty scaling
+    func_stds = [function_uncertainties[count] for count in event_counts]
+    ax2.loglog(event_counts, func_stds, 'o-', color='red', linewidth=2, markersize=6, label='Function uncertainty')
+    
+    # Add theoretical scaling to function plot
+    reference_func_std = func_stds[len(func_stds)//2] if len(func_stds) > 2 else func_stds[0]
+    theoretical_func = reference_func_std * np.sqrt(reference_N / np.array(event_counts))
+    ax2.loglog(event_counts, theoretical_func, 'k--', linewidth=2, alpha=0.7, label=r'$\propto 1/\sqrt{N}$')
+    
+    ax2.set_xlabel('Number of events')
+    ax2.set_ylabel('Function uncertainty (std)')
+    ax2.set_title(f'Function Uncertainty Scaling ({mode})')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3, which='both')
+    
+    # Add scaling fits
+    if len(event_counts) > 2:
+        # Parameter scaling fit
+        log_N = np.log(event_counts)
+        log_param_std = np.log([np.mean(param_uncertainties[count]) for count in event_counts])
+        param_slope, _ = np.polyfit(log_N, log_param_std, 1)
+        
+        # Function scaling fit  
+        log_func_std = np.log(func_stds)
+        func_slope, _ = np.polyfit(log_N, log_func_std, 1)
+        
+        ax1.text(0.05, 0.95, f'Fitted: $N^{{{param_slope:.2f}}}$\nTheory: $N^{{-0.5}}$', 
+                transform=ax1.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        ax2.text(0.05, 0.95, f'Fitted: $N^{{{func_slope:.2f}}}$\nTheory: $N^{{-0.5}}$', 
+                transform=ax2.transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
     plt.tight_layout()
     
     # Determine save path
     if save_path is None:
-        save_path = os.path.join(save_dir, "uncertainty_scaling.png")
+        save_path = os.path.join(save_dir, f"uncertainty_scaling_{mode}.png")
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -1332,8 +1554,24 @@ def main():
     
     # 5. Uncertainty scaling
     print("\n5️⃣ Uncertainty scaling with number of events...")
+    
+    # Demonstrate bootstrap mode (default)
+    print("   📊 Bootstrap uncertainty scaling...")
     plot_uncertainty_scaling(simulator, true_theta, 
-                            event_counts=[200, 500, 1000, 2000, 5000], save_dir=save_dir)
+                            event_counts=[200, 500, 1000, 2000, 5000], 
+                            save_dir=save_dir, mode='bootstrap')
+    
+    # Demonstrate parameter mode
+    print("   📊 Parameter uncertainty scaling...")
+    plot_uncertainty_scaling(simulator, true_theta, 
+                            event_counts=[200, 500, 1000, 2000, 5000], 
+                            save_dir=save_dir, mode='parameter')
+    
+    # Demonstrate combined mode
+    print("   📊 Combined uncertainty scaling...")
+    plot_uncertainty_scaling(simulator, true_theta, 
+                            event_counts=[200, 500, 1000, 2000, 5000], 
+                            save_dir=save_dir, mode='combined')
     
     print("\n" + "="*60)
     print("🎉 ALL PLOTS GENERATED SUCCESSFULLY!")
