@@ -21,11 +21,21 @@ from utils import *
 
 # Import precomputed dataset classes
 try:
-    from precomputed_datasets import PrecomputedDataset, DistributedPrecomputedDataset, create_precomputed_dataloader
+    from precomputed_datasets import PrecomputedDataset, DistributedPrecomputedDataset, create_precomputed_dataloader, filter_valid_precomputed_files
     PRECOMPUTED_AVAILABLE = True
 except ImportError:
     print("Warning: precomputed_datasets.py not found. Precomputed data support disabled.")
     PRECOMPUTED_AVAILABLE = False
+    
+    # Define a fallback version of the utility function
+    def filter_valid_precomputed_files(file_list):
+        """Fallback implementation of filter_valid_precomputed_files when precomputed_datasets is not available."""
+        valid_files = []
+        for file_path in file_list:
+            filename = os.path.basename(file_path)
+            if filename.endswith('.npz') and '.tmp' not in filename:
+                valid_files.append(file_path)
+        return valid_files
 
 def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2, output_dir="precomputed_data"):
     """
@@ -52,12 +62,21 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
     
     # Check for any existing data files for this problem (with different parameters)
     existing_pattern = os.path.join(output_dir, f"{problem}_*.npz")
-    existing_files = glob.glob(existing_pattern)
+    all_existing_files = glob.glob(existing_pattern)
+    existing_files = filter_valid_precomputed_files(all_existing_files)
     
     if existing_files:
-        print(f"Found existing data files for {problem}: {existing_files}")
-        print(f"Using existing data instead of generating new data")
+        print(f"Found {len(existing_files)} valid data files for {problem}: {existing_files}")
+        if len(all_existing_files) > len(existing_files):
+            temp_files = [f for f in all_existing_files if f not in existing_files]
+            print(f"Ignored {len(temp_files)} temporary/incomplete files: {temp_files}")
+        print(f"Using existing valid data instead of generating new data")
         return output_dir
+    elif all_existing_files:
+        temp_files = [f for f in all_existing_files if f not in existing_files]
+        print(f"Found {len(temp_files)} temporary/incomplete files for {problem}: {temp_files}")
+        print(f"No valid precomputed data found - all found files are temporary/incomplete")
+        print(f"Proceeding to generate new data...")
     
     # Generate new data
     print(f"Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
@@ -83,18 +102,19 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
 
 def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
     """
-    Check if any precomputed data exists for the given problem.
+    Check if any valid precomputed data exists for the given problem.
     
     Args:
         problem: Problem type
         output_dir: Directory to check for data
     
     Returns:
-        bool: True if data exists, False otherwise
+        bool: True if valid data exists, False otherwise
     """
     pattern = os.path.join(output_dir, f"{problem}_*.npz")
-    files = glob.glob(pattern)
-    return len(files) > 0
+    all_files = glob.glob(pattern)
+    valid_files = filter_valid_precomputed_files(all_files)
+    return len(valid_files) > 0
 
 # ---------------------------
 # Joint Training Function
