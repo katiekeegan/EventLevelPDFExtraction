@@ -146,7 +146,7 @@ if __name__ == "__main__":
     prior_dist = BoxUniform(low=torch.zeros(4), high=5 * torch.ones(4)) # 4-dimensional uniform prior
 
     # True observation cross-section
-    true_theta = torch.tensor([1.0, 0.5, 1.2, 0.5]) # example true parameters - arbitrary
+    true_theta = torch.tensor([2.0, 1.2, 2.0, 1.2]) # example true parameters - arbitrary
     x_o = simulator(true_theta) # [N, D] tensor of observed data
     x_o_summary = histogram_summary(x_o) # [D * nbins] summary vector
     samples = simulator_batch_summary(prior_dist.sample((100,))) # [B, D * nbins] batch of simulated summaries

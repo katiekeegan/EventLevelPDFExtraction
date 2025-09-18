@@ -432,7 +432,30 @@ Examples:
             device=device,
             num_events=args.num_events,
             problem=args.problem,
-            save_dir=plot_dir
+            save_dir=plot_dir,
+            mode='posterior'
+        )
+        plot_parameter_uncertainty(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='bootstrap'
+        )
+        plot_parameter_uncertainty(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='combined'
         )
 
         plot_function_uncertainty(
@@ -443,7 +466,30 @@ Examples:
             device=device,
             num_events=args.num_events,
             problem=args.problem,
-            save_dir=plot_dir
+            save_dir=plot_dir,
+            mode='posterior'
+        )
+        plot_function_uncertainty(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='bootstrap'
+        )
+        plot_function_uncertainty(
+            model=model,
+            pointnet_model=pointnet_model,
+            laplace_model=laplace_model,
+            true_params=true_params,
+            device=device,
+            num_events=args.num_events,
+            problem=args.problem,
+            save_dir=plot_dir,
+            mode='combined'
         )
 
         plot_bootstrap_uncertainty(

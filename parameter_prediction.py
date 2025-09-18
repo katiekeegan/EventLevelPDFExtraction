@@ -97,75 +97,6 @@ def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
     return len(files) > 0
 
 # ---------------------------
-# Conditional Normalizing Flow (CNF)
-# ---------------------------
-class AffineCoupling(nn.Module):
-    """Simple affine coupling layer for RealNVP-style flows."""
-    def __init__(self, dim, hidden_dim, context_dim):
-        super().__init__()
-        self.dim = dim
-        self.hidden_dim = hidden_dim
-        self.context_dim = context_dim
-
-        self.F = nn.Sequential(
-            nn.Linear(dim // 2 + context_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, dim // 2 * 2)
-        )
-
-    def forward(self, x, context, reverse=False):
-        x1, x2 = x.chunk(2, dim=1)
-        h = torch.cat([x1, context], dim=1)
-        out = self.F(h)
-        shift, scale = out.chunk(2, dim=1)
-        scale = torch.tanh(scale)  # Stabilize scale
-
-        if not reverse:
-            y2 = x2 * torch.exp(scale) + shift
-            log_det = scale.sum(dim=1)
-        else:
-            y2 = (x2 - shift) * torch.exp(-scale)
-            log_det = -scale.sum(dim=1)
-        y = torch.cat([x1, y2], dim=1)
-        return y, log_det
-
-class SimpleCNF(nn.Module):
-    """Stack of affine coupling layers with context."""
-    def __init__(self, theta_dim, context_dim, hidden_dim=128, num_layers=6):
-        super().__init__()
-        self.theta_dim = theta_dim
-        self.context_dim = context_dim
-        self.layers = nn.ModuleList([
-            AffineCoupling(theta_dim, hidden_dim, context_dim)
-            for _ in range(num_layers)
-        ])
-        # Learnable base distribution parameters
-        self.base_mean = nn.Parameter(torch.zeros(theta_dim))
-        self.base_logstd = nn.Parameter(torch.zeros(theta_dim))
-
-    def forward(self, theta, context):
-        z = theta
-        log_det_sum = torch.zeros(theta.size(0), device=theta.device)
-        for layer in self.layers:
-            z, log_det = layer(z, context, reverse=False)
-            log_det_sum += log_det
-        return z, log_det_sum
-
-    def inverse(self, z, context):
-        x = z
-        log_det_sum = torch.zeros(z.size(0), device=z.device)
-        for layer in reversed(self.layers):
-            x, log_det = layer(x, context, reverse=True)
-            log_det_sum += log_det
-        return x, log_det_sum
-
-    def log_prob(self, theta, context):
-        z, log_det = self.forward(theta, context)
-        log_pz = -0.5 * (((z - self.base_mean) / self.base_logstd.exp()) ** 2).sum(dim=1)
-        log_pz += -self.base_logstd.sum() - 0.5 * self.theta_dim * np.log(2 * np.pi)
-        return log_pz + log_det
-
-# ---------------------------
 # Joint Training Function
 # ---------------------------
 def train_joint(model, param_prediction_model, train_dataloader, val_dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
@@ -275,23 +206,22 @@ def create_train_val_datasets(args, rank, world_size, device):
     
     if hasattr(args, 'use_precomputed') and args.use_precomputed and PRECOMPUTED_AVAILABLE:
         print(f"Using precomputed data for {args.problem}")
-        
         # Create training dataset
         try:
             train_data_dir = generate_precomputed_data_if_needed(
                 args.problem, 
                 args.num_samples, 
                 args.num_events, 
-                n_repeat=2,
+                n_repeat=1,
                 output_dir=args.precomputed_data_dir
             )
             
             # Create validation dataset (separate from training)
             val_data_dir = generate_precomputed_data_if_needed(
-                f"{args.problem}_val", 
+                args.problem,
                 val_samples, 
                 args.num_events, 
-                n_repeat=2,
+                n_repeat=1,
                 output_dir=args.precomputed_data_dir
             )
             
