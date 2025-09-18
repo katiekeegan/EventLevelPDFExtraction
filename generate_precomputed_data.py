@@ -25,8 +25,17 @@ except ImportError as e:
 
 def atomic_savez_compressed(filepath, **kwargs):
     tmpfile = filepath + ".tmp"
-    np.savez_compressed(tmpfile, **kwargs)
+    print(f"[atomic_savez_compressed] Saving to temp file: {tmpfile}")
+    try:
+        np.savez_compressed(tmpfile, **kwargs)
+    except Exception as e:
+        print(f"Failed to save temp file {tmpfile}: {e}")
+        raise
+    if not os.path.exists(tmpfile):
+        print(f"Temp file {tmpfile} was not created!")
+        raise FileNotFoundError(f"Temp file {tmpfile} not found after save.")
     os.replace(tmpfile, filepath)
+    print(f"[atomic_savez_compressed] Renamed {tmpfile} to {filepath}")
 
 def create_minimal_simulators():
     """Create minimal simulators when full ones are not available."""

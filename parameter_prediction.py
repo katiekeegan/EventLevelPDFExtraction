@@ -231,7 +231,7 @@ def create_train_val_datasets(args, rank, world_size, device):
                     train_data_dir, args.problem, rank, world_size, shuffle=True
                 )
                 val_dataset = DistributedPrecomputedDataset(
-                    val_data_dir, f"{args.problem}_val", rank, world_size, shuffle=False
+                    val_data_dir, args.problem, rank, world_size, shuffle=False
                 )
             else:
                 train_dataset = PrecomputedDataset(train_data_dir, args.problem, shuffle=True)
