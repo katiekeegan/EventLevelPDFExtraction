@@ -86,10 +86,6 @@ mceg4dis/
 precomputed_data/*_ns[0-9][0-9][0-9][0-9]*.npz
 precomputed_data/*_ns[0-9][0-9][0-9][0-9][0-9]*.npz
 
-# Test files for temporary fix validation
-test_temporary_file_filtering.py
-test_temp_file_filter_simple.py
-
 # UQ plotting demo generated files
 test_plots/
 demo_plot_preview.png
