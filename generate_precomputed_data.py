@@ -23,6 +23,11 @@ except ImportError as e:
     warnings.warn(f"Full simulators not available: {e}. Using minimal implementations.")
     FULL_SIMULATORS_AVAILABLE = False
 
+def atomic_savez_compressed(filepath, **kwargs):
+    tmpfile = filepath + ".tmp"
+    np.savez_compressed(tmpfile, **kwargs)
+    os.replace(tmpfile, filepath)
+
 def create_minimal_simulators():
     """Create minimal simulators when full ones are not available."""
     
@@ -244,7 +249,7 @@ def generate_data_for_problem(problem, num_samples, num_events, n_repeat, device
     filepath = os.path.join(output_dir, filename)
     
     # Save metadata as separate arrays to avoid pickle issues
-    np.savez_compressed(
+    atomic_savez_compressed(
         filepath,
         thetas=all_thetas.numpy(),
         events=all_events.numpy(),

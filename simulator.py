@@ -135,7 +135,10 @@ if HAS_MCEG_DEPS:
             mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
             # TODO: negative probabilities may arise with certain parameters.
             # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
-            samples = torch.tensor(mceg.gen_events(n_events, verb=False)).to(self.device)
+
+            samples = torch.tensor(mceg.gen_events(n_events+1000, verb=False)).to(self.device)
+            random_indices = torch.randperm(samples.size(0))[:n_events]
+            samples = samples[random_indices]
             self.clip_alert = mceg.clip_alert
             return samples
 else:

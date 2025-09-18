@@ -269,7 +269,7 @@ Examples:
         elif args.problem == 'mceg':
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
-            true_params = torch.tensor([2.0, 1.2, 2.0, 1.2], dtype=torch.float32)
+            true_params = torch.tensor([0.5, 1.2, 2.0, 0.5], dtype=torch.float32)
             
 
     # Load PointNet once (shared across all heads)

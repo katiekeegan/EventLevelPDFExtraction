@@ -156,7 +156,7 @@ def plot_parameter_uncertainty(
     n_mc=100,
     laplace_model=None,
     mode='posterior',
-    n_bootstrap=20,
+    n_bootstrap=100,
     # Backward compatibility - allow old API
     simulator=None,
     true_theta=None,
@@ -534,7 +534,7 @@ def plot_function_uncertainty(
     n_mc=100,
     laplace_model=None,
     mode='posterior',
-    n_bootstrap=20,
+    n_bootstrap=100,
     # Backward compatibility
     simulator=None,
     posterior_samples=None,
