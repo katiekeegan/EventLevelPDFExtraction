@@ -14,6 +14,29 @@ import glob
 from typing import List, Tuple, Optional
 
 
+def filter_valid_precomputed_files(file_list: List[str]) -> List[str]:
+    """
+    Filter a list of files to only include valid precomputed dataset files.
+    
+    Valid files must:
+    - End with '.npz' 
+    - Not contain '.tmp' in the filename (excludes temporary/incomplete files)
+    
+    Args:
+        file_list: List of file paths to filter
+        
+    Returns:
+        List of valid precomputed dataset file paths
+    """
+    valid_files = []
+    for file_path in file_list:
+        filename = os.path.basename(file_path)
+        # Only include .npz files that don't contain '.tmp' anywhere in the filename
+        if filename.endswith('.npz') and '.tmp' not in filename:
+            valid_files.append(file_path)
+    return valid_files
+
+
 class PrecomputedDataset(Dataset):
     """
     Dataset class for loading precomputed theta parameters and corresponding event data.
@@ -39,12 +62,22 @@ class PrecomputedDataset(Dataset):
         
         # Find all matching data files
         pattern = os.path.join(data_dir, f"{problem}_*.npz")
-        self.data_files = sorted(glob.glob(pattern))
+        all_data_files = sorted(glob.glob(pattern))
+        
+        # Filter out temporary/incomplete files
+        self.data_files = filter_valid_precomputed_files(all_data_files)
         
         if not self.data_files:
-            raise FileNotFoundError(f"No precomputed data files found for problem '{problem}' in {data_dir}")
+            if all_data_files:
+                temp_files = [f for f in all_data_files if f not in self.data_files]
+                print(f"Warning: Found {len(temp_files)} temporary/incomplete files for problem '{problem}' in {data_dir}: {temp_files}")
+                print(f"Only complete .npz files (without .tmp) are considered valid precomputed data.")
+            raise FileNotFoundError(f"No valid precomputed data files found for problem '{problem}' in {data_dir}")
         
-        print(f"Found {len(self.data_files)} data files for {problem}")
+        print(f"Found {len(self.data_files)} valid data files for {problem}")
+        if len(all_data_files) > len(self.data_files):
+            ignored_files = [f for f in all_data_files if f not in self.data_files]
+            print(f"Ignored {len(ignored_files)} temporary/incomplete files: {ignored_files}")
         
         # Load all data into memory (assuming datasets are not too large)
         self._load_data()
