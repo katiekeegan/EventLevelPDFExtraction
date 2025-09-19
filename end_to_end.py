@@ -345,10 +345,18 @@ def create_dataset_and_dataloader(args, rank, world_size, device):
 
 
 def main_worker(rank, world_size, args):
-    setup(rank, world_size)
+    # Only setup distributed training if world_size > 1
+    if world_size > 1:
+        setup(rank, world_size)
+    
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    device = torch.device(f"cuda:{rank}")
+    
+    # Use cuda:rank for multi-GPU, cuda:0 for single-GPU, cpu if no CUDA
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{rank}")
+    else:
+        device = torch.device("cpu")
 
     # Generate experiment name if not provided
     if args.experiment_name is None:
@@ -394,8 +402,10 @@ def main_worker(rank, world_size, args):
             except Exception as e:
                 print(f"[Rank {rank}] torch.compile failed: {e}")
 
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = DDP(model, device_ids=[rank])
+        # Only use distributed wrappers in multi-GPU mode  
+        if world_size > 1:
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model = DDP(model, device_ids=[rank])
         
         # After you have a batch:
         theta, x_sets = next(iter(dataloader))
@@ -418,14 +428,20 @@ def main_worker(rank, world_size, args):
             theta_head = MLPHead(latent_dim, theta_dim).to(device)
         elif args.head == "Transformer":
             theta_head = TransformerHead(latent_dim, theta_dim).to(device)
-        theta_head = DDP(theta_head, device_ids=[rank])             # no SyncBN needed
+        
+        # Only use DDP in multi-GPU mode
+        if world_size > 1:
+            theta_head = DDP(theta_head, device_ids=[rank])             # no SyncBN needed
     else:
         # For gaussian problem, create a simpler model setup if needed
         model = PointNetPMA(
             input_dim=input_dim, latent_dim=args.latent_dim, predict_theta=True
         ).to(device)
-        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = DDP(model, device_ids=[rank])
+        
+        # Only use distributed wrappers in multi-GPU mode
+        if world_size > 1:
+            model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+            model = DDP(model, device_ids=[rank])
         
         # Determine theta head parameters
         theta, x_sets = next(iter(dataloader))
@@ -448,7 +464,10 @@ def main_worker(rank, world_size, args):
             theta_head = MLPHead(latent_dim, theta_dim).to(device)
         elif args.head == "Transformer":
             theta_head = TransformerHead(latent_dim, theta_dim).to(device)
-        theta_head = DDP(theta_head, device_ids=[rank])
+            
+        # Only use DDP in multi-GPU mode
+        if world_size > 1:
+            theta_head = DDP(theta_head, device_ids=[rank])
 
         # Wandb safety setup
     if rank != 0:
@@ -459,7 +478,10 @@ def main_worker(rank, world_size, args):
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
     train(model, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args, theta_head=theta_head, simulator=simulator)
-    cleanup()
+    
+    # Only cleanup in distributed mode
+    if world_size > 1:
+        cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -491,6 +513,8 @@ if __name__ == "__main__":
         default="precomputed_data",
         help="Directory containing precomputed .npz files"
     )
+    parser.add_argument("--single_gpu", action="store_true",
+                       help="Force single-GPU mode even if multiple GPUs are available")
     
     args = parser.parse_args()
 
@@ -499,7 +523,19 @@ if __name__ == "__main__":
     # DDP setup: get rank from environment or torch.distributed
     rank = int(os.environ.get("RANK", 0))
 
-    mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+    # Determine training mode
+    if args.single_gpu or world_size <= 1:
+        print(f"Running in single-GPU mode (single_gpu={args.single_gpu}, detected GPUs={world_size})")
+        if torch.cuda.is_available():
+            print(f"Using GPU: cuda:0")
+        else:
+            print("No CUDA GPUs available, using CPU")
+        # Run directly without mp.spawn
+        main_worker(0, 1, args)
+    else:
+        print(f"Running in distributed multi-GPU mode with {world_size} GPUs")
+        mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+    
     # Optionally finish wandb run
     if args.wandb and rank == 0:
         wandb.finish()

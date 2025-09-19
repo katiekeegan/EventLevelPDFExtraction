@@ -140,10 +140,18 @@ def cleanup():
     dist.destroy_process_group()
 
 def main_worker(rank, world_size, args):
-    setup(rank, world_size)
+    # Only setup distributed training if world_size > 1
+    if world_size > 1:
+        setup(rank, world_size)
+    
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    device = torch.device(f"cuda:{rank}")
+    
+    # Use cuda:rank for multi-GPU, cuda:0 for single-GPU, cpu if no CUDA
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{rank}")
+    else:
+        device = torch.device("cpu")
 
     if args.experiment_name is None:
         args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_CNF"
@@ -198,12 +206,17 @@ def main_worker(rank, world_size, args):
         except Exception as e:
             print(f"[Rank {rank}] torch.compile failed: {e}")
 
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = DDP(model, device_ids=[rank])
+    # Only use distributed wrappers in multi-GPU mode
+    if world_size > 1:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(model, device_ids=[rank])
 
     cnf = SimpleCNF(theta_dim=theta_dim, context_dim=latent_dim, hidden_dim=256, num_layers=6)
     cnf = cnf.to(device)         # <------ FIX: move CNF to correct device before DDP
-    cnf = DDP(cnf, device_ids=[rank])
+    
+    # Only use DDP in multi-GPU mode
+    if world_size > 1:
+        cnf = DDP(cnf, device_ids=[rank])
 
     if rank != 0:
         os.environ["WANDB_MODE"] = "disabled"
@@ -213,7 +226,10 @@ def main_worker(rank, world_size, args):
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
     train_joint(model, cnf, dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
-    cleanup()
+    
+    # Only cleanup in distributed mode
+    if world_size > 1:
+        cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -226,11 +242,24 @@ if __name__ == "__main__":
     parser.add_argument("--problem", type=str, default="simplified_dis")
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--experiment_name", type=str, default=None, help="Unique name for this ablation run")
+    parser.add_argument("--single_gpu", action="store_true",
+                       help="Force single-GPU mode even if multiple GPUs are available")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
     rank = int(os.environ.get("RANK", 0))
 
-    mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+    # Determine training mode
+    if args.single_gpu or world_size <= 1:
+        print(f"Running in single-GPU mode (single_gpu={args.single_gpu}, detected GPUs={world_size})")
+        if torch.cuda.is_available():
+            print(f"Using GPU: cuda:0")
+        else:
+            print("No CUDA GPUs available, using CPU")
+        # Run directly without mp.spawn
+        main_worker(0, 1, args)
+    else:
+        print(f"Running in distributed multi-GPU mode with {world_size} GPUs")
+        mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
     if args.wandb and rank == 0:
         wandb.finish()
