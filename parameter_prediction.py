@@ -197,15 +197,32 @@ def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
     if rank == 0:
         torch.save(model.state_dict(), os.path.join(output_dir, "final_model.pth"))
         torch.save(param_prediction_model.state_dict(), os.path.join(output_dir, "final_params_model.pth"))
-        from laplace import Laplace
-        lap_transformer = Laplace(param_prediction_model, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
-        lap_transformer.fit(train_dataloader)  # Use training dataloader for Laplace fitting
-        # after fitting:
-        save_laplace(lap_transformer, output_dir,
-                    filename="laplace_transformer.pt",
-                    likelihood="regression",
-                    subset_of_weights="last_layer",
-                    hessian_structure="kron")
+        
+        # Try to save Laplace model if available
+        try:
+            from laplace import Laplace
+            lap_transformer = Laplace(param_prediction_model, 'regression', subset_of_weights='last_layer', hessian_structure='kron')
+            lap_transformer.fit(train_dataloader)  # Use training dataloader for Laplace fitting
+            
+            # Try to import save_laplace or create a simple version
+            try:
+                from utils import save_laplace
+            except ImportError:
+                def save_laplace(lap_model, output_dir, filename, likelihood, subset_of_weights, hessian_structure):
+                    """Simple save function for Laplace model"""
+                    print(f"Saving Laplace model to {os.path.join(output_dir, filename)}")
+                    # Basic save if detailed save not available
+                    torch.save(lap_model.state_dict(), os.path.join(output_dir, filename))
+            
+            save_laplace(lap_transformer, output_dir,
+                        filename="laplace_transformer.pt",
+                        likelihood="regression",
+                        subset_of_weights="last_layer",
+                        hessian_structure="kron")
+        except ImportError as e:
+            print(f"Laplace not available, skipping Laplace model save: {e}")
+        except Exception as e:
+            print(f"Error saving Laplace model: {e}")
 
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
@@ -305,10 +322,18 @@ def create_train_val_datasets(args, rank, world_size, device):
 
 
 def main_worker(rank, world_size, args):
-    setup(rank, world_size)
+    # Only setup distributed training if world_size > 1
+    if world_size > 1:
+        setup(rank, world_size)
+    
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    device = torch.device(f"cuda:{rank}")
+    
+    # Use cuda:rank for multi-GPU, cuda:0 for single-GPU, cpu if no CUDA
+    if torch.cuda.is_available():
+        device = torch.device(f"cuda:{rank}")
+    else:
+        device = torch.device("cpu")
 
     if args.experiment_name is None:
         args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
@@ -366,8 +391,11 @@ def main_worker(rank, world_size, args):
         except Exception as e:
             print(f"[Rank {rank}] torch.compile failed: {e}")
 
-    model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
-    model = DDP(model, device_ids=[rank])
+    # Only use distributed wrappers in multi-GPU mode
+    if world_size > 1:
+        model = nn.SyncBatchNorm.convert_sync_batchnorm(model)
+        model = DDP(model, device_ids=[rank])
+    
     if args.problem == 'mceg':
         theta_bounds = torch.tensor([
                 [-1.0, 10.0],
@@ -379,7 +407,10 @@ def main_worker(rank, world_size, args):
         theta_bounds = None
     param_prediction_model = TransformerHead(latent_dim, theta_dim, ranges=theta_bounds)
     param_prediction_model = param_prediction_model.to(device)
-    param_prediction_model = DDP(param_prediction_model, device_ids=[rank])
+    
+    # Only use DDP in multi-GPU mode
+    if world_size > 1:
+        param_prediction_model = DDP(param_prediction_model, device_ids=[rank])
 
     if rank != 0:
         os.environ["WANDB_MODE"] = "disabled"
@@ -389,7 +420,10 @@ def main_worker(rank, world_size, args):
         wandb.init(project="quantom_end_to_end", name=args.experiment_name, config=vars(args))
 
     train_joint(model, param_prediction_model, train_dataloader, val_dataloader, args.num_epochs, args.lr, rank, args.wandb, output_dir, args=args)
-    cleanup()
+    
+    # Only cleanup in distributed mode
+    if world_size > 1:
+        cleanup()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -407,11 +441,24 @@ if __name__ == "__main__":
                        help="Use precomputed data instead of generating on-the-fly. Automatically generates data if not found.")
     parser.add_argument("--precomputed_data_dir", type=str, default="precomputed_data",
                        help="Directory containing precomputed data files")
+    parser.add_argument("--single_gpu", action="store_true",
+                       help="Force single-GPU mode even if multiple GPUs are available")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
     rank = int(os.environ.get("RANK", 0))
 
-    mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+    # Determine training mode
+    if args.single_gpu or world_size <= 1:
+        print(f"Running in single-GPU mode (single_gpu={args.single_gpu}, detected GPUs={world_size})")
+        if torch.cuda.is_available():
+            print(f"Using GPU: cuda:0")
+        else:
+            print("No CUDA GPUs available, using CPU")
+        # Run directly without mp.spawn
+        main_worker(0, 1, args)
+    else:
+        print(f"Running in distributed multi-GPU mode with {world_size} GPUs")
+        mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
     if args.wandb and rank == 0:
         wandb.finish()

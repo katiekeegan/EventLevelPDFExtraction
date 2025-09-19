@@ -10,7 +10,12 @@ import argparse
 import os
 import torch
 import numpy as np
-from tqdm import tqdm
+try:
+    from tqdm import tqdm
+except ImportError:
+    # Fallback if tqdm is not available
+    def tqdm(iterable, *args, **kwargs):
+        return iterable
 import warnings
 
 # Handle the MCEG import issue gracefully
@@ -24,18 +29,80 @@ except ImportError as e:
     FULL_SIMULATORS_AVAILABLE = False
 
 def atomic_savez_compressed(filepath, **kwargs):
-    tmpfile = filepath + ".tmp"
-    print(f"[atomic_savez_compressed] Saving to temp file: {tmpfile}")
+    import os
+    import time
+    
     try:
-        np.savez_compressed(tmpfile, **kwargs)
-    except Exception as e:
-        print(f"Failed to save temp file {tmpfile}: {e}")
-        raise
-    if not os.path.exists(tmpfile):
-        print(f"Temp file {tmpfile} was not created!")
-        raise FileNotFoundError(f"Temp file {tmpfile} not found after save.")
-    os.replace(tmpfile, filepath)
-    print(f"[atomic_savez_compressed] Renamed {tmpfile} to {filepath}")
+        import torch.distributed as dist
+        distributed_available = dist.is_available() and dist.is_initialized()
+    except (ImportError, RuntimeError):
+        distributed_available = False
+    
+    if distributed_available:
+        rank = dist.get_rank()
+        process_id = os.getpid()
+        print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Starting save to {filepath}")
+        
+        if rank == 0:
+            # Only rank 0 performs the save and rename operation
+            # Remove .npz extension for temp file since np.savez_compressed adds it
+            base_path = filepath[:-4] if filepath.endswith('.npz') else filepath
+            tmpfile = base_path + ".tmp"
+            print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Saving to temp file: {tmpfile}")
+            try:
+                np.savez_compressed(tmpfile, **kwargs)
+                # np.savez_compressed adds .npz extension
+                actual_tmpfile = tmpfile + ".npz"
+            except Exception as e:
+                print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Failed to save temp file {tmpfile}: {e}")
+                raise
+            if not os.path.exists(actual_tmpfile):
+                print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Temp file {actual_tmpfile} was not created!")
+                raise FileNotFoundError(f"Temp file {actual_tmpfile} not found after save.")
+            os.replace(actual_tmpfile, filepath)
+            print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Renamed {actual_tmpfile} to {filepath}")
+        
+        # All ranks wait at barrier
+        print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Waiting at barrier")
+        dist.barrier()
+        
+        if rank != 0:
+            # Other ranks poll for the file to appear
+            print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Polling for file {filepath}")
+            max_wait_time = 300  # 5 minutes
+            wait_interval = 1.0  # Check every second
+            total_waited = 0
+            
+            while not os.path.exists(filepath) and total_waited < max_wait_time:
+                time.sleep(wait_interval)
+                total_waited += wait_interval
+                if total_waited % 10 == 0:  # Log every 10 seconds
+                    print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: Still waiting for {filepath} (waited {total_waited}s)")
+            
+            if not os.path.exists(filepath):
+                raise FileNotFoundError(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: File {filepath} not found after waiting {max_wait_time}s")
+            
+            print(f"[atomic_savez_compressed] Rank {rank}, PID {process_id}: File {filepath} found after {total_waited}s")
+    else:
+        # Non-distributed case - behave as before
+        process_id = os.getpid()
+        print(f"[atomic_savez_compressed] PID {process_id}: Saving to {filepath} (non-distributed)")
+        # Remove .npz extension for temp file since np.savez_compressed adds it
+        base_path = filepath[:-4] if filepath.endswith('.npz') else filepath
+        tmpfile = base_path + ".tmp"
+        print(f"[atomic_savez_compressed] PID {process_id}: Saving to temp file: {tmpfile}")
+        try:
+            np.savez_compressed(tmpfile, **kwargs)
+            # np.savez_compressed adds .npz extension
+            actual_tmpfile = tmpfile + ".npz"
+        except Exception as e:
+            print(f"[atomic_savez_compressed] PID {process_id}: Failed to save temp file {tmpfile}: {e}")
+            raise
+        if not os.path.exists(actual_tmpfile):
+            print(f"[atomic_savez_compressed] PID {process_id}: Temp file {actual_tmpfile} was not created!")
+            raise FileNotFoundError(f"Temp file {actual_tmpfile} not found after save.")
+        os.replace(actual_tmpfile, filepath)
+        print(f"[atomic_savez_compressed] PID {process_id}: Renamed {actual_tmpfile} to {filepath}")
 
 def create_minimal_simulators():
     """Create minimal simulators when full ones are not available."""
