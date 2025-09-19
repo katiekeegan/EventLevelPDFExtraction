@@ -317,20 +317,19 @@ def main_worker(rank, world_size, args):
     os.makedirs(output_dir, exist_ok=True)
 
     # Distributed dataset creation to prevent race conditions
-    if world_size > 1:
+    if world_size > 1 and hasattr(args, 'use_precomputed') and args.use_precomputed:
         # Only rank 0 generates precomputed data if needed
         if rank == 0:
             # This call may trigger generation if data doesn't exist
             train_dataset, val_dataset, input_dim = create_train_val_datasets(args, rank, world_size, device)
         
         # All ranks wait at barrier until data is ready
-        if hasattr(args, 'use_precomputed') and args.use_precomputed:
-            dist.barrier()
+        dist.barrier()
         
         # After barrier, all ranks (including rank 0) create/load their datasets
         train_dataset, val_dataset, input_dim = create_train_val_datasets(args, rank, world_size, device)
     else:
-        # Single rank case - no barrier needed
+        # Single rank case or non-precomputed data - no barrier needed
         train_dataset, val_dataset, input_dim = create_train_val_datasets(args, rank, world_size, device)
 
     train_dataloader = DataLoader(
