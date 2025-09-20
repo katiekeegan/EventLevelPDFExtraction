@@ -63,6 +63,10 @@ class PrecomputedDataset(Dataset):
     - Better reproducibility
     - Faster training iterations  
     - Easier debugging
+    
+    Supports both:
+    - Single .npz file input (loads that specific file)
+    - Directory input (searches for matching files in the directory)
     """
     
     def __init__(self, data_dir: str, problem: str, shuffle: bool = True):
@@ -70,12 +74,12 @@ class PrecomputedDataset(Dataset):
         Initialize dataset from precomputed data files.
         
         Args:
-            data_dir: Directory containing .npz files
+            data_dir: Directory containing .npz files OR path to a single .npz file
             problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
             shuffle: Whether to shuffle the dataset indices
         """
         print("🔍 PRECOMPUTED DATASET INITIALIZATION:")
-        print(f"   Data directory: '{data_dir}'")
+        print(f"   Data path: '{data_dir}'")
         print(f"   Problem type: '{problem}'")
         print(f"   Shuffle: {shuffle}")
         
@@ -83,11 +87,30 @@ class PrecomputedDataset(Dataset):
         self.problem = problem
         self.shuffle = shuffle
         
-        # Find all matching data files
-        pattern = os.path.join(data_dir, f"{problem}_*.npz")
-        print(f"   Search pattern: '{pattern}'")
-        all_data_files = sorted(glob.glob(pattern))
-        print(f"   Found {len(all_data_files)} files matching pattern: {all_data_files}")
+        # Check if data_dir is a file or directory
+        if os.path.isfile(data_dir):
+            print(f"   📄 Detected single file input: '{data_dir}'")
+            # Validate the file
+            if not data_dir.endswith('.npz'):
+                raise ValueError(f"Single file input must be a .npz file, got: {data_dir}")
+            
+            if not os.path.exists(data_dir):
+                raise FileNotFoundError(f"Precomputed data file not found: {data_dir}")
+            
+            # Use the single file directly
+            all_data_files = [data_dir]
+            print(f"   Using single file: {data_dir}")
+            
+        elif os.path.isdir(data_dir):
+            print(f"   📁 Detected directory input: '{data_dir}'")
+            # Find all matching data files in directory
+            pattern = os.path.join(data_dir, f"{problem}_*.npz")
+            print(f"   Search pattern: '{pattern}'")
+            all_data_files = sorted(glob.glob(pattern))
+            print(f"   Found {len(all_data_files)} files matching pattern: {all_data_files}")
+            
+        else:
+            raise FileNotFoundError(f"Data path does not exist or is neither a file nor directory: {data_dir}")
         
         # Filter out temporary/incomplete files
         self.data_files = filter_valid_precomputed_files(all_data_files)
@@ -260,7 +283,7 @@ def create_precomputed_dataloader(
     Create a DataLoader for precomputed data.
     
     Args:
-        data_dir: Directory containing precomputed .npz files
+        data_dir: Directory containing precomputed .npz files OR path to a single .npz file
         problem: Problem type ('gaussian', 'simplified_dis', etc.)
         batch_size: Batch size for training
         shuffle: Whether to shuffle data
