@@ -29,11 +29,29 @@ def filter_valid_precomputed_files(file_list: List[str]) -> List[str]:
         List of valid precomputed dataset file paths
     """
     valid_files = []
+    print(f"   🔍 FILTERING {len(file_list)} FILES:")
+    
     for file_path in file_list:
         filename = os.path.basename(file_path)
+        ends_with_npz = filename.endswith('.npz')
+        has_tmp = '.tmp' in filename
+        is_valid = ends_with_npz and not has_tmp
+        
+        status = "✓ VALID" if is_valid else "✗ INVALID"
+        reason = []
+        if not ends_with_npz:
+            reason.append("not .npz")
+        if has_tmp:
+            reason.append("contains .tmp")
+        reason_str = f" ({', '.join(reason)})" if reason else ""
+        
+        print(f"     {status}: '{filename}'{reason_str}")
+        
         # Only include .npz files that don't contain '.tmp' anywhere in the filename
-        if filename.endswith('.npz') and '.tmp' not in filename:
+        if is_valid:
             valid_files.append(file_path)
+    
+    print(f"   📊 FILTERING RESULT: {len(valid_files)} valid out of {len(file_list)} total files")
     return valid_files
 
 
@@ -56,28 +74,40 @@ class PrecomputedDataset(Dataset):
             problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
             shuffle: Whether to shuffle the dataset indices
         """
+        print("🔍 PRECOMPUTED DATASET INITIALIZATION:")
+        print(f"   Data directory: '{data_dir}'")
+        print(f"   Problem type: '{problem}'")
+        print(f"   Shuffle: {shuffle}")
+        
         self.data_dir = data_dir
         self.problem = problem
         self.shuffle = shuffle
         
         # Find all matching data files
         pattern = os.path.join(data_dir, f"{problem}_*.npz")
+        print(f"   Search pattern: '{pattern}'")
         all_data_files = sorted(glob.glob(pattern))
+        print(f"   Found {len(all_data_files)} files matching pattern: {all_data_files}")
         
         # Filter out temporary/incomplete files
         self.data_files = filter_valid_precomputed_files(all_data_files)
+        print(f"   After filtering: {len(self.data_files)} valid files: {self.data_files}")
         
         if not self.data_files:
             if all_data_files:
                 temp_files = [f for f in all_data_files if f not in self.data_files]
-                print(f"Warning: Found {len(temp_files)} temporary/incomplete files for problem '{problem}' in {data_dir}: {temp_files}")
-                print(f"Only complete .npz files (without .tmp) are considered valid precomputed data.")
+                print(f"   ⚠️  Warning: Found {len(temp_files)} temporary/incomplete files for problem '{problem}' in {data_dir}: {temp_files}")
+                print(f"   📁 Only complete .npz files (without .tmp) are considered valid precomputed data.")
+                print(f"   💡 To fix: Remove '.tmp' from complete files or regenerate data without .tmp suffix")
+            print(f"   ✗ FAILURE: No valid precomputed data files found for problem '{problem}' in {data_dir}")
+            print()
             raise FileNotFoundError(f"No valid precomputed data files found for problem '{problem}' in {data_dir}")
         
-        print(f"Found {len(self.data_files)} valid data files for {problem}")
+        print(f"   ✓ SUCCESS: Found {len(self.data_files)} valid data files for {problem}")
         if len(all_data_files) > len(self.data_files):
             ignored_files = [f for f in all_data_files if f not in self.data_files]
-            print(f"Ignored {len(ignored_files)} temporary/incomplete files: {ignored_files}")
+            print(f"   🗑️  Ignored {len(ignored_files)} temporary/incomplete files: {ignored_files}")
+        print()
         
         # Load all data into memory (assuming datasets are not too large)
         self._load_data()
