@@ -60,7 +60,11 @@ except ImportError:
 
 def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2, output_dir="precomputed_data"):
     """
-    Check if precomputed data exists for the given parameters, and generate it if not.
+    Check if precomputed data exists for the given parameters, and raise an error if not found.
+    
+    This function enforces exact matching: only files with the exact parameters 
+    (problem, num_samples, num_events, n_repeat) will be accepted. No fallback 
+    to files with different parameters is performed.
     
     Args:
         problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
@@ -71,6 +75,10 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
     
     Returns:
         str: Path to the data directory
+        
+    Raises:
+        FileNotFoundError: If the exact matching file does not exist
+        RuntimeError: If precomputed data support is not available
     """
     print("🔍 PRECOMPUTED DATA DIAGNOSTIC:")
     print(f"   Looking for problem: '{problem}' with ns={num_samples}, ne={num_events}, nr={n_repeat}")
@@ -81,63 +89,45 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
         raise RuntimeError("Precomputed data support not available. Please check precomputed_datasets.py")
     
     # Check if data already exists
-    pattern = os.path.join(output_dir, f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz")
-    print(f"   Exact match pattern: '{pattern}'")
-    if os.path.exists(pattern):
-        print(f"   ✓ Precomputed data already exists: {pattern}")
+    expected_filename = f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz"
+    exact_file_path = os.path.join(output_dir, expected_filename)
+    print(f"   Required exact file: '{exact_file_path}'")
+    
+    if os.path.exists(exact_file_path):
+        print(f"   ✓ Found exact matching precomputed data: {exact_file_path}")
         return output_dir
     else:
-        print(f"   ⚠️  Exact match not found")
-    
-    # Check for any existing data files for this problem (with different parameters)
-    existing_pattern = os.path.join(output_dir, f"{problem}_*.npz")
-    print(f"   Searching with pattern: '{existing_pattern}'")
-    all_existing_files = glob.glob(existing_pattern)
-    print(f"   Found {len(all_existing_files)} total files: {all_existing_files}")
-    
-    existing_files = filter_valid_precomputed_files(all_existing_files)
-    print(f"   After filtering: {len(existing_files)} valid files: {existing_files}")
-    
-    if existing_files:
-        print(f"   ✓ Found {len(existing_files)} valid data files for {problem}")
-        if len(all_existing_files) > len(existing_files):
-            temp_files = [f for f in all_existing_files if f not in existing_files]
-            print(f"   🗑️  Ignored {len(temp_files)} temporary/incomplete files: {temp_files}")
-        print(f"   💡 Using existing valid data instead of generating new data")
-        return output_dir
-    elif all_existing_files:
-        temp_files = [f for f in all_existing_files if f not in existing_files]
-        print(f"   ⚠️  Found {len(temp_files)} temporary/incomplete files for {problem}: {temp_files}")
-        print(f"   ✗ No valid precomputed data found - all found files are temporary/incomplete")
-        print(f"   📁 Files are considered temporary if they contain '.tmp' in filename")
-        print(f"   💡 To fix: Remove '.tmp' from complete files or regenerate clean data")
-        print(f"   🔄 Proceeding to generate new data...")
-    else:
-        print(f"   ✗ No files found matching pattern '{existing_pattern}'")
-        print(f"   🔄 Proceeding to generate new data...")
-    print()
-    
-    # Generate new data
-    print(f"Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
-    print("Generating precomputed data automatically...")
-    
-    try:
-        # Import and run the data generation function
-        from generate_precomputed_data import generate_data_for_problem
+        print(f"   ✗ Exact matching file not found: {expected_filename}")
+        print(f"   📁 Searched in directory: {output_dir}")
         
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        print(f"Generating data on device: {device}")
+        # Show what files ARE available to help user debug
+        available_pattern = os.path.join(output_dir, f"{problem}_*.npz")
+        available_files = glob.glob(available_pattern)
+        if available_files:
+            print(f"   📋 Available files for problem '{problem}':")
+            for file_path in available_files:
+                filename = os.path.basename(file_path)
+                print(f"      - {filename}")
+            print(f"   💡 None of these match the exact parameters: ns={num_samples}, ne={num_events}, nr={n_repeat}")
+        else:
+            print(f"   📋 No files found for problem '{problem}' in {output_dir}")
         
-        filepath = generate_data_for_problem(
-            problem, num_samples, num_events, n_repeat, device, output_dir
+        # Raise informative error
+        error_msg = (
+            f"Exact precomputed data file not found: '{expected_filename}'\n"
+            f"  Required parameters: problem='{problem}', num_samples={num_samples}, "
+            f"num_events={num_events}, n_repeat={n_repeat}\n"
+            f"  Searched in: {output_dir}\n"
+            f"  Expected file: {exact_file_path}\n"
         )
-        print(f"Successfully generated precomputed data: {filepath}")
-        return output_dir
         
-    except Exception as e:
-        print(f"Error generating precomputed data: {e}")
-        print("Falling back to on-the-fly data generation")
-        raise RuntimeError(f"Failed to generate precomputed data: {e}")
+        if available_files:
+            error_msg += f"  Available files: {[os.path.basename(f) for f in available_files]}\n"
+            error_msg += "  Hint: None of the available files match the exact required parameters."
+        else:
+            error_msg += f"  No precomputed data files found for problem '{problem}'."
+            
+        raise FileNotFoundError(error_msg)
 
 def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
     """
