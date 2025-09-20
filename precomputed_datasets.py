@@ -11,7 +11,79 @@ import numpy as np
 from torch.utils.data import Dataset, DataLoader
 import os
 import glob
-from typing import List, Tuple, Optional
+import re
+from typing import List, Tuple, Optional, Dict
+
+
+def parse_filename_parameters(filename: str) -> Optional[Dict[str, int]]:
+    """
+    Parse parameters from a precomputed data filename.
+    
+    Expected format: {problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz
+    
+    Args:
+        filename: The filename to parse (just the basename, not full path)
+        
+    Returns:
+        Dictionary with 'ns', 'ne', 'nr' values, or None if parsing fails
+    """
+    # Remove .npz extension
+    basename = filename.replace('.npz', '')
+    
+    # Pattern to match: problem_ns{digits}_ne{digits}_nr{digits}
+    pattern = r'^(.+)_ns(\d+)_ne(\d+)_nr(\d+)$'
+    match = re.match(pattern, basename)
+    
+    if match:
+        problem = match.group(1)
+        ns = int(match.group(2))
+        ne = int(match.group(3))
+        nr = int(match.group(4))
+        return {
+            'problem': problem,
+            'ns': ns,
+            'ne': ne,
+            'nr': nr
+        }
+    return None
+
+
+def filter_files_by_exact_parameters(file_list: List[str], required_ns: int, required_ne: int, required_nr: int) -> List[str]:
+    """
+    Filter files to only include those with exact parameter matches.
+    
+    Args:
+        file_list: List of file paths to filter
+        required_ns: Required num_samples
+        required_ne: Required num_events  
+        required_nr: Required n_repeat
+        
+    Returns:
+        List of files that match the exact parameters
+    """
+    exact_matches = []
+    print(f"   🔍 FILTERING FOR EXACT PARAMETERS: ns={required_ns}, ne={required_ne}, nr={required_nr}")
+    
+    for file_path in file_list:
+        filename = os.path.basename(file_path)
+        params = parse_filename_parameters(filename)
+        
+        if params is None:
+            print(f"     ✗ SKIP: '{filename}' - Cannot parse parameters")
+            continue
+            
+        matches = (params['ns'] == required_ns and 
+                  params['ne'] == required_ne and 
+                  params['nr'] == required_nr)
+        
+        status = "✓ MATCH" if matches else "✗ NO MATCH"
+        print(f"     {status}: '{filename}' - ns={params['ns']}, ne={params['ne']}, nr={params['nr']}")
+        
+        if matches:
+            exact_matches.append(file_path)
+    
+    print(f"   📊 EXACT MATCH RESULT: {len(exact_matches)} files match out of {len(file_list)} total")
+    return exact_matches
 
 
 def filter_valid_precomputed_files(file_list: List[str]) -> List[str]:
@@ -69,7 +141,8 @@ class PrecomputedDataset(Dataset):
     - Directory input (searches for matching files in the directory)
     """
     
-    def __init__(self, data_dir: str, problem: str, shuffle: bool = True):
+    def __init__(self, data_dir: str, problem: str, shuffle: bool = True, 
+                 exact_ns: Optional[int] = None, exact_ne: Optional[int] = None, exact_nr: Optional[int] = None):
         """
         Initialize dataset from precomputed data files.
         
@@ -77,15 +150,23 @@ class PrecomputedDataset(Dataset):
             data_dir: Directory containing .npz files OR path to a single .npz file
             problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
             shuffle: Whether to shuffle the dataset indices
+            exact_ns: If specified, only load files with this exact num_samples
+            exact_ne: If specified, only load files with this exact num_events  
+            exact_nr: If specified, only load files with this exact n_repeat
         """
         print("🔍 PRECOMPUTED DATASET INITIALIZATION:")
         print(f"   Data path: '{data_dir}'")
         print(f"   Problem type: '{problem}'")
         print(f"   Shuffle: {shuffle}")
+        if exact_ns is not None or exact_ne is not None or exact_nr is not None:
+            print(f"   Exact parameter matching: ns={exact_ns}, ne={exact_ne}, nr={exact_nr}")
         
         self.data_dir = data_dir
         self.problem = problem
         self.shuffle = shuffle
+        self.exact_ns = exact_ns
+        self.exact_ne = exact_ne  
+        self.exact_nr = exact_nr
         
         # Check if data_dir is a file or directory
         if os.path.isfile(data_dir):
@@ -97,6 +178,27 @@ class PrecomputedDataset(Dataset):
             if not os.path.exists(data_dir):
                 raise FileNotFoundError(f"Precomputed data file not found: {data_dir}")
             
+            # For single file input, verify exact parameter matching if specified
+            if exact_ns is not None or exact_ne is not None or exact_nr is not None:
+                filename = os.path.basename(data_dir)
+                params = parse_filename_parameters(filename)
+                if params is None:
+                    raise ValueError(f"Cannot parse parameters from filename: {filename}")
+                
+                # Check each specified parameter
+                mismatches = []
+                if exact_ns is not None and params['ns'] != exact_ns:
+                    mismatches.append(f"ns={params['ns']} (required {exact_ns})")
+                if exact_ne is not None and params['ne'] != exact_ne:
+                    mismatches.append(f"ne={params['ne']} (required {exact_ne})")
+                if exact_nr is not None and params['nr'] != exact_nr:
+                    mismatches.append(f"nr={params['nr']} (required {exact_nr})")
+                
+                if mismatches:
+                    raise ValueError(f"File {filename} has mismatched parameters: {', '.join(mismatches)}")
+                
+                print(f"   ✓ File matches exact parameters: ns={params['ns']}, ne={params['ne']}, nr={params['nr']}")
+            
             # Use the single file directly
             all_data_files = [data_dir]
             print(f"   Using single file: {data_dir}")
@@ -107,29 +209,72 @@ class PrecomputedDataset(Dataset):
             pattern = os.path.join(data_dir, f"{problem}_*.npz")
             print(f"   Search pattern: '{pattern}'")
             all_data_files = sorted(glob.glob(pattern))
-            print(f"   Found {len(all_data_files)} files matching pattern: {all_data_files}")
+            print(f"   Found {len(all_data_files)} files matching pattern: {[os.path.basename(f) for f in all_data_files]}")
             
         else:
             raise FileNotFoundError(f"Data path does not exist or is neither a file nor directory: {data_dir}")
         
         # Filter out temporary/incomplete files
-        self.data_files = filter_valid_precomputed_files(all_data_files)
-        print(f"   After filtering: {len(self.data_files)} valid files: {self.data_files}")
+        valid_files = filter_valid_precomputed_files(all_data_files)
+        print(f"   After filtering invalid files: {len(valid_files)} valid files: {[os.path.basename(f) for f in valid_files]}")
+        
+        # Apply exact parameter filtering if specified (only for directory mode)
+        if os.path.isdir(data_dir) and (exact_ns is not None or exact_ne is not None or exact_nr is not None):
+            if exact_ns is None or exact_ne is None or exact_nr is None:
+                raise ValueError("When using exact parameter matching with directory input, all parameters (exact_ns, exact_ne, exact_nr) must be specified")
+            
+            exact_matches = filter_files_by_exact_parameters(valid_files, exact_ns, exact_ne, exact_nr)
+            self.data_files = exact_matches
+            
+            if not self.data_files:
+                print(f"   ✗ FAILURE: No files match exact parameters ns={exact_ns}, ne={exact_ne}, nr={exact_nr}")
+                
+                # Show what files were available to help debugging
+                if valid_files:
+                    print(f"   📋 Available files for problem '{problem}':")
+                    for file_path in valid_files:
+                        filename = os.path.basename(file_path)
+                        params = parse_filename_parameters(filename)
+                        if params:
+                            print(f"      - {filename} (ns={params['ns']}, ne={params['ne']}, nr={params['nr']})")
+                        else:
+                            print(f"      - {filename} (cannot parse parameters)")
+                
+                expected_filename = f"{problem}_ns{exact_ns}_ne{exact_ne}_nr{exact_nr}.npz"
+                error_msg = (
+                    f"No precomputed data files found with exact parameters: ns={exact_ns}, ne={exact_ne}, nr={exact_nr}\n"
+                    f"Expected file: {expected_filename}\n"
+                    f"Searched in: {data_dir}"
+                )
+                raise FileNotFoundError(error_msg)
+        else:
+            # No exact parameter filtering - use all valid files
+            self.data_files = valid_files
+        print(f"   After all filtering: {len(self.data_files)} final files: {[os.path.basename(f) for f in self.data_files]}")
         
         if not self.data_files:
-            if all_data_files:
-                temp_files = [f for f in all_data_files if f not in self.data_files]
-                print(f"   ⚠️  Warning: Found {len(temp_files)} temporary/incomplete files for problem '{problem}' in {data_dir}: {temp_files}")
-                print(f"   📁 Only complete .npz files (without .tmp) are considered valid precomputed data.")
-                print(f"   💡 To fix: Remove '.tmp' from complete files or regenerate data without .tmp suffix")
-            print(f"   ✗ FAILURE: No valid precomputed data files found for problem '{problem}' in {data_dir}")
+            if os.path.isdir(data_dir):
+                if valid_files and (exact_ns is not None or exact_ne is not None or exact_nr is not None):
+                    # Exact parameter matching failed
+                    print(f"   ✗ FAILURE: No files match exact parameters for problem '{problem}'")
+                elif all_data_files and not valid_files:
+                    # Only temporary files found
+                    temp_files = [f for f in all_data_files if f not in valid_files]
+                    print(f"   ⚠️  Warning: Found {len(temp_files)} temporary/incomplete files for problem '{problem}' in {data_dir}: {[os.path.basename(f) for f in temp_files]}")
+                    print(f"   📁 Only complete .npz files (without .tmp) are considered valid precomputed data.")
+                    print(f"   💡 To fix: Remove '.tmp' from complete files or regenerate data without .tmp suffix")
+                    print(f"   ✗ FAILURE: No valid precomputed data files found for problem '{problem}' in {data_dir}")
+                else:
+                    # No files found for this problem at all
+                    print(f"   ✗ FAILURE: No precomputed data files found for problem '{problem}' in {data_dir}")
             print()
             raise FileNotFoundError(f"No valid precomputed data files found for problem '{problem}' in {data_dir}")
         
         print(f"   ✓ SUCCESS: Found {len(self.data_files)} valid data files for {problem}")
-        if len(all_data_files) > len(self.data_files):
-            ignored_files = [f for f in all_data_files if f not in self.data_files]
-            print(f"   🗑️  Ignored {len(ignored_files)} temporary/incomplete files: {ignored_files}")
+        if os.path.isdir(data_dir):
+            if len(all_data_files) > len(self.data_files):
+                ignored_files = [f for f in all_data_files if f not in self.data_files]
+                print(f"   🗑️  Ignored {len(ignored_files)} files: {[os.path.basename(f) for f in ignored_files]}")
         print()
         
         # Load all data into memory (assuming datasets are not too large)
@@ -144,38 +289,102 @@ class PrecomputedDataset(Dataset):
         """Load all data files into memory."""
         all_thetas = []
         all_events = []
+        file_metadata = []
+        
+        print(f"📁 LOADING DATA FROM {len(self.data_files)} FILES:")
         
         for data_file in self.data_files:
             try:
                 data = np.load(data_file)
+                filename = os.path.basename(data_file)
                 
                 # Verify this is the correct problem type
                 if 'problem' in data:
                     file_problem = str(data['problem'].item())
                     if file_problem != self.problem:
-                        print(f"Warning: File {data_file} is for problem '{file_problem}', expected '{self.problem}'")
+                        print(f"   ⚠️  WARNING: File {filename} is for problem '{file_problem}', expected '{self.problem}' - SKIPPING")
                         continue
                 
                 thetas = data['thetas']  # [num_samples, theta_dim]
                 events = data['events']  # [num_samples, n_repeat, num_events, feature_dim]
                 
+                # Parse parameters from filename for validation
+                params = parse_filename_parameters(filename)
+                if params:
+                    file_metadata.append({
+                        'filename': filename,
+                        'ns': params['ns'],
+                        'ne': params['ne'], 
+                        'nr': params['nr'],
+                        'thetas_shape': thetas.shape,
+                        'events_shape': events.shape
+                    })
+                    print(f"   ✓ Loaded {filename}: ns={params['ns']}, ne={params['ne']}, nr={params['nr']}")
+                    print(f"     Data shapes: thetas {thetas.shape}, events {events.shape}")
+                else:
+                    file_metadata.append({
+                        'filename': filename,
+                        'thetas_shape': thetas.shape,
+                        'events_shape': events.shape
+                    })
+                    print(f"   ✓ Loaded {filename} (cannot parse parameters)")
+                    print(f"     Data shapes: thetas {thetas.shape}, events {events.shape}")
+                
                 all_thetas.append(thetas)
                 all_events.append(events)
                 
-                print(f"Loaded {data_file}: thetas {thetas.shape}, events {events.shape}")
-                
             except Exception as e:
-                print(f"Error loading {data_file}: {e}")
+                print(f"   ✗ ERROR loading {os.path.basename(data_file)}: {e}")
                 continue
         
         if not all_thetas:
             raise ValueError(f"No valid data loaded for problem {self.problem}")
         
+        # Validate compatibility before concatenating
+        print(f"\n🔍 VALIDATING DATA COMPATIBILITY:")
+        if len(all_thetas) > 1:
+            # Check if all files have compatible dimensions
+            first_events_shape = all_events[0].shape
+            first_theta_shape = all_thetas[0].shape
+            
+            compatible = True
+            for i, (events, thetas) in enumerate(zip(all_events[1:], all_thetas[1:]), 1):
+                # Check theta dimensions (should match except for first dimension)
+                if thetas.shape[1:] != first_theta_shape[1:]:
+                    print(f"   ✗ INCOMPATIBLE: File {i} theta shape {thetas.shape} vs file 0 {first_theta_shape}")
+                    compatible = False
+                
+                # Check events dimensions (should match except for first dimension) 
+                if events.shape[1:] != first_events_shape[1:]:
+                    print(f"   ✗ INCOMPATIBLE: File {i} events shape {events.shape} vs file 0 {first_events_shape}")
+                    compatible = False
+            
+            if not compatible:
+                print(f"\n❌ CONCATENATION ERROR: Files have incompatible dimensions!")
+                print(f"Files loaded:")
+                for metadata in file_metadata:
+                    filename = metadata['filename']
+                    if 'ns' in metadata:
+                        print(f"  - {filename}: ns={metadata['ns']}, ne={metadata['ne']}, nr={metadata['nr']}")
+                    else:
+                        print(f"  - {filename}")
+                    print(f"    thetas: {metadata['thetas_shape']}, events: {metadata['events_shape']}")
+                
+                error_msg = (
+                    "Cannot concatenate files with incompatible dimensions. "
+                    "This typically happens when files have different num_events, n_repeat, or feature dimensions. "
+                    "Use exact parameter matching (exact_ns, exact_ne, exact_nr) to load only compatible files."
+                )
+                raise ValueError(error_msg)
+            
+            print(f"   ✓ All {len(all_thetas)} files have compatible dimensions")
+        
         # Concatenate all data
+        print(f"\n📊 CONCATENATING DATA:")
         self.thetas = np.concatenate(all_thetas, axis=0)
         self.events = np.concatenate(all_events, axis=0)
         
-        print(f"Total loaded data: thetas {self.thetas.shape}, events {self.events.shape}")
+        print(f"   ✓ Final concatenated data: thetas {self.thetas.shape}, events {self.events.shape}")
         
         # Convert to tensors
         self.thetas = torch.from_numpy(self.thetas).float()
@@ -217,7 +426,8 @@ class DistributedPrecomputedDataset(PrecomputedDataset):
     This maintains compatibility with the distributed training setup.
     """
     
-    def __init__(self, data_dir: str, problem: str, rank: int, world_size: int, shuffle: bool = True):
+    def __init__(self, data_dir: str, problem: str, rank: int, world_size: int, shuffle: bool = True,
+                 exact_ns: Optional[int] = None, exact_ne: Optional[int] = None, exact_nr: Optional[int] = None):
         """
         Initialize distributed dataset.
         
@@ -227,12 +437,15 @@ class DistributedPrecomputedDataset(PrecomputedDataset):
             rank: Current process rank
             world_size: Total number of processes
             shuffle: Whether to shuffle before splitting
+            exact_ns: If specified, only load files with this exact num_samples
+            exact_ne: If specified, only load files with this exact num_events
+            exact_nr: If specified, only load files with this exact n_repeat
         """
         self.rank = rank
         self.world_size = world_size
         
         # Load full dataset first
-        super().__init__(data_dir, problem, shuffle=shuffle)
+        super().__init__(data_dir, problem, shuffle=shuffle, exact_ns=exact_ns, exact_ne=exact_ne, exact_nr=exact_nr)
         
         # Split data across ranks
         self._split_data_for_rank()
@@ -277,6 +490,9 @@ def create_precomputed_dataloader(
     num_workers: int = 0,
     rank: int = 0,
     world_size: int = 1,
+    exact_ns: Optional[int] = None,
+    exact_ne: Optional[int] = None,
+    exact_nr: Optional[int] = None,
     **kwargs
 ) -> DataLoader:
     """
@@ -290,15 +506,20 @@ def create_precomputed_dataloader(
         num_workers: Number of worker processes
         rank: Process rank for distributed training
         world_size: Total number of processes
+        exact_ns: If specified, only load files with this exact num_samples
+        exact_ne: If specified, only load files with this exact num_events
+        exact_nr: If specified, only load files with this exact n_repeat
         **kwargs: Additional arguments for DataLoader
         
     Returns:
         DataLoader instance
     """
     if world_size > 1:
-        dataset = DistributedPrecomputedDataset(data_dir, problem, rank, world_size, shuffle)
+        dataset = DistributedPrecomputedDataset(data_dir, problem, rank, world_size, shuffle, 
+                                               exact_ns=exact_ns, exact_ne=exact_ne, exact_nr=exact_nr)
     else:
-        dataset = PrecomputedDataset(data_dir, problem, shuffle)
+        dataset = PrecomputedDataset(data_dir, problem, shuffle, 
+                                   exact_ns=exact_ns, exact_ne=exact_ne, exact_nr=exact_nr)
     
     # Don't shuffle in DataLoader if we're handling it in Dataset
     dataloader_shuffle = False

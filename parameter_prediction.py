@@ -291,17 +291,21 @@ def create_train_val_datasets(args, rank, world_size, device):
                 output_dir=args.precomputed_data_dir
             )
             
-            # Create distributed datasets
+            # Create distributed datasets with exact parameter matching
             if world_size > 1:
                 train_dataset = DistributedPrecomputedDataset(
-                    train_data_dir, args.problem, rank, world_size, shuffle=True
+                    train_data_dir, args.problem, rank, world_size, shuffle=True,
+                    exact_ns=args.num_samples, exact_ne=args.num_events, exact_nr=1
                 )
                 val_dataset = DistributedPrecomputedDataset(
-                    val_data_dir, args.problem, rank, world_size, shuffle=False
+                    val_data_dir, args.problem, rank, world_size, shuffle=False,
+                    exact_ns=val_samples, exact_ne=args.num_events, exact_nr=1
                 )
             else:
-                train_dataset = PrecomputedDataset(train_data_dir, args.problem, shuffle=True)
-                val_dataset = PrecomputedDataset(val_data_dir, f"{args.problem}_val", shuffle=False)
+                train_dataset = PrecomputedDataset(train_data_dir, args.problem, shuffle=True,
+                                                 exact_ns=args.num_samples, exact_ne=args.num_events, exact_nr=1)
+                val_dataset = PrecomputedDataset(val_data_dir, args.problem, shuffle=False,
+                                                exact_ns=val_samples, exact_ne=args.num_events, exact_nr=1)
             
             # Get input dimension from dataset metadata
             metadata = train_dataset.get_metadata()
