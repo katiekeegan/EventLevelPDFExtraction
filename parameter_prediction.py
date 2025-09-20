@@ -13,6 +13,27 @@ import subprocess
 import sys
 import glob
 
+# =============================================================================
+# CUDA MULTIPROCESSING FIX: Set spawn method before any CUDA operations
+# This prevents "Cannot re-initialize CUDA in forked subprocess" errors
+# =============================================================================
+print("🔧 CUDA MULTIPROCESSING DIAGNOSTIC:")
+print(f"   Current multiprocessing start method: {mp.get_start_method()}")
+print(f"   Available start methods: {mp.get_all_start_methods()}")
+
+if mp.get_start_method() != 'spawn':
+    print("   ⚠️  Current method is not 'spawn' - this can cause CUDA issues in DataLoader workers")
+    print("   🔧 Setting multiprocessing start method to 'spawn' for CUDA compatibility")
+    try:
+        mp.set_start_method('spawn', force=True)
+        print(f"   ✓ Successfully set start method to: {mp.get_start_method()}")
+    except RuntimeError as e:
+        print(f"   ⚠️  Could not set start method (already set): {e}")
+        print("   💡 Consider setting this at the very beginning of your script")
+else:
+    print("   ✓ Start method is already 'spawn' - good for CUDA compatibility")
+print()
+
 import wandb
 from datasets import *
 from models import *
@@ -51,32 +72,50 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
     Returns:
         str: Path to the data directory
     """
+    print("🔍 PRECOMPUTED DATA DIAGNOSTIC:")
+    print(f"   Looking for problem: '{problem}' with ns={num_samples}, ne={num_events}, nr={n_repeat}")
+    print(f"   Data directory: '{output_dir}'")
+    
     if not PRECOMPUTED_AVAILABLE:
+        print("   ✗ Precomputed data support not available. Please check precomputed_datasets.py")
         raise RuntimeError("Precomputed data support not available. Please check precomputed_datasets.py")
     
     # Check if data already exists
     pattern = os.path.join(output_dir, f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz")
+    print(f"   Exact match pattern: '{pattern}'")
     if os.path.exists(pattern):
-        print(f"Precomputed data already exists: {pattern}")
+        print(f"   ✓ Precomputed data already exists: {pattern}")
         return output_dir
+    else:
+        print(f"   ⚠️  Exact match not found")
     
     # Check for any existing data files for this problem (with different parameters)
     existing_pattern = os.path.join(output_dir, f"{problem}_*.npz")
+    print(f"   Searching with pattern: '{existing_pattern}'")
     all_existing_files = glob.glob(existing_pattern)
+    print(f"   Found {len(all_existing_files)} total files: {all_existing_files}")
+    
     existing_files = filter_valid_precomputed_files(all_existing_files)
+    print(f"   After filtering: {len(existing_files)} valid files: {existing_files}")
     
     if existing_files:
-        print(f"Found {len(existing_files)} valid data files for {problem}: {existing_files}")
+        print(f"   ✓ Found {len(existing_files)} valid data files for {problem}")
         if len(all_existing_files) > len(existing_files):
             temp_files = [f for f in all_existing_files if f not in existing_files]
-            print(f"Ignored {len(temp_files)} temporary/incomplete files: {temp_files}")
-        print(f"Using existing valid data instead of generating new data")
+            print(f"   🗑️  Ignored {len(temp_files)} temporary/incomplete files: {temp_files}")
+        print(f"   💡 Using existing valid data instead of generating new data")
         return output_dir
     elif all_existing_files:
         temp_files = [f for f in all_existing_files if f not in existing_files]
-        print(f"Found {len(temp_files)} temporary/incomplete files for {problem}: {temp_files}")
-        print(f"No valid precomputed data found - all found files are temporary/incomplete")
-        print(f"Proceeding to generate new data...")
+        print(f"   ⚠️  Found {len(temp_files)} temporary/incomplete files for {problem}: {temp_files}")
+        print(f"   ✗ No valid precomputed data found - all found files are temporary/incomplete")
+        print(f"   📁 Files are considered temporary if they contain '.tmp' in filename")
+        print(f"   💡 To fix: Remove '.tmp' from complete files or regenerate clean data")
+        print(f"   🔄 Proceeding to generate new data...")
+    else:
+        print(f"   ✗ No files found matching pattern '{existing_pattern}'")
+        print(f"   🔄 Proceeding to generate new data...")
+    print()
     
     # Generate new data
     print(f"Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
@@ -357,22 +396,44 @@ def main_worker(rank, world_size, args):
         # Single rank case or non-precomputed data - no barrier needed
         train_dataset, val_dataset, input_dim = create_train_val_datasets(args, rank, world_size, device)
 
+    print("🔧 DATALOADER CONFIGURATION DIAGNOSTIC:")
+    print(f"   Creating DataLoaders with num_workers={args.dataloader_workers}")
+    print(f"   Current multiprocessing start method: {mp.get_start_method()}")
+    print(f"   CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        print(f"   CUDA device count: {torch.cuda.device_count()}")
+        print(f"   Current device: {device}")
+        print(f"   CUDA initialized: {torch.cuda.is_initialized()}")
+    
+    if args.dataloader_workers > 0:
+        print(f"   💡 Using {args.dataloader_workers} worker processes")
+        print(f"      If you get 'Cannot re-initialize CUDA in forked subprocess' error,")
+        print(f"      try --dataloader_workers=0 to disable multiprocessing")
+    else:
+        print(f"   🔧 Using 0 workers (main process only) - avoids multiprocessing issues")
+    
+    # Configure persistent workers only if using workers
+    use_persistent = args.dataloader_workers > 0
+    if not use_persistent:
+        print(f"   🔧 Disabling persistent_workers (not compatible with num_workers=0)")
+    print()
+
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
-        num_workers=1,
+        num_workers=args.dataloader_workers,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=4,
+        persistent_workers=use_persistent,
+        prefetch_factor=4 if args.dataloader_workers > 0 else None,
     )
     
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=args.batch_size,
-        num_workers=1,
+        num_workers=args.dataloader_workers,
         pin_memory=True,
-        persistent_workers=True,
-        prefetch_factor=4,
+        persistent_workers=use_persistent,
+        prefetch_factor=4 if args.dataloader_workers > 0 else None,
     )
 
     # Get theta and feature dims from a batch
@@ -443,6 +504,8 @@ if __name__ == "__main__":
                        help="Directory containing precomputed data files")
     parser.add_argument("--single_gpu", action="store_true",
                        help="Force single-GPU mode even if multiple GPUs are available")
+    parser.add_argument("--dataloader_workers", type=int, default=1,
+                       help="Number of DataLoader worker processes (use 0 to avoid multiprocessing issues)")
     args = parser.parse_args()
 
     world_size = torch.cuda.device_count()
@@ -450,15 +513,47 @@ if __name__ == "__main__":
 
     # Determine training mode
     if args.single_gpu or world_size <= 1:
-        print(f"Running in single-GPU mode (single_gpu={args.single_gpu}, detected GPUs={world_size})")
+        print(f"🚀 EXECUTION MODE: Single-GPU")
+        print(f"   single_gpu flag: {args.single_gpu}")
+        print(f"   detected GPUs: {world_size}")
         if torch.cuda.is_available():
-            print(f"Using GPU: cuda:0")
+            print(f"   Using GPU: cuda:0")
         else:
-            print("No CUDA GPUs available, using CPU")
+            print("   No CUDA GPUs available, using CPU")
+        print()
         # Run directly without mp.spawn
-        main_worker(0, 1, args)
+        try:
+            main_worker(0, 1, args)
+        except RuntimeError as e:
+            if "Cannot re-initialize CUDA in forked subprocess" in str(e):
+                print("🚨 CUDA MULTIPROCESSING ERROR DETECTED!")
+                print("   This error occurs when CUDA is initialized before multiprocessing fork.")
+                print("   💡 SOLUTIONS:")
+                print("   1. Set multiprocessing start method to 'spawn' at script start:")
+                print("      import torch.multiprocessing as mp")
+                print("      mp.set_start_method('spawn', force=True)")
+                print("   2. Or reduce DataLoader workers: add --dataloader_workers=0")
+                print("   3. Or use CPU-only mode if testing")
+                print()
+            raise
     else:
-        print(f"Running in distributed multi-GPU mode with {world_size} GPUs")
-        mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+        print(f"🚀 EXECUTION MODE: Distributed Multi-GPU")
+        print(f"   Using {world_size} GPUs with mp.spawn")
+        print(f"   Current multiprocessing method: {mp.get_start_method()}")
+        if mp.get_start_method() != 'spawn':
+            print(f"   ⚠️  WARNING: Current method is not 'spawn' - may cause CUDA issues")
+        print()
+        try:
+            mp.spawn(main_worker, args=(world_size, args), nprocs=world_size, join=True)
+        except RuntimeError as e:
+            if "Cannot re-initialize CUDA in forked subprocess" in str(e):
+                print("🚨 CUDA MULTIPROCESSING ERROR IN DISTRIBUTED MODE!")
+                print("   This is likely due to CUDA being initialized before mp.spawn.")
+                print("   💡 SOLUTIONS:")
+                print("   1. Ensure multiprocessing start method is set to 'spawn' before any imports")
+                print("   2. Move CUDA operations inside main_worker function")
+                print("   3. Use --single_gpu flag to avoid distributed mode")
+                print()
+            raise
     if args.wandb and rank == 0:
         wandb.finish()
