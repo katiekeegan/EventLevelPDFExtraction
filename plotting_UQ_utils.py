@@ -3760,6 +3760,8 @@ def plot_combined_uncertainty_PDF_distribution(
             # Apply feature engineering based on problem type
             if problem not in ['mceg', 'mceg4dis']:
                 xs_tensor = advanced_feature_engineering(xs_tensor)
+            else:
+                xs_tensor = log_feature_engineering(xs_tensor)
             
             # Extract latent embedding using PointNet
             latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -5469,7 +5471,7 @@ def generate_parameter_error_histogram(
                 if problem == 'simplified_dis':
                     xs_engineered = advanced_feature_engineering(xs)
                 else:
-                    xs_tensor = log_feature_engineering(xs_tensor)
+                    xs_engineered = log_feature_engineering(xs)
                 if not isinstance(xs_engineered, torch.Tensor):
                     xs_engineered = torch.tensor(xs_engineered, device=device, dtype=torch.float32)
                 xs_engineered = xs_engineered.to(device)

@@ -273,23 +273,23 @@ class MixtureLaplaceWrapper(nn.Module):
         else:
             raise ValueError(f"Unknown laplace_mode: {self.laplace_mode}")
 
-class MLPHead(nn.Module):
-    def __init__(self, embedding_dim, out_dim):
-        super().__init__()
-        self.mlp = nn.Sequential(
-            nn.Linear(embedding_dim, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(128, out_dim)
-        )
-    def forward(self, x):
-        return self.mlp(x)
+# class MLPHead(nn.Module):
+#     def __init__(self, embedding_dim, out_dim):
+#         super().__init__()
+#         self.mlp = nn.Sequential(
+#             nn.Linear(embedding_dim, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, 128),
+#             nn.ReLU(),
+#             nn.Dropout(0.2),
+#             nn.Linear(128, out_dim)
+#         )
+#     def forward(self, x):
+#         return self.mlp(x)
 
 class TransformerHead(nn.Module):
     def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):

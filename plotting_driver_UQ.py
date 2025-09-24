@@ -109,7 +109,7 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
     Reloads model from checkpoint for the specified architecture.
     """
     if arch == "mlp":
-        checkpoint_path = os.path.join(experiment_dir, "mlp_head_final.pth")
+        checkpoint_path = os.path.join(experiment_dir, "final_params_model.pth")
         model = MLPHead(latent_dim, param_dim).to(device)
     elif arch == "transformer":
         checkpoint_path = os.path.join(experiment_dir, "final_params_model.pth")
@@ -319,7 +319,7 @@ Examples:
         if args.problem == 'realistic_dis':
             true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0], dtype=torch.float32)
         elif args.problem in ['mceg', 'mceg4dis']:
-            true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
+            true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
             true_params = torch.tensor([0.5, 1.2, 2.0, 0.5], dtype=torch.float32)
     
@@ -359,11 +359,11 @@ Examples:
 
     # Extract latents and parameters
     latents, thetas = extract_latents_from_data(pointnet_model, args, args.problem, device)
-    plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap', save_path=os.path.join(experiment_dir, "umap_single.png"))
+    # plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap', save_path=os.path.join(experiment_dir, "umap_single.png"))
     # plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap')
-    plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
-    plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
-    plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
+    # plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
+    # plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
+    # plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
     for arch in archs:
         print(f"\n=== Arch: {arch} ===")
         print(f"\n==== Plotting for architecture: {arch.upper()} ====")
