@@ -322,6 +322,34 @@ Examples:
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
             true_params = torch.tensor([0.5, 1.2, 2.0, 0.5], dtype=torch.float32)
+    
+    # Diagnostic: Check if true parameters are within training bounds
+    print(f"\n🔍 PARAMETER BOUNDS DIAGNOSTIC:")
+    print(f"   Problem type: {args.problem}")
+    print(f"   True parameters for plotting: {true_params.tolist()}")
+    
+    try:
+        from plotting_UQ_utils import get_parameter_bounds_for_problem
+        training_bounds = get_parameter_bounds_for_problem(args.problem)
+        print(f"   Training bounds (min, max): {training_bounds.tolist()}")
+        
+        # Check each parameter
+        out_of_bounds = []
+        for i, (param_val, bounds) in enumerate(zip(true_params, training_bounds)):
+            min_bound, max_bound = bounds[0].item(), bounds[1].item()
+            if param_val < min_bound or param_val > max_bound:
+                out_of_bounds.append((i, param_val.item(), min_bound, max_bound))
+        
+        if out_of_bounds:
+            print(f"   ⚠️  WARNING: {len(out_of_bounds)} parameter(s) are outside training bounds!")
+            for i, val, min_b, max_b in out_of_bounds:
+                print(f"      Parameter {i}: {val:.3f} (bounds: [{min_b:.1f}, {max_b:.1f}])")
+            print(f"   💡 This may cause misleading plots since the model was never trained on such values.")
+        else:
+            print(f"   ✅ All parameters are within training bounds.")
+    except Exception as e:
+        print(f"   ❌ Could not verify parameter bounds: {e}")
+    print()
             
 
     # Load PointNet once (shared across all heads)

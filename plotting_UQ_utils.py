@@ -751,7 +751,6 @@ def plot_params_distribution_single(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
-        # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -1007,7 +1006,6 @@ def plot_PDF_distribution_single(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
-        # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -1655,7 +1653,6 @@ def plot_event_histogram_simplified_DIS(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
-        # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -4480,6 +4477,8 @@ def plot_uncertainty_vs_events(
                 # Apply feature engineering based on problem type
                 if problem not in ['mceg', 'mceg4dis']:
                     xs_tensor = advanced_feature_engineering(xs_tensor)
+                else:
+                    xs_tensor = log_feature_engineering(xs_tensor)
                 
                 # Extract latent embedding
                 latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -5467,7 +5466,10 @@ def generate_parameter_error_histogram(
             
             # Apply feature engineering
             try:
-                xs_engineered = advanced_feature_engineering(xs)
+                if problem == 'simplified_dis':
+                    xs_engineered = advanced_feature_engineering(xs)
+                else:
+                    xs_tensor = log_feature_engineering(xs_tensor)
                 if not isinstance(xs_engineered, torch.Tensor):
                     xs_engineered = torch.tensor(xs_engineered, device=device, dtype=torch.float32)
                 xs_engineered = xs_engineered.to(device)
