@@ -2320,10 +2320,16 @@ def plot_PDF_distribution_single_same_plot_mceg(
     max_Q2_for_plot=100.0,
 ):
     """
-    Reproduce the 'true vs reconstructed' plot style:
-      - 2D histogram in (log x, log Q²) for reconstructed with error bars (Poisson)
-      - 'true' curve from simulator.q at bin centers
-      - OPTIONAL model overlay (MAP dashed) ONLY when laplace_model is provided
+    Enhanced mceg4dis-compatible PDF plotting function with 2D histogram binning in log(x), log(Q2) space.
+    
+    This function implements the mceg4dis-compatible PDF plotting approach:
+    - Uses numpy.histogram2d to bin events in log(x), log(Q2)
+    - For each bin, computes x, Q2, dx, dQ2 using bin edges  
+    - For each bin: true[i,j] = idis.get_diff_xsec(x,Q2,...), reco[i,j] = hist[0][i,j]/dx/dQ2, stat[i,j] = sqrt(hist[0][i,j])/dx/dQ2
+    - Normalizes reco/stat by total_xsec/np.sum(hist[0])
+    - Plots slices in Q2, with log-scaled axes and error bars
+    
+    Supports both 'mceg' and 'mceg4dis' problem types with identical functionality.
     """
     # -------- setup ----------
     model.eval()
