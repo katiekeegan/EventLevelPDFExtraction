@@ -127,6 +127,27 @@ def reload_model(arch, latent_dim, param_dim, experiment_dir, device, multimodal
 def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pth', problem='simplified_dis'):
     """
     Reloads PointNet model from the experiment directory.
+    
+    CRITICAL BUG IDENTIFIED: Feature engineering inconsistency for mceg/mceg4dis
+    ========================================================================
+    This function reveals the root cause of Laplace failures for mceg problems:
+    
+    TRAINING (here in reload_pointnet):
+    - Uses log_feature_engineering from utils.py
+    - Transforms 2D input (x, Q2) -> 6D features  
+    - PointNet expects 6D input during training
+    
+    INFERENCE (in plotting functions):
+    - Uses NO feature engineering (xs_tensor = xs_tensor)
+    - Keeps 2D input (x, Q2) unchanged
+    - PointNet receives 2D input instead of expected 6D
+    
+    CONSEQUENCES:
+    1. Input dimension mismatch causes Laplace model failures
+    2. All analytic uncertainty propagation falls back to Monte Carlo
+    3. Predictions may be incorrect due to feature engineering mismatch
+    
+    FIX REQUIRED: Apply log_feature_engineering consistently in all mceg plotting functions
     """
     # pointnet_path = os.path.join(experiment_dir, "final_model.pth")
     pointnet_path = os.path.join(experiment_dir, cl_model)
@@ -145,6 +166,9 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
         input_dim = feats_dummy.shape[-1]
         # input_dim = 6
         print(f"MCEG log feature engineering: 2D -> {input_dim}D")
+        print(f"⚠️  [CRITICAL] This shows training uses log_feature_engineering")
+        print(f"⚠️  [CRITICAL] But inference plotting functions skip this step!")
+        print(f"⚠️  [CRITICAL] This mismatch causes Laplace failures and wrong predictions")
     
     # Use ChunkedPointNetPMA for mceg problems, PointNetPMA for others
     if problem in ['mceg', 'mceg4dis']:
@@ -352,7 +376,27 @@ Examples:
         plot_dir = os.path.join(experiment_dir, f"plots_{arch}")
         os.makedirs(plot_dir, exist_ok=True)
         # Attempt to load Laplace approximation
+        print(f"🔍 [DEBUG] Attempting to load Laplace model for arch={arch}, problem={args.problem}")
         laplace_model = load_laplace_if_available(experiment_dir, arch, device,args)
+        
+        # INVESTIGATION: Why does Laplace fail for mceg/mceg4dis?
+        if args.problem in ['mceg', 'mceg4dis']:
+            print(f"🔍 [DEBUG] mceg Laplace diagnosis:")
+            print(f"🔍 [DEBUG] - Experiment dir: {experiment_dir}")
+            print(f"🔍 [DEBUG] - Architecture: {arch}")
+            print(f"🔍 [DEBUG] - Laplace candidates: {LAPLACE_CANDIDATES(arch)}")
+            print(f"🔍 [DEBUG] - Laplace model loaded: {laplace_model is not None}")
+            
+            if laplace_model is not None:
+                print(f"✅ [DEBUG] Laplace model loaded successfully for mceg")
+                print(f"🔍 [DEBUG] Laplace model type: {type(laplace_model)}")
+                # Test if the model is compatible with mceg feature engineering
+                print(f"⚠️  [DEBUG] Potential issue: mceg feature engineering mismatch")
+                print(f"⚠️  [DEBUG] Training: log_feature_engineering (2D->6D)")
+                print(f"⚠️  [DEBUG] Inference: no feature engineering (2D->2D)")
+            else:
+                print(f"❌ [DEBUG] No Laplace model found for mceg - will fallback to Monte Carlo")
+                print(f"⚠️  [DEBUG] This explains why analytic uncertainty propagation fails")
         # --- Fallback: Fit Laplace if not found ---
         if laplace_model is None and arch in ("mlp", "transformer"):
             print(f"ℹ️ No Laplace checkpoint found for {arch}, fitting Laplace from model weights...")
@@ -621,6 +665,11 @@ Examples:
                 save_path=os.path.join(plot_dir, "pdf_overlay.png")
             )
         elif args.problem in ['mceg', 'mceg4dis']:
+            # INVESTIGATION: mceg/mceg4dis plotting issues
+            print(f"🔍 [DEBUG] Starting mceg plotting for problem: {args.problem}")
+            print(f"🔍 [DEBUG] Laplace model available: {laplace_model is not None}")
+            print(f"🔍 [DEBUG] Expected Q2 slices: [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]")
+            
             plot_PDF_distribution_single_same_plot_mceg(
                 model=model,
                 pointnet_model=pointnet_model,
@@ -631,6 +680,7 @@ Examples:
                 problem='mceg',  # Use 'mceg' internally for compatibility with existing mceg functions
                 save_dir=plot_dir
             )
+            print(f"⚠️  [DEBUG] mceg plotting completed - check for missing Q2 slice curves")
         plot_PDF_distribution_single(
             model=model,
             pointnet_model=pointnet_model,

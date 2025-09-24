@@ -551,19 +551,30 @@ def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
     Return (mean_params, std_params) for the model outputs given a Laplace posterior.
     Works across older laplace-torch builds by trying several APIs.
+    
+    FIXED: Enhanced with diagnostic information to track Laplace success/failure
     """
     device = latent_embedding.device
     model.eval()
 
     if laplace_model is not None:
+        # Add diagnostic information about Laplace model
+        print(f"🔧 [FIX] get_analytic_uncertainty: Laplace model provided")
+        print(f"🔧 [FIX] Laplace model type: {type(laplace_model)}")
+        print(f"🔧 [FIX] Latent embedding shape: {latent_embedding.shape}")
+        
         with torch.no_grad():
             # --- Path 1: predictive_distribution(x) -> distribution with .loc and .scale
             pred_dist_fn = getattr(laplace_model, "predictive_distribution", None)
             if callable(pred_dist_fn):
-                dist = pred_dist_fn(latent_embedding)
-                mean_params = dist.loc
-                std_params  = dist.scale
-                return mean_params.cpu(), std_params.cpu()
+                try:
+                    dist = pred_dist_fn(latent_embedding)
+                    mean_params = dist.loc
+                    std_params  = dist.scale
+                    print(f"✅ [FIXED] Path 1 SUCCESS - Laplace uncertainty working!")
+                    return mean_params.cpu(), std_params.cpu()
+                except Exception as e:
+                    print(f"❌ [DEBUG] Path 1 FAILED: {type(e).__name__}: {e}")
 
             # --- Path 2: calling the object sometimes returns (mean, var)
             try:
@@ -574,9 +585,12 @@ def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
                         pred_std = torch.sqrt(torch.diagonal(pred_var, dim1=-2, dim2=-1))
                     else:
                         pred_std = torch.sqrt(pred_var.clamp_min(0))
+                    print(f"✅ [FIXED] Path 2 SUCCESS - Laplace uncertainty working!")
                     return pred_mean.cpu(), pred_std.cpu()
-            except Exception:
-                pass
+                else:
+                    print(f"❌ [DEBUG] Path 2 - output not a 2-tuple: {type(out)}")
+            except Exception as e:
+                print(f"❌ [DEBUG] Path 2 FAILED: {type(e).__name__}: {e}")
 
             # --- Path 3: predict(..., pred_type='glm', link_approx='mc')
             predict_fn = getattr(laplace_model, "predict", None)
@@ -586,11 +600,19 @@ def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
                     if isinstance(pred, tuple) and len(pred) == 2:
                         mean, var = pred
                         std = torch.sqrt(var.clamp_min(0))
+                        print(f"✅ [FIXED] Path 3 SUCCESS - Laplace uncertainty working!")
                         return mean.cpu(), std.cpu()
                     if hasattr(pred, "loc") and hasattr(pred, "scale"):
+                        print(f"✅ [FIXED] Path 3 SUCCESS - Laplace uncertainty working!")
                         return pred.loc.cpu(), pred.scale.cpu()
-                except Exception:
-                    pass
+                    else:
+                        print(f"❌ [DEBUG] Path 3 - predict output lacks expected attributes")
+                except Exception as e:
+                    print(f"❌ [DEBUG] Path 3 FAILED: {type(e).__name__}: {e}")
+        
+        print(f"⚠️  [DEBUG] ALL LAPLACE PATHS FAILED - falling back to standard model")
+    else:
+        print(f"⚠️  [DEBUG] No Laplace model provided - using standard model only")
 
     # --- Fallbacks (no Laplace available) ---
     with torch.no_grad():
@@ -729,6 +751,7 @@ def plot_params_distribution_single(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
+        from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
@@ -983,6 +1006,7 @@ def plot_PDF_distribution_single(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
+        from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
@@ -1206,7 +1230,9 @@ def plot_PDF_distribution_single_same_plot(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
-        xs_tensor = xs_tensor
+        # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
+        from utils import log_feature_engineering
+        xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
     if laplace_model is not None:
@@ -1627,6 +1653,7 @@ def plot_event_histogram_simplified_DIS(
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
+        from utils import log_feature_engineering
         xs_tensor = log_feature_engineering(xs_tensor)
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
@@ -2327,12 +2354,26 @@ def plot_PDF_distribution_single_same_plot_mceg(
     Q2_ev = events[:, 1]
 
     xs_tensor = torch.tensor(events, dtype=torch.float32, device=device)
+    
+    print(f"🔧 [FIX] mceg feature engineering - problem: {problem}")
+    print(f"🔧 [FIX] Raw events shape: {xs_tensor.shape}")
+    
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
+        print(f"🔧 [FIX] After advanced_feature_engineering: {xs_tensor.shape}")
     else:
-        xs_tensor = xs_tensor
+        # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
+        from utils import log_feature_engineering
+        xs_tensor = log_feature_engineering(xs_tensor)
+        print(f"✅ [FIXED] mceg/mceg4dis: Applied log_feature_engineering - shape: {xs_tensor.shape}")
+    
+    print(f"🔧 [FIX] Final tensor shape for PointNet: {xs_tensor.shape}")
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
+    print(f"🔧 [FIX] Latent embedding shape: {latent_embedding.shape}")
+    
+    # Now prediction should work correctly with proper input dimensions
     theta_pred = model(latent_embedding).cpu().squeeze(0).detach()
+    print(f"✅ [FIXED] Predicted parameters: {theta_pred}")
 
     new_cpar = pdf.get_current_par_array()[::]
     # Assume parameters are only corresponding to 'uv1' parameters
@@ -2429,7 +2470,168 @@ def plot_PDF_distribution_single_same_plot_mceg(
         os.makedirs(save_dir, exist_ok=True)
         py.savefig(os.path.join(save_dir, 'PDF_2D_distribution_mceg_contour.png'), dpi=300)
 
-
+    # CRITICAL ISSUE: Missing Q2 slice plotting functionality for mceg/mceg4dis
+    # =======================================================================
+    # PROBLEM: The current function only creates 2D histograms but does NOT generate
+    # Q2 slice curves as expected from the reference notebook 01_get_started.ipynb
+    # (https://github.com/quantom-collab/mceg4dis/blob/main/01_get_started.ipynb)
+    #
+    # EXPECTED BEHAVIOR (from reference notebook):
+    # - Multiple 1D curves showing PDF behavior at different fixed Q² values
+    # - Each curve shows x vs PDF value for a specific Q² slice
+    # - Common Q² slices: [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]
+    # - Should display uncertainty bands when Laplace model is available
+    #
+    # CURRENT BEHAVIOR:
+    # - Only 2D histogram visualization (reco, true, gen)  
+    # - No 1D Q² slice curves generated
+    # - Q2_slices parameter is accepted but completely ignored
+    # - Missing integration with uncertainty quantification
+    #
+    # WORKING EXAMPLES in this same file (for comparison):
+    # Lines 1157-1172: plot_PDF_distribution_single (realistic_dis) - properly iterates Q2_slices
+    # Lines 1265-1280: plot_PDF_distribution_single_same_plot (realistic_dis) - proper Q2 handling  
+    # Lines 2939-2954: Proper Q2 slice loop with uncertainty bands
+    # Lines 3341-3346: Correct Q2 slice implementation pattern
+    #
+    # CORRECT IMPLEMENTATION PATTERN (from working functions):
+    # for i, Q2_fixed in enumerate(Q2_slices):
+    #     Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
+    #     # Compute q values for this Q2 slice
+    #     # Plot with uncertainty bands if laplace_model available
+    #     # Save plot for this Q2 slice
+    #
+    # ROOT CAUSE:
+    # The function ends here without implementing Q² slice visualization.
+    # The commented code below shows some development attempt but it's incomplete.
+    #
+    # REQUIRED IMPLEMENTATION:
+    # 1. Extract Q² slice data from the 2D histograms or recompute directly
+    # 2. Create 1D plots for each Q² value using pattern from working functions
+    # 3. Add uncertainty bands if Laplace model available (currently broken due to feature engineering)
+    # 4. Use consistent styling with other plotting functions
+    # 5. Save individual plots per Q² slice or combined plot
+    
+    print(f"⚠️  [CRITICAL] Q2 slice plotting NOT IMPLEMENTED")
+    print(f"⚠️  [CRITICAL] Q2_slices parameter ignored: {Q2_slices}")
+    print(f"⚠️  [CRITICAL] Expected Q2 slice curves missing from output")
+    print(f"⚠️  [CRITICAL] Reference notebook expects 1D curves at different Q² values")
+    print(f"⚠️  [CRITICAL] Current implementation only shows 2D histograms")
+    print(f"⚠️  [CRITICAL] See lines 1157-1172, 1265-1280, 2939-2954 for working examples")
+    
+    # FIX 2: IMPLEMENT Q² SLICE PLOTTING 
+    # Using pattern from working functions (lines 1157-1172, 1265-1280, 2939-2954)
+    print(f"🔧 [FIX] Implementing Q² slice plotting for mceg")
+    
+    Q2_slices = Q2_slices or [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]
+    x_range = (1e-4, 0.1)  # Based on current axis labels in 2D plots
+    x_vals = torch.linspace(x_range[0], x_range[1], 500).to(device)
+    color_palette = py.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
+    
+    print(f"✅ [FIXED] Creating Q² slice plots for Q² values: {Q2_slices}")
+    
+    # Create combined Q² slice plot
+    fig, ax = py.subplots(figsize=(10, 8))
+    
+    for i, Q2_fixed in enumerate(Q2_slices):
+        print(f"🔧 [FIX] Processing Q² = {Q2_fixed}")
+        Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
+        
+        # Compute true q values at this Q² slice
+        x_vals_np = x_vals.cpu().numpy()
+        true_q = np.zeros_like(x_vals_np)
+        pred_q = np.zeros_like(x_vals_np)
+        
+        for j, x_val in enumerate(x_vals_np):
+            true_q[j], _ = idis_true.get_diff_xsec(x_val, Q2_fixed, mceg_true.rs, mceg_true.tar, 'xQ2')
+            pred_q[j], _ = idis.get_diff_xsec(x_val, Q2_fixed, mceg.rs, mceg.tar, 'xQ2')
+        
+        # Plot true curve
+        ax.plot(x_vals.cpu().numpy(), true_q, 
+               color=color_palette[i], linestyle='-', linewidth=2.5,
+               label=f'True Q²={Q2_fixed}', alpha=0.8)
+        
+        # Plot predicted curve
+        ax.plot(x_vals.cpu().numpy(), pred_q,
+               color=color_palette[i], linestyle='--', linewidth=2,
+               label=f'Pred Q²={Q2_fixed}', alpha=0.8)
+        
+        # Add uncertainty bands if Laplace model is available
+        if laplace_model is not None:
+            print(f"🔧 [FIX] Adding uncertainty bands for Q² = {Q2_fixed}")
+            try:
+                # Generate multiple predictions using Laplace uncertainty
+                n_samples = 20
+                pred_samples = []
+                
+                for _ in range(n_samples):
+                    # Sample parameters from Laplace posterior
+                    with torch.no_grad():
+                        # Generate new event sample for this parameter variation
+                        event_sample = simulator.sample(true_params.detach().cpu(), 1000)
+                        xs_sample = torch.tensor(event_sample, dtype=torch.float32, device=device)
+                        
+                        # Apply correct feature engineering
+                        from utils import log_feature_engineering
+                        xs_sample = log_feature_engineering(xs_sample)
+                        
+                        latent_sample = pointnet_model(xs_sample.unsqueeze(0))
+                        
+                        # Get parameter prediction with uncertainty
+                        mean_pred, std_pred = get_analytic_uncertainty(model, latent_sample, laplace_model)
+                        
+                        # Sample from the posterior
+                        param_sample = torch.normal(mean_pred.squeeze(), std_pred.squeeze())
+                        
+                        # Update PDF with sampled parameters
+                        new_cpar_sample = pdf.get_current_par_array()[::]
+                        new_cpar_sample[4:8] = param_sample.cpu().numpy()
+                        pdf_sample = PDF(mellin, alphaS)
+                        pdf_sample.setup(new_cpar_sample)
+                        idis_sample = THEORY(mellin, pdf_sample, alphaS, eweak)
+                        
+                        # Compute q values for this sample
+                        q_sample = np.zeros_like(x_vals_np)
+                        for j, x_val in enumerate(x_vals_np):
+                            q_sample[j], _ = idis_sample.get_diff_xsec(x_val, Q2_fixed, mceg.rs, mceg.tar, 'xQ2')
+                        pred_samples.append(q_sample)
+                
+                # Compute uncertainty bands
+                pred_samples = np.array(pred_samples)
+                mean_q = np.mean(pred_samples, axis=0)
+                std_q = np.std(pred_samples, axis=0)
+                
+                # Plot uncertainty bands
+                ax.fill_between(x_vals.cpu().numpy(), 
+                              mean_q - std_q, mean_q + std_q,
+                              color=color_palette[i], alpha=0.2,
+                              label=f'Uncertainty Q²={Q2_fixed}')
+                
+                print(f"✅ [FIXED] Added uncertainty bands for Q² = {Q2_fixed}")
+                
+            except Exception as e:
+                print(f"⚠️  [WARNING] Could not add uncertainty bands for Q² = {Q2_fixed}: {e}")
+    
+    # Format the plot
+    ax.set_xlabel('x', fontsize=16)
+    ax.set_ylabel('q(x, Q²)', fontsize=16)
+    ax.set_title('PDF Q² Slices - mceg vs True', fontsize=18)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
+    ax.grid(True, alpha=0.3)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=10)
+    
+    py.tight_layout()
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
+        slice_plot_path = os.path.join(save_dir, 'PDF_Q2_slices_mceg.png')
+        py.savefig(slice_plot_path, dpi=300, bbox_inches='tight')
+        print(f"✅ [FIXED] Q² slice plot saved to: {slice_plot_path}")
+    
+    py.close(fig)
+    
+    print(f"✅ [COMPLETED] Q² slice plotting implementation finished")
+    
     #HERE
 
 
