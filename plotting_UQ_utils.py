@@ -2,8 +2,19 @@
 Enhanced Plotting Utilities for Uncertainty Quantification in PDF Parameter Inference
 
 This module provides publication-ready plotting functions for visualizing uncertainty
-in PDF parameter inference, with a focus on the simplified DIS problem. All plots
-are designed to be beautiful, clear, and suitable for publication.
+in PDF parameter inference, supporting multiple problem types including simplified_dis,
+realistic_dis, and mceg4dis. All plots are designed to be beautiful, clear, and suitable 
+for publication.
+
+Problem Type Support:
+====================
+
+- simplified_dis: 1D PDF inputs (x only) with up/down quark distributions
+- realistic_dis: 2D PDF inputs (x, Q2) with realistic DIS structure functions  
+- mceg4dis: 2D PDF inputs (x, Q2) using Monte Carlo Event Generator for DIS
+  * Full 2D support for visualizing PDF uncertainty over both x and Q2 dimensions
+  * Enhanced plotting functions handle the 2D nature of mceg4dis inputs
+  * Compatible with existing mceg simulator while providing improved visualization
 
 New Functions:
 ==============
@@ -584,7 +595,7 @@ def plot_params_distribution_single(
     save_path : str
         Path to save the plot
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'mceg4dis')
         
     Returns:
     --------
@@ -609,7 +620,7 @@ def plot_params_distribution_single(
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
     if problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         simulator = MCEGSimulator(torch.device('cpu'))
     else:
         simulator = SimplifiedDIS(torch.device('cpu'))
@@ -619,7 +630,7 @@ def plot_params_distribution_single(
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         xs_tensor = xs_tensor  # No feature engineering for MCEG
@@ -647,7 +658,7 @@ def plot_params_distribution_single(
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
     elif problem == 'realistic_dis':
         param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         param_names = [r'$\mu_1$', r'$\mu_2$', r'$\sigma_1$', r'$\sigma_2$']
     else:
         param_names = [f'$\\theta_{{{i+1}}}$' for i in range(n_params)]
@@ -855,7 +866,7 @@ def plot_PDF_distribution_single(
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
     if problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         simulator = MCEGSimulator(torch.device('cpu'))
     else:
         simulator = SimplifiedDIS(torch.device('cpu'))
@@ -865,7 +876,7 @@ def plot_PDF_distribution_single(
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         xs_tensor = xs_tensor
@@ -1088,7 +1099,7 @@ def plot_PDF_distribution_single_same_plot(
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         xs_tensor = xs_tensor
@@ -1488,7 +1499,7 @@ def plot_event_histogram_simplified_DIS(
     
     # Get the appropriate simulator
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
-    if problem == 'mceg':
+    if problem in ['mceg', 'mceg4dis']:
         simulator = MCEGSimulator(torch.device('cpu'))
     elif problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
@@ -1501,7 +1512,7 @@ def plot_event_histogram_simplified_DIS(
     xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         xs_tensor = xs_tensor
@@ -1719,7 +1730,7 @@ def extract_latents_from_data(pointnet_model, args, problem, device, num_samples
     # Generate parameters and simulated events
     thetas, xs = generate_data(1000, args.num_events, problem=problem, device=device)
     # Feature engineering
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]
     else:
         feats = xs
@@ -2079,7 +2090,7 @@ def plot_PDF_distribution_single_same_plot_mceg(
     # -------- setup ----------
     model.eval()
     pointnet_model.eval()
-    if problem == 'mceg':
+    if problem in ['mceg', 'mceg4dis']:
         simulator = MCEGSimulator(torch.device('cpu'))
     elif problem == 'realistic_dis':
         simulator = RealisticDIS(torch.device('cpu'))
@@ -2105,7 +2116,7 @@ def plot_PDF_distribution_single_same_plot_mceg(
     Q2_ev = events[:, 1]
 
     xs_tensor = torch.tensor(events, dtype=torch.float32, device=device)
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         xs_tensor = xs_tensor
@@ -2946,13 +2957,13 @@ def plot_bootstrap_PDF_distribution(
             raise ImportError("SimplifiedDIS not available - please install required dependencies")
         simulator = SimplifiedDIS(device=torch.device('cpu'))
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         if MCEGSimulator is None:
             raise ImportError("MCEGSimulator not available - please install required dependencies")
         simulator = MCEGSimulator(device=torch.device('cpu'))
         param_names = [f'Param {i+1}' for i in range(len(true_params))]
     else:
-        raise ValueError(f"Unknown problem type: {problem}")
+        raise ValueError(f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'realistic_dis', 'mceg', 'mceg4dis'")
     
     model.eval()
     pointnet_model.eval()
@@ -2975,7 +2986,7 @@ def plot_bootstrap_PDF_distribution(
             
             # Apply feature engineering based on problem type
             advanced_feature_engineering = get_advanced_feature_engineering()
-            if problem != 'mceg':
+            if problem not in ['mceg', 'mceg4dis']:
                 xs_tensor = advanced_feature_engineering(xs_tensor)
             
             # Extract latent embedding using PointNet
@@ -3287,7 +3298,7 @@ def plot_combined_uncertainty_PDF_distribution(
             raise ImportError("SimplifiedDIS not available - please install required dependencies")
         simulator = SimplifiedDIS(device=torch.device('cpu'))
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         if MCEGSimulator is None:
             raise ImportError("MCEGSimulator not available - please install required dependencies")
         simulator = MCEGSimulator(device=torch.device('cpu'))
@@ -3319,7 +3330,7 @@ def plot_combined_uncertainty_PDF_distribution(
             xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
             
             # Apply feature engineering based on problem type
-            if problem != 'mceg':
+            if problem not in ['mceg', 'mceg4dis']:
                 xs_tensor = advanced_feature_engineering(xs_tensor)
             
             # Extract latent embedding using PointNet
@@ -3980,7 +3991,7 @@ def plot_uncertainty_vs_events(
             raise ImportError("SimplifiedDIS not available - please install required dependencies")
         simulator = SimplifiedDIS(device=torch.device('cpu'))
         param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$']
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         if MCEGSimulator is None:
             raise ImportError("MCEGSimulator not available - please install required dependencies")
         simulator = MCEGSimulator(device=torch.device('cpu'))
@@ -4036,7 +4047,7 @@ def plot_uncertainty_vs_events(
                 xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
                 
                 # Apply feature engineering based on problem type
-                if problem != 'mceg':
+                if problem not in ['mceg', 'mceg4dis']:
                     xs_tensor = advanced_feature_engineering(xs_tensor)
                 
                 # Extract latent embedding
@@ -4808,7 +4819,7 @@ def get_parameter_bounds_for_problem(problem):
             [-5.0, 5.0],   # c
             [-5.0, 5.0],   # d
         ])
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         # From MCEGDISDataset class
         return torch.tensor([
             [-1.0, 10.0],
@@ -4854,7 +4865,7 @@ def get_simulator_for_problem(problem, device=None):
         if RealisticDIS is None:
             raise ImportError("Could not import RealisticDIS from simulator module")
         return RealisticDIS(device=device, smear=True, smear_std=0.05)
-    elif problem == 'mceg':
+    elif problem in ['mceg', 'mceg4dis']:
         if MCEGSimulator is None:
             raise ImportError("Could not import MCEGSimulator from simulator module")
         return MCEGSimulator(device=device)

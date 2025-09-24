@@ -11,12 +11,23 @@ Key Features:
 - Falls back to Monte Carlo for backward compatibility when Laplace unavailable
 - Faster and more accurate uncertainty quantification
 
+Problem Types Supported:
+- simplified_dis: Simplified DIS problem with 1D PDF inputs (x only)
+- realistic_dis: Realistic DIS problem with 2D PDF inputs (x, Q2) 
+- mceg4dis: Monte Carlo Event Generator for DIS with 2D PDF inputs (x, Q2)
+  * mceg4dis handles 2-dimensional PDF inputs (x and Q2) unlike simplified_dis
+  * Uses the same underlying MCEG simulator as 'mceg' but with enhanced plotting support
+  * All plotting functions properly handle the 2D nature of mceg4dis inputs
+
 Uncertainty Methods:
 - When Laplace model available: Uses analytic delta method for uncertainty
 - When Laplace unavailable: Falls back to Monte Carlo sampling
 - For Gaussian heads: Uses intrinsic uncertainty from predicted variances
 
 Usage:
+    # Use mceg4dis with 2D PDF inputs:
+    python plotting_driver_UQ.py --arch gaussian --latent_dim 1024 --param_dim 4 --problem mceg4dis
+    
     # Use analytic uncertainty (recommended - requires Laplace models):
     python plotting_driver_UQ.py --arch gaussian --latent_dim 1024 --param_dim 4 --problem simplified_dis
     
@@ -122,7 +133,7 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     # Dummy input for input_dim inference
     xs_dummy = np.random.randn(100, 2)
     xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
-    if problem != 'mceg':
+    if problem not in ['mceg', 'mceg4dis']:
         input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
         input_dim = xs_dummy_tensor.shape[-1]
@@ -230,9 +241,9 @@ Examples:
     parser.add_argument('--latent_dim', type=int, default=128,
                         help='Latent dimension of the model')
     parser.add_argument('--param_dim', type=int, default=4,
-                        help='Parameter dimension (4 for simplified_dis, 6 for realistic_dis)')
+                        help='Parameter dimension (4 for simplified_dis/mceg4dis, 6 for realistic_dis)')
     parser.add_argument('--problem', type=str, default='simplified_dis',
-                        help='Problem type: simplified_dis or realistic_dis')
+                        help='Problem type: simplified_dis, realistic_dis, or mceg4dis (2D PDF inputs: x and Q2)')
     parser.add_argument('--nmodes', type=int, default=2,
                         help='Number of modes for multimodal architecture')
     parser.add_argument('--n_mc', type=int, default=100,
@@ -266,7 +277,7 @@ Examples:
     else:
         if args.problem == 'realistic_dis':
             true_params = torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0], dtype=torch.float32)
-        elif args.problem == 'mceg':
+        elif args.problem in ['mceg', 'mceg4dis']:
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000e+01], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
             true_params = torch.tensor([0.5, 1.2, 2.0, 0.5], dtype=torch.float32)
@@ -552,7 +563,7 @@ Examples:
             save_dir=plot_dir,
             mode='combined' 
         )
-        if args.problem != 'mceg':
+        if args.problem not in ['mceg', 'mceg4dis']:
             plot_PDF_distribution_single_same_plot(
                 model=model,
                 pointnet_model=pointnet_model,
@@ -563,7 +574,7 @@ Examples:
                 problem=args.problem,
                 save_path=os.path.join(plot_dir, "pdf_overlay.png")
             )
-        elif args.problem == 'mceg':
+        elif args.problem in ['mceg', 'mceg4dis']:
             plot_PDF_distribution_single_same_plot_mceg(
                 model=model,
                 pointnet_model=pointnet_model,
@@ -571,7 +582,7 @@ Examples:
                 device=device,
                 n_mc=args.n_mc,
                 laplace_model=laplace_model,
-                problem=args.problem,
+                problem='mceg',  # Use 'mceg' internally for compatibility with existing mceg functions
                 save_dir=plot_dir
             )
         plot_PDF_distribution_single(
