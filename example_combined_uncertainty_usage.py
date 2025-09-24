@@ -64,7 +64,7 @@ Examples:
     
     # Core arguments
     parser.add_argument('--problem', type=str, default='simplified_dis',
-                       choices=['simplified_dis', 'realistic_dis', 'mceg'],
+                       choices=['simplified_dis', 'realistic_dis', 'mceg', 'mceg4dis'],
                        help='Problem type for analysis')
     
     parser.add_argument('--arch', type=str, default='mlp',
@@ -118,7 +118,8 @@ def get_default_true_params(problem):
     defaults = {
         'simplified_dis': torch.tensor([2.0, 1.2, 2.0, 1.2]),  # [a_u, b_u, a_d, b_d]
         'realistic_dis': torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),  # [log A_0, delta, a, b, c, d]
-        'mceg': torch.tensor([1.0, 2.0, 3.0, 4.0])  # Example parameters
+        'mceg': torch.tensor([1.0, 2.0, 3.0, 4.0]),  # Example parameters
+        'mceg4dis': torch.tensor([1.0, 2.0, 3.0, 4.0])  # Same as mceg - 2D PDF inputs (x, Q2)
     }
     return defaults.get(problem, torch.tensor([1.0, 2.0, 3.0, 4.0]))
 
@@ -128,7 +129,8 @@ def get_default_param_dim(problem):
     dims = {
         'simplified_dis': 4,
         'realistic_dis': 6,
-        'mceg': 4
+        'mceg': 4,
+        'mceg4dis': 4  # Same as mceg - 4 parameters for 2D PDF inputs
     }
     return dims.get(problem, 4)
 
