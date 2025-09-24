@@ -1719,16 +1719,69 @@ def plot_latents(latents, params, method='umap', param_idx=0, title=None, save_p
         plt.savefig(save_path, bbox_inches='tight')
     plt.show()
 
+def load_validation_dataset_batch(args, problem, device, num_samples=1000):
+    """
+    Load a batch from the validation dataset instead of generating new data.
+    
+    Returns:
+        thetas: [n_samples, param_dim] - parameter vectors
+        xs: [n_samples, n_events, feature_dim] - event data
+    """
+    try:
+        # Try to load precomputed validation dataset
+        from precomputed_datasets import PrecomputedDataset
+        
+        # Default validation samples from parameter_prediction.py
+        val_samples = getattr(args, 'val_samples', 1000)
+        
+        # Construct validation data path
+        val_data_dir = getattr(args, 'precomputed_data_dir', 'precomputed_data')
+        
+        # Create validation dataset
+        val_dataset = PrecomputedDataset(
+            val_data_dir, 
+            problem, 
+            shuffle=False,
+            exact_ns=val_samples, 
+            exact_ne=args.num_events, 
+            exact_nr=1
+        )
+        
+        # Sample num_samples from validation dataset
+        actual_num_samples = min(num_samples, len(val_dataset))
+        thetas_list = []
+        xs_list = []
+        
+        for i in range(actual_num_samples):
+            theta, events = val_dataset[i]
+            thetas_list.append(theta)
+            # events is [n_repeat, num_events, feature_dim], take first repeat
+            xs_list.append(events[0])  # [num_events, feature_dim]
+        
+        thetas = torch.stack(thetas_list).to(device)  # [n_samples, param_dim]
+        xs = torch.stack(xs_list).to(device)  # [n_samples, num_events, feature_dim]
+        
+        print(f"Loaded validation batch: thetas.shape={thetas.shape}, xs.shape={xs.shape}")
+        return thetas, xs
+        
+    except Exception as e:
+        print(f"Warning: Could not load validation dataset ({e}), falling back to data generation")
+        # Fallback to original behavior
+        from datasets import generate_data
+        return generate_data(num_samples, args.num_events, problem=problem, device=device)
+
+
 def extract_latents_from_data(pointnet_model, args, problem, device, num_samples=1000):
     """
-    Generate data and extract latents using PointNet model.
+    Load data from validation dataset and extract latents using PointNet model.
 
     Returns:
         latents: [n_samples, latent_dim]
         thetas: [n_samples, param_dim]
     """
-    # Generate parameters and simulated events
-    thetas, xs = generate_data(1000, args.num_events, problem=problem, device=device)
+    # Load parameters and simulated events from validation dataset
+    thetas, xs = load_validation_dataset_batch(args, problem, device, num_samples)
+    
     # Feature engineering
     if problem not in ['mceg', 'mceg4dis']:
         feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]

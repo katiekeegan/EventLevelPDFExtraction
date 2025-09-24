@@ -130,14 +130,17 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     """
     # pointnet_path = os.path.join(experiment_dir, "final_model.pth")
     pointnet_path = os.path.join(experiment_dir, cl_model)
-    # Dummy input for input_dim inference
-    xs_dummy = np.random.randn(100, 2)
-    xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
+    # Dynamically infer input dimension based on problem type
     if problem not in ['mceg', 'mceg4dis']:
+        xs_dummy = np.random.randn(100, 2)
+        xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
         input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
-        input_dim = 6
-    if problem == 'mceg':
+        # For mceg/mceg4dis, the input dimension should be 2 (x, Q2)
+        input_dim = 2
+    
+    # Use ChunkedPointNetPMA for mceg problems, PointNetPMA for others
+    if problem in ['mceg', 'mceg4dis']:
         pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     else:
         pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
@@ -252,6 +255,10 @@ Examples:
     parser.add_argument('--n_mc', type=int, default=100,
                         help='Number of MC samples (used only when Laplace unavailable)')
     parser.add_argument("--num_samples", type=int, default=4000)
+    parser.add_argument('--val_samples', type=int, default=1000, 
+                        help='Number of validation samples to use (default from parameter_prediction.py)')
+    parser.add_argument('--precomputed_data_dir', type=str, default='precomputed_data',
+                        help='Directory containing precomputed validation datasets')
     parser.add_argument('--num_events', type=int, default=100000,
                         help='Number of events for simulation')
     parser.add_argument('--true_params', type=float, nargs='+', default=None,
