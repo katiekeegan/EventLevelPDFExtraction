@@ -194,6 +194,15 @@ def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
             [0.0, 5.0],
             [0.0, 5.0],
         ]).to(device)
+    
+    # Print parameter bounds for transparency
+    if rank == 0:  # Only print once in distributed training
+        print(f"\n📊 PARAMETER TRAINING BOUNDS:")
+        print(f"   Problem type: {args.problem}")
+        print(f"   Bounds (min, max): {theta_bounds.cpu().tolist()}")
+        print(f"   Ranges: {(theta_bounds[:, 1] - theta_bounds[:, 0]).cpu().tolist()}")
+        print()
+    
     theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
     theta_range = theta_max - theta_min
     def normalize_theta(theta):
@@ -226,6 +235,25 @@ def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
             x_sets = x_sets.to(device)
             theta = theta.to(device)
             theta = theta.repeat_interleave(n_repeat, dim=0)
+            
+            # Optional diagnostic: Check if training thetas are within bounds
+            if hasattr(args, 'check_training_bounds') and args.check_training_bounds and epoch == 0 and num_train_batches == 0:
+                # Only check on first batch of first epoch to avoid spam
+                print(f"🔍 Training data bounds check (first batch):")
+                theta_min_cpu = theta_min.cpu()
+                theta_max_cpu = theta_max.cpu()
+                theta_cpu = theta.cpu()
+                
+                for i in range(theta_bounds.shape[0]):
+                    param_vals = theta_cpu[:, i]
+                    min_val, max_val = param_vals.min().item(), param_vals.max().item()
+                    bound_min, bound_max = theta_min_cpu[i].item(), theta_max_cpu[i].item()
+                    
+                    if min_val < bound_min or max_val > bound_max:
+                        print(f"   ⚠️  Parameter {i}: range=[{min_val:.3f}, {max_val:.3f}], bounds=[{bound_min:.1f}, {bound_max:.1f}]")
+                    else:
+                        print(f"   ✅ Parameter {i}: range=[{min_val:.3f}, {max_val:.3f}], bounds=[{bound_min:.1f}, {bound_max:.1f}]")
+                print()
             
             opt.zero_grad(set_to_none=True)
 
@@ -576,8 +604,23 @@ def main_worker(rank, world_size, args):
             ])
     else:
         theta_bounds = None
-    theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
-    theta_range = theta_max - theta_min
+    
+    # Print parameter bounds for transparency
+    if rank == 0:  # Only print once in distributed training
+        print(f"\n📊 PARAMETER BOUNDS (main_worker):")
+        print(f"   Problem type: {args.problem}")
+        if theta_bounds is not None:
+            print(f"   Bounds (min, max): {theta_bounds.tolist()}")
+            print(f"   Ranges: {(theta_bounds[:, 1] - theta_bounds[:, 0]).tolist()}")
+        else:
+            print(f"   Bounds: Not specified for problem type '{args.problem}'")
+        print()
+    
+    if theta_bounds is not None:
+        theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
+        theta_range = theta_max - theta_min
+    else:
+        theta_min = theta_max = theta_range = None
     param_prediction_model = MLPHead(latent_dim, theta_dim, dropout=0.3)
     param_prediction_model = param_prediction_model.to(device)
     
