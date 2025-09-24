@@ -420,6 +420,102 @@ def get_datasets():
     except ImportError:
         return None
 
+# ===========================
+# Robust Precomputed Data Loading
+# ===========================
+
+def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2, output_dir="precomputed_data"):
+    """
+    Check if precomputed data exists for the given parameters, and generate it if not found.
+    
+    This function enforces exact matching: only files with the exact parameters 
+    (problem, num_samples, num_events, n_repeat) will be accepted. If not found,
+    it automatically generates the required data using generate_data_for_problem.
+    
+    Args:
+        problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
+        num_samples: Number of theta parameter samples
+        num_events: Number of events per simulation
+        n_repeat: Number of repeated simulations per theta
+        output_dir: Directory where precomputed data should be stored
+    
+    Returns:
+        str: Path to the data directory
+        
+    Raises:
+        RuntimeError: If precomputed data support is not available or generation fails
+    """
+    print("🔍 PRECOMPUTED DATA DIAGNOSTIC:")
+    print(f"   Looking for problem: '{problem}' with ns={num_samples}, ne={num_events}, nr={n_repeat}")
+    print(f"   Data directory: '{output_dir}'")
+    
+    # Check precomputed data availability
+    try:
+        from precomputed_datasets import PrecomputedDataset
+        PRECOMPUTED_AVAILABLE = True
+    except ImportError:
+        PRECOMPUTED_AVAILABLE = False
+        
+    if not PRECOMPUTED_AVAILABLE:
+        print("   ✗ Precomputed data support not available. Please check precomputed_datasets.py")
+        raise RuntimeError("Precomputed data support not available. Please check precomputed_datasets.py")
+    
+    # Check if data already exists
+    import os
+    expected_filename = f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz"
+    exact_file_path = os.path.join(output_dir, expected_filename)
+    print(f"   Required exact file: '{exact_file_path}'")
+    
+    if os.path.exists(exact_file_path):
+        print(f"   ✓ Found exact matching precomputed data: {exact_file_path}")
+        return output_dir
+    else:
+        print(f"📊 Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
+        print("🚀 Generating precomputed data automatically...")
+        
+        try:
+            # Import and run the data generation function
+            from generate_precomputed_data import generate_data_for_problem
+            import torch
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"📱 Generating data on device: {device}")
+            
+            filepath = generate_data_for_problem(
+                problem, num_samples, num_events, n_repeat, device, output_dir
+            )
+            print(f"✅ Successfully generated precomputed data: {filepath}")
+            return output_dir
+            
+        except Exception as e:
+            print(f"❌ Error generating precomputed data: {e}")
+            print("⚠️  Falling back to simulation-based plotting (less reproducible)")
+            raise RuntimeError(f"Failed to generate precomputed data: {e}")
+
+
+def get_robust_validation_data(args, problem, device, num_samples=1000):
+    """
+    Get validation data using robust precomputed data loading.
+    
+    This is a convenience wrapper around load_validation_dataset_batch that provides
+    a simpler interface for getting validation data with automatic precomputed data
+    generation if needed.
+    
+    Args:
+        args: Argument namespace with validation parameters (val_samples, num_events, etc.)
+        problem: Problem type string
+        device: PyTorch device
+        num_samples: Number of validation samples to load
+        
+    Returns:
+        tuple: (thetas, xs) where both are already on the specified device
+               xs is already feature engineered and ready for PointNet input
+               
+    Raises:
+        RuntimeError: If validation data cannot be loaded or generated
+    """
+    return load_validation_dataset_batch(args, problem, device, num_samples)
+
 """
 MAJOR UPDATE: Function-Level Uncertainty Quantification
 
@@ -815,6 +911,11 @@ def plot_PDF_distribution_single(
     parameter uncertainty. For each parameter sample θ drawn from the posterior, we evaluate 
     f(x|θ) at each x-point and then compute pointwise statistics (median, IQR) of the function values.
 
+    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation to generate event data
+    for latent extraction from true parameters. Results may vary between runs unless random 
+    seeds are fixed. For reproducible latent extraction, prefer using precomputed data via
+    extract_latents_from_data() where possible.
+
     Parameters:
     -----------
     model : torch.nn.Module
@@ -845,7 +946,7 @@ def plot_PDF_distribution_single(
         
     Method:
     -------
-    1. Extract latent representation from events generated with true parameters
+    1. Extract latent representation from events generated with true parameters (via simulation)
     2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
     3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
     4. Compute pointwise median and quantiles of f(x) across all parameter samples
@@ -861,6 +962,9 @@ def plot_PDF_distribution_single(
     """
     model.eval()
     pointnet_model.eval()
+    
+    print(f"📊 Generating PDF distribution plot for {problem}")
+    print(f"🎲 Simulating events from true parameters for latent extraction")
     
     # Get simulators with fallback
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
@@ -1462,6 +1566,11 @@ def plot_event_histogram_simplified_DIS(
     Plot event histograms using analytic Laplace uncertainty propagation.
     Provides both scatter plots and true 2D histograms for reconstructed events.
     
+    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation to generate 
+    event data for histogram plotting. Results may vary between runs unless random 
+    seeds are fixed. For reproducible latent extraction, prefer functions that use 
+    precomputed data from extract_latents_from_data().
+    
     Parameters:
     -----------
     model : torch.nn.Module
@@ -1477,7 +1586,7 @@ def plot_event_histogram_simplified_DIS(
     laplace_model : object, optional
         Fitted Laplace approximation object for analytic uncertainty
     num_events : int
-        Number of events to generate
+        Number of events to generate via simulation
     save_path : str
         Path to save the plot
     problem : str
@@ -1496,6 +1605,9 @@ def plot_event_histogram_simplified_DIS(
     """
     model.eval()
     pointnet_model.eval()
+    
+    print(f"📊 Generating event histogram via simulation for {problem}")
+    print(f"🎲 Simulating {num_events} events for histogram analysis")
     
     # Get the appropriate simulator
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
@@ -1721,23 +1833,49 @@ def plot_latents(latents, params, method='umap', param_idx=0, title=None, save_p
 
 def load_validation_dataset_batch(args, problem, device, num_samples=1000):
     """
-    Load a batch from the validation dataset instead of generating new data.
+    Load a batch from the validation dataset using precomputed data.
     
+    **REFACTORED**: Now uses robust precomputed data loading with automatic generation
+    if data is missing. Removes silent fallback to deprecated generate_data function.
+    
+    Args:
+        args: Argument namespace containing validation parameters
+        problem: Problem type string
+        device: PyTorch device 
+        num_samples: Number of samples to load
+        
     Returns:
         thetas: [n_samples, param_dim] - parameter vectors
-        xs: [n_samples, n_events, feature_dim] - event data
+        xs: [n_samples, n_events, feature_dim] - event data (already feature engineered)
+        
+    Raises:
+        RuntimeError: If precomputed data cannot be loaded or generated
+        
+    Note:
+        The returned xs data is already feature engineered as it was saved with 
+        engineering applied during precomputed data generation. Do NOT apply 
+        feature engineering again to avoid double processing.
     """
+    # Default validation samples from parameter_prediction.py
+    val_samples = getattr(args, 'val_samples', 1000)
+    
+    # Construct validation data path
+    val_data_dir = getattr(args, 'precomputed_data_dir', 'precomputed_data')
+    
+    # Ensure precomputed data exists, generate if needed
     try:
-        # Try to load precomputed validation dataset
+        print(f"📂 Loading validation batch for {problem} with {num_samples} samples...")
+        generate_precomputed_data_if_needed(
+            problem=problem, 
+            num_samples=val_samples, 
+            num_events=args.num_events, 
+            n_repeat=1,  # Validation data typically uses n_repeat=1
+            output_dir=val_data_dir
+        )
+        
+        # Load precomputed validation dataset
         from precomputed_datasets import PrecomputedDataset
         
-        # Default validation samples from parameter_prediction.py
-        val_samples = getattr(args, 'val_samples', 1000)
-        
-        # Construct validation data path
-        val_data_dir = getattr(args, 'precomputed_data_dir', 'precomputed_data')
-        
-        # Create validation dataset
         val_dataset = PrecomputedDataset(
             val_data_dir, 
             problem, 
@@ -1761,51 +1899,65 @@ def load_validation_dataset_batch(args, problem, device, num_samples=1000):
         thetas = torch.stack(thetas_list).to(device)  # [n_samples, param_dim]
         xs = torch.stack(xs_list).to(device)  # [n_samples, num_events, feature_dim]
         
-        print(f"Loaded validation batch: thetas.shape={thetas.shape}, xs.shape={xs.shape}")
+        print(f"✅ Loaded validation batch: thetas.shape={thetas.shape}, xs.shape={xs.shape}")  
+        print(f"ℹ️  Note: Data is already feature engineered - do not apply engineering again")
         return thetas, xs
         
     except Exception as e:
-        print(f"Warning: Could not load validation dataset ({e}), falling back to data generation")
-        # Fallback to original behavior
-        from datasets import generate_data
-        return generate_data(num_samples, args.num_events, problem=problem, device=device)
+        print(f"❌ Could not load precomputed validation dataset: {e}")
+        raise RuntimeError(f"Failed to load validation data for {problem}. "
+                         f"Precomputed data loading failed: {e}. "
+                         f"Please check precomputed_datasets.py and generate_precomputed_data.py")
 
 
 def extract_latents_from_data(pointnet_model, args, problem, device, num_samples=1000):
     """
     Load data from validation dataset and extract latents using PointNet model.
+    
+    **REFACTORED**: Uses robust precomputed data loading and ensures feature engineering
+    consistency. Precomputed data is already feature engineered, so this function 
+    now skips re-applying feature engineering to prevent double processing.
 
+    Args:
+        pointnet_model: Trained PointNet model for latent extraction
+        args: Argument namespace containing data parameters
+        problem: Problem type string
+        device: PyTorch device
+        num_samples: Number of samples to process
+        
     Returns:
-        latents: [n_samples, latent_dim]
-        thetas: [n_samples, param_dim]
+        latents: [n_samples, latent_dim] - extracted latent representations
+        thetas: [n_samples, param_dim] - corresponding parameter vectors
+        
+    Note:
+        This function may trigger automatic precomputed data generation if data 
+        is missing. Progress messages will be printed to inform about data operations.
     """
-    # Load parameters and simulated events from validation dataset
+    # Load parameters and simulated events from validation dataset (already feature engineered)
     thetas, xs = load_validation_dataset_batch(args, problem, device, num_samples)
     
-    # Feature engineering
-    if problem not in ['mceg', 'mceg4dis']:
-        feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]
-    else:
-        # For mceg/mceg4dis, apply log feature engineering as used in training
-        from utils import log_feature_engineering
-        # Reshape to apply feature engineering: [n_samples * n_events, feature_dim]
-        n_samples = xs.shape[0]
-        n_events = xs.shape[1]
-        xs_flat = xs.view(n_samples * n_events, -1)
-        feats = log_feature_engineering(xs_flat)  # [n_samples * n_events, n_features]
-    # Reshape for PointNet batching
+    # IMPORTANT: Precomputed data is already feature engineered during generation,
+    # so we DO NOT apply feature engineering again to prevent double processing.
+    # The data in xs is already in the correct format for PointNet input.
+    print(f"ℹ️  Using precomputed data - feature engineering already applied during generation")
+    
+    # xs shape: [n_samples, n_events, feature_dim] where feature_dim is already engineered
+    feats = xs  # Use data as-is since it's already feature engineered
+    
+    # Extract latents using PointNet
     n_samples = thetas.shape[0]
-    n_events = xs.shape[1]
-    feats = feats.view(n_samples, n_events, -1)  # [n_samples, n_events, n_features]
-
-    # Extract latents
     latents = []
+    
+    print(f"🧠 Extracting latents for {n_samples} samples...")
     with torch.no_grad():
         for i in range(n_samples):
-            with torch.no_grad():
-                latent = pointnet_model(feats[i].unsqueeze(0))  # [1, latent_dim]
+            # feats[i] has shape [n_events, feature_dim]
+            latent = pointnet_model(feats[i].unsqueeze(0))  # [1, latent_dim]
             latents.append(latent.cpu().numpy().squeeze(0))
+    
     latents = np.array(latents)
+    print(f"✅ Extracted latents: shape={latents.shape}")
+    
     return latents, thetas.cpu().numpy()
 
 def plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap', save_path=None, show=True):
@@ -2935,12 +3087,19 @@ def plot_bootstrap_PDF_distribution(
     """
     Bootstrap uncertainty visualization with function-level uncertainty focus.
     
-    **UPDATED**: This function now emphasizes uncertainty over the predicted PDF 
+    **REFACTORED & UPDATED**: This function emphasizes uncertainty over the predicted PDF 
     functions f(x) at each x-point, complementing the main combined uncertainty 
     analysis but focusing specifically on data uncertainty via bootstrap resampling.
     
+    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation for uncertainty 
+    estimation (by design for bootstrap analysis). Each bootstrap sample generates 
+    new simulated events to capture data uncertainty. Results may vary between runs 
+    unless random seeds are fixed. For reproducible latent extraction in other 
+    contexts, prefer functions that use precomputed data.
+    
     For each bootstrap sample:
-    - Generates independent event sets from true parameters
+    - Generates independent event sets from true parameters via simulation
+    - Applies appropriate feature engineering based on problem type  
     - Extracts latent representations and predicts parameters  
     - Evaluates PDF functions f(x|θ) using predicted parameters
     - Aggregates function values pointwise to compute uncertainty at each x
@@ -3001,7 +3160,9 @@ def plot_bootstrap_PDF_distribution(
     import os
     os.makedirs(save_dir, exist_ok=True)
     
-    print(f"Starting bootstrap PDF analysis with {n_bootstrap} samples...")
+    print(f"🎯 Starting bootstrap PDF analysis with {n_bootstrap} samples...")
+    print(f"⚠️  Note: Bootstrap analysis requires simulation for uncertainty estimation")
+    print(f"📊 Each bootstrap sample generates {num_events} new events for data uncertainty")
     
     # Initialize simulator based on problem type
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
@@ -3032,12 +3193,13 @@ def plot_bootstrap_PDF_distribution(
     bootstrap_params = []
     bootstrap_pdfs = {}  # Will store PDFs for each function/Q2 slice
     
-    print("Generating bootstrap samples...")
+    print("🔄 Generating bootstrap samples via simulation...")
+    print(f"📈 This generates fresh simulated data for each of {n_bootstrap} bootstrap samples")
     for i in range(n_bootstrap):
         if (i + 1) % 10 == 0:
-            print(f"  Bootstrap sample {i+1}/{n_bootstrap}")
+            print(f"  ✓ Bootstrap sample {i+1}/{n_bootstrap}")
         
-        # Generate independent event set
+        # Generate independent event set via simulation (required for bootstrap uncertainty)
         with torch.no_grad():
             # Generate events directly from simulator
             xs = simulator.sample(true_params.detach().cpu(), num_events)
@@ -3047,6 +3209,11 @@ def plot_bootstrap_PDF_distribution(
             advanced_feature_engineering = get_advanced_feature_engineering()
             if problem not in ['mceg', 'mceg4dis']:
                 xs_tensor = advanced_feature_engineering(xs_tensor)
+            else:
+                # For mceg/mceg4dis, apply log feature engineering as used in training
+                from utils import log_feature_engineering
+                xs_flat = xs_tensor.view(-1, xs_tensor.shape[-1])
+                xs_tensor = log_feature_engineering(xs_flat)
             
             # Extract latent embedding using PointNet
             latent = pointnet_model(xs_tensor.unsqueeze(0))
@@ -4957,6 +5124,12 @@ def generate_parameter_error_histogram(
     This is a comprehensive utility function that benchmarks model accuracy across the
     parameter space with minimal user input.
     
+    ⚠️  **REPRODUCIBILITY WARNING**: This function requires extensive simulation to 
+    generate parameter error benchmarks. It samples multiple parameter sets and 
+    generates fresh simulated data for each. Results may vary between runs unless 
+    random seeds are fixed. For reproducible analysis, consider using precomputed 
+    validation data via extract_latents_from_data() for latent extraction.
+    
     Parameters:
     -----------
     model : torch.nn.Module
@@ -4966,9 +5139,9 @@ def generate_parameter_error_histogram(
     device : torch.device
         Device to run computations on
     n_draws : int, default=100
-        Number of parameter sets to sample and evaluate
+        Number of parameter sets to sample and evaluate via simulation
     n_events : int, default=10000
-        Number of events to generate per parameter set
+        Number of events to generate per parameter set via simulation
     problem : str, default='simplified_dis'
         Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
     laplace_model : optional
@@ -5013,9 +5186,10 @@ def generate_parameter_error_histogram(
     ... )
     """
     print(f"🎯 Starting parameter error histogram generation...")
-    print(f"   Problem: {problem}")
-    print(f"   Parameter draws: {n_draws}")
-    print(f"   Events per draw: {n_events}")
+    print(f"📊 Problem: {problem}")
+    print(f"🎲 Parameter draws: {n_draws} (each requiring simulation)")
+    print(f"🔢 Events per draw: {n_events}")
+    print(f"⚠️  Note: This process uses extensive simulation for benchmarking")
     
     # Set models to evaluation mode
     model.eval()
