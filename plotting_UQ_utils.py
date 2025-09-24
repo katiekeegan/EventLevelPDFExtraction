@@ -551,46 +551,81 @@ def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
     """
     Return (mean_params, std_params) for the model outputs given a Laplace posterior.
     Works across older laplace-torch builds by trying several APIs.
+    
+    INVESTIGATION NOTE: This function has multiple failure paths that could cause
+    Laplace fallback to Monte Carlo for mceg/mceg4dis problems. Key areas:
+    1. Feature engineering compatibility between training and inference
+    2. Laplace model checkpoint loading and API compatibility
+    3. Model architecture mismatches (e.g., Gaussian vs MLP heads)
     """
     device = latent_embedding.device
     model.eval()
 
     if laplace_model is not None:
+        # DEBUG: Add diagnostic information about Laplace model
+        print(f"🔍 [DEBUG] get_analytic_uncertainty: Laplace model provided")
+        print(f"🔍 [DEBUG] Laplace model type: {type(laplace_model)}")
+        print(f"🔍 [DEBUG] Latent embedding shape: {latent_embedding.shape}")
+        print(f"🔍 [DEBUG] Latent embedding device: {latent_embedding.device}")
+        
         with torch.no_grad():
             # --- Path 1: predictive_distribution(x) -> distribution with .loc and .scale
             pred_dist_fn = getattr(laplace_model, "predictive_distribution", None)
+            print(f"🔍 [DEBUG] Path 1 - predictive_distribution available: {callable(pred_dist_fn)}")
             if callable(pred_dist_fn):
-                dist = pred_dist_fn(latent_embedding)
-                mean_params = dist.loc
-                std_params  = dist.scale
-                return mean_params.cpu(), std_params.cpu()
+                try:
+                    dist = pred_dist_fn(latent_embedding)
+                    mean_params = dist.loc
+                    std_params  = dist.scale
+                    print(f"✅ [DEBUG] Path 1 SUCCESS - returned mean shape: {mean_params.shape}, std shape: {std_params.shape}")
+                    return mean_params.cpu(), std_params.cpu()
+                except Exception as e:
+                    print(f"❌ [DEBUG] Path 1 FAILED: {type(e).__name__}: {e}")
 
             # --- Path 2: calling the object sometimes returns (mean, var)
+            print(f"🔍 [DEBUG] Path 2 - trying direct call with joint=False")
             try:
                 out = laplace_model(latent_embedding, joint=False)
+                print(f"🔍 [DEBUG] Path 2 - direct call returned: {type(out)}")
                 if isinstance(out, tuple) and len(out) == 2:
                     pred_mean, pred_var = out
+                    print(f"🔍 [DEBUG] Path 2 - got tuple with shapes: mean={pred_mean.shape}, var={pred_var.shape}")
                     if pred_var.dim() == 3:
                         pred_std = torch.sqrt(torch.diagonal(pred_var, dim1=-2, dim2=-1))
+                        print(f"🔍 [DEBUG] Path 2 - using diagonal for 3D variance")
                     else:
                         pred_std = torch.sqrt(pred_var.clamp_min(0))
+                        print(f"🔍 [DEBUG] Path 2 - using sqrt for variance")
+                    print(f"✅ [DEBUG] Path 2 SUCCESS - final std shape: {pred_std.shape}")
                     return pred_mean.cpu(), pred_std.cpu()
-            except Exception:
-                pass
+                else:
+                    print(f"❌ [DEBUG] Path 2 - output not a 2-tuple: {type(out)}")
+            except Exception as e:
+                print(f"❌ [DEBUG] Path 2 FAILED: {type(e).__name__}: {e}")
 
             # --- Path 3: predict(..., pred_type='glm', link_approx='mc')
             predict_fn = getattr(laplace_model, "predict", None)
+            print(f"🔍 [DEBUG] Path 3 - predict method available: {callable(predict_fn)}")
             if callable(predict_fn):
                 try:
                     pred = predict_fn(latent_embedding, pred_type='glm', link_approx='mc', n_samples=200)
+                    print(f"🔍 [DEBUG] Path 3 - predict returned: {type(pred)}")
                     if isinstance(pred, tuple) and len(pred) == 2:
                         mean, var = pred
                         std = torch.sqrt(var.clamp_min(0))
+                        print(f"✅ [DEBUG] Path 3 SUCCESS - tuple with shapes: mean={mean.shape}, std={std.shape}")
                         return mean.cpu(), std.cpu()
                     if hasattr(pred, "loc") and hasattr(pred, "scale"):
+                        print(f"✅ [DEBUG] Path 3 SUCCESS - distribution with loc/scale")
                         return pred.loc.cpu(), pred.scale.cpu()
-                except Exception:
-                    pass
+                    else:
+                        print(f"❌ [DEBUG] Path 3 - predict output lacks expected attributes")
+                except Exception as e:
+                    print(f"❌ [DEBUG] Path 3 FAILED: {type(e).__name__}: {e}")
+        
+        print(f"⚠️  [DEBUG] ALL LAPLACE PATHS FAILED - falling back to standard model")
+    else:
+        print(f"⚠️  [DEBUG] No Laplace model provided - using standard model only")
 
     # --- Fallbacks (no Laplace available) ---
     with torch.no_grad():
@@ -2327,12 +2362,35 @@ def plot_PDF_distribution_single_same_plot_mceg(
     Q2_ev = events[:, 1]
 
     xs_tensor = torch.tensor(events, dtype=torch.float32, device=device)
+    
+    # INVESTIGATION: Feature engineering discrepancy for mceg/mceg4dis
+    # Problem: mceg/mceg4dis uses different feature engineering during training vs inference
+    # - Training uses log_feature_engineering (in utils.py) which transforms 2D -> 6D
+    # - Inference skips feature engineering entirely (xs_tensor = xs_tensor) 
+    # - This mismatch could cause Laplace model incompatibility and prediction errors
+    print(f"🔍 [DEBUG] mceg feature engineering - problem: {problem}")
+    print(f"🔍 [DEBUG] Raw events shape: {xs_tensor.shape}")
+    
     if problem not in ['mceg', 'mceg4dis']:
         xs_tensor = advanced_feature_engineering(xs_tensor)
+        print(f"🔍 [DEBUG] After advanced_feature_engineering: {xs_tensor.shape}")
     else:
+        # POTENTIAL BUG: mceg/mceg4dis should use log_feature_engineering for consistency
+        # Current: xs_tensor = xs_tensor (no transformation)
+        # Expected: log feature engineering to match training (2D -> 6D)
         xs_tensor = xs_tensor
+        print(f"⚠️  [DEBUG] mceg/mceg4dis: NO feature engineering applied - potential mismatch!")
+        print(f"⚠️  [DEBUG] This may cause Laplace model to fail due to input dimension mismatch")
+        print(f"⚠️  [DEBUG] Training likely used log_feature_engineering: 2D -> 6D transformation")
+    
+    print(f"🔍 [DEBUG] Final tensor shape for PointNet: {xs_tensor.shape}")
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
+    print(f"🔍 [DEBUG] Latent embedding shape: {latent_embedding.shape}")
+    
+    # INVESTIGATION: Check if this prediction step fails or produces unexpected results
     theta_pred = model(latent_embedding).cpu().squeeze(0).detach()
+    print(f"🔍 [DEBUG] Predicted parameters shape: {theta_pred.shape}")
+    print(f"🔍 [DEBUG] Predicted parameters: {theta_pred}")
 
     new_cpar = pdf.get_current_par_array()[::]
     # Assume parameters are only corresponding to 'uv1' parameters
@@ -2429,7 +2487,65 @@ def plot_PDF_distribution_single_same_plot_mceg(
         os.makedirs(save_dir, exist_ok=True)
         py.savefig(os.path.join(save_dir, 'PDF_2D_distribution_mceg_contour.png'), dpi=300)
 
-
+    # CRITICAL ISSUE: Missing Q2 slice plotting functionality for mceg/mceg4dis
+    # =======================================================================
+    # PROBLEM: The current function only creates 2D histograms but does NOT generate
+    # Q2 slice curves as expected from the reference notebook 01_get_started.ipynb
+    # (https://github.com/quantom-collab/mceg4dis/blob/main/01_get_started.ipynb)
+    #
+    # EXPECTED BEHAVIOR (from reference notebook):
+    # - Multiple 1D curves showing PDF behavior at different fixed Q² values
+    # - Each curve shows x vs PDF value for a specific Q² slice
+    # - Common Q² slices: [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]
+    # - Should display uncertainty bands when Laplace model is available
+    #
+    # CURRENT BEHAVIOR:
+    # - Only 2D histogram visualization (reco, true, gen)  
+    # - No 1D Q² slice curves generated
+    # - Q2_slices parameter is accepted but completely ignored
+    # - Missing integration with uncertainty quantification
+    #
+    # WORKING EXAMPLES in this same file (for comparison):
+    # Lines 1157-1172: plot_PDF_distribution_single (realistic_dis) - properly iterates Q2_slices
+    # Lines 1265-1280: plot_PDF_distribution_single_same_plot (realistic_dis) - proper Q2 handling  
+    # Lines 2939-2954: Proper Q2 slice loop with uncertainty bands
+    # Lines 3341-3346: Correct Q2 slice implementation pattern
+    #
+    # CORRECT IMPLEMENTATION PATTERN (from working functions):
+    # for i, Q2_fixed in enumerate(Q2_slices):
+    #     Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
+    #     # Compute q values for this Q2 slice
+    #     # Plot with uncertainty bands if laplace_model available
+    #     # Save plot for this Q2 slice
+    #
+    # ROOT CAUSE:
+    # The function ends here without implementing Q² slice visualization.
+    # The commented code below shows some development attempt but it's incomplete.
+    #
+    # REQUIRED IMPLEMENTATION:
+    # 1. Extract Q² slice data from the 2D histograms or recompute directly
+    # 2. Create 1D plots for each Q² value using pattern from working functions
+    # 3. Add uncertainty bands if Laplace model available (currently broken due to feature engineering)
+    # 4. Use consistent styling with other plotting functions
+    # 5. Save individual plots per Q² slice or combined plot
+    
+    print(f"⚠️  [CRITICAL] Q2 slice plotting NOT IMPLEMENTED")
+    print(f"⚠️  [CRITICAL] Q2_slices parameter ignored: {Q2_slices}")
+    print(f"⚠️  [CRITICAL] Expected Q2 slice curves missing from output")
+    print(f"⚠️  [CRITICAL] Reference notebook expects 1D curves at different Q² values")
+    print(f"⚠️  [CRITICAL] Current implementation only shows 2D histograms")
+    print(f"⚠️  [CRITICAL] See lines 1157-1172, 1265-1280, 2939-2954 for working examples")
+    
+    # TODO: Implement Q2 slice plotting here using pattern from working functions:
+    # Q2_slices = Q2_slices or [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]
+    # x_range = (1e-4, 0.1)  # based on current axis labels
+    # x_vals = torch.linspace(x_range[0], x_range[1], 500).to(device)
+    # for i, Q2_fixed in enumerate(Q2_slices):
+    #     Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
+    #     # Compute true and predicted q values at this Q2 slice
+    #     # Add uncertainty bands if laplace_model is not None (after fixing feature engineering)
+    #     # Create and save plot for this Q2 slice
+    
     #HERE
 
 
