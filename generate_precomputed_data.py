@@ -21,7 +21,7 @@ import warnings
 # Handle the MCEG import issue gracefully
 try:
     from simulator import Gaussian2DSimulator, SimplifiedDIS, RealisticDIS, MCEGSimulator
-    from utils import log_feature_engineering
+    from utils import log_feature_engineering, improved_feature_engineering
     from datasets import advanced_feature_engineering
     FULL_SIMULATORS_AVAILABLE = True
 except ImportError as e:

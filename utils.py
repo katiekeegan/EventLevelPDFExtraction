@@ -301,3 +301,44 @@ def pdf_theta_loss(theta_pred, theta_true, problem):
         loss = torch.log(torch.clamp(pred_vals, min=eps) / torch.clamp(true_vals, min=eps)).abs().mean()
 
     return loss
+
+EPS = 1e-8
+def improved_feature_engineering(xs_tensor):
+    """
+    Drop-in replacement for your original function.
+    Input:
+      xs_tensor: (..., F) raw features (can be negative or positive)
+    Output:
+      data: (..., F_out) engineered features (torch.float32)
+    Notes:
+      - Preserves sign information for symlog-like features.
+      - Uses log1p(abs(x)) for stability and log-difference for ratio-like features.
+      - Does NOT fit or apply a scaler; if you want standardization, use improved_feature_engineering below.
+    """
+    x = xs_tensor.to(torch.float32)
+    eps = EPS
+
+    # basic transforms
+    log1p_abs = torch.log1p(x.abs().clamp(min=eps))      # log1p of magnitude
+    symlog_feat = torch.sign(x) * log1p_abs              # symmetric log-like
+
+    # positive-only log1p (keeps zeros for negatives)
+    log1p_pos = torch.log1p(torch.clamp(x, min=0.0) + eps)
+
+    # pairwise indices
+    F = x.shape[-1]
+    if F >= 2:
+        idxs = torch.combinations(torch.arange(F), r=2, with_replacement=False)
+        i, j = idxs[:, 0], idxs[:, 1]
+        # log-difference proxy for ratio: log1p(|x_i|) - log1p(|x_j|)
+        pair_logdiff = log1p_abs[..., i] - log1p_abs[..., j]
+        # signed raw difference as additional signal
+        pair_diff = (x[..., i] - x[..., j])
+        pair_feats = torch.cat([pair_logdiff, pair_diff], dim=-1)
+    else:
+        pair_feats = x.new_empty(x.shape[:-1] + (0,))
+
+    # assemble: raw_clipped, symlog, log1p_pos, pairwise
+    raw_clipped = x.clamp(min=-1e6, max=1e6)
+    data = torch.cat([raw_clipped, symlog_feat, log1p_pos, pair_feats], dim=-1)
+    return data

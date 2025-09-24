@@ -97,37 +97,58 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
         print(f"   ✓ Found exact matching precomputed data: {exact_file_path}")
         return output_dir
     else:
-        print(f"   ✗ Exact matching file not found: {expected_filename}")
-        print(f"   📁 Searched in directory: {output_dir}")
+        # print(f"   ✗ Exact matching file not found: {expected_filename}")
+        # print(f"   📁 Searched in directory: {output_dir}")
         
-        # Show what files ARE available to help user debug
-        available_pattern = os.path.join(output_dir, f"{problem}_*.npz")
-        available_files = glob.glob(available_pattern)
-        if available_files:
-            print(f"   📋 Available files for problem '{problem}':")
-            for file_path in available_files:
-                filename = os.path.basename(file_path)
-                print(f"      - {filename}")
-            print(f"   💡 None of these match the exact parameters: ns={num_samples}, ne={num_events}, nr={n_repeat}")
-        else:
-            print(f"   📋 No files found for problem '{problem}' in {output_dir}")
+        # # Show what files ARE available to help user debug
+        # available_pattern = os.path.join(output_dir, f"{problem}_*.npz")
+        # available_files = glob.glob(available_pattern)
+        # if available_files:
+        #     print(f"   📋 Available files for problem '{problem}':")
+        #     for file_path in available_files:
+        #         filename = os.path.basename(file_path)
+        #         print(f"      - {filename}")
+        #     print(f"   💡 None of these match the exact parameters: ns={num_samples}, ne={num_events}, nr={n_repeat}")
+        # else:
+        #     print(f"   📋 No files found for problem '{problem}' in {output_dir}")
         
-        # Raise informative error
-        error_msg = (
-            f"Exact precomputed data file not found: '{expected_filename}'\n"
-            f"  Required parameters: problem='{problem}', num_samples={num_samples}, "
-            f"num_events={num_events}, n_repeat={n_repeat}\n"
-            f"  Searched in: {output_dir}\n"
-            f"  Expected file: {exact_file_path}\n"
-        )
+        # # Raise informative error
+        # error_msg = (
+        #     f"Exact precomputed data file not found: '{expected_filename}'\n"
+        #     f"  Required parameters: problem='{problem}', num_samples={num_samples}, "
+        #     f"num_events={num_events}, n_repeat={n_repeat}\n"
+        #     f"  Searched in: {output_dir}\n"
+        #     f"  Expected file: {exact_file_path}\n"
+        # )
         
-        if available_files:
-            error_msg += f"  Available files: {[os.path.basename(f) for f in available_files]}\n"
-            error_msg += "  Hint: None of the available files match the exact required parameters."
-        else:
-            error_msg += f"  No precomputed data files found for problem '{problem}'."
+        # if available_files:
+        #     error_msg += f"  Available files: {[os.path.basename(f) for f in available_files]}\n"
+        #     error_msg += "  Hint: None of the available files match the exact required parameters."
+        # else:
+        #     error_msg += f"  No precomputed data files found for problem '{problem}'."
             
-        raise FileNotFoundError(error_msg)
+        # raise FileNotFoundError(error_msg)
+        #     # Generate new data
+        print(f"Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
+        print("Generating precomputed data automatically...")
+        
+        try:
+            # Import and run the data generation function
+            from generate_precomputed_data import generate_data_for_problem
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"Generating data on device: {device}")
+            
+            filepath = generate_data_for_problem(
+                problem, num_samples, num_events, n_repeat, device, output_dir
+            )
+            print(f"Successfully generated precomputed data: {filepath}")
+            return output_dir
+            
+        except Exception as e:
+            print(f"Error generating precomputed data: {e}")
+            print("Falling back to on-the-fly data generation")
+            raise RuntimeError(f"Failed to generate precomputed data: {e}")
 
 def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
     """
@@ -148,67 +169,157 @@ def check_precomputed_data_exists(problem, output_dir="precomputed_data"):
 # ---------------------------
 # Joint Training Function
 # ---------------------------
-def train_joint(model, param_prediction_model, train_dataloader, val_dataloader, epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
+def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
+                epochs, lr, rank, wandb_enabled, output_dir, save_every=10, args=None):
     device = next(model.parameters()).device
-    param_prediction_model = param_prediction_model.to(device)  # FIX: Move CNF to GPU before DDP
-    opt = optim.Adam(list(model.parameters()) + list(param_prediction_model.parameters()), lr=lr, weight_decay=1e-4)
+    param_prediction_model = param_prediction_model.to(device)
+    opt = optim.Adam(list(model.parameters()) + list(param_prediction_model.parameters()),
+                     lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
 
     model.train()
     param_prediction_model.train()
     torch.backends.cudnn.benchmark = True
+    if args.problem == 'mceg':
+        theta_bounds = torch.tensor([
+                [-1.0, 10.0],
+                [0.0, 10.0],
+                [-10.0, 10.0],
+                [-10.0, 10.0],
+            ]).to(device)   
+    elif args.problem == 'simplified_dis':
+        theta_bounds = torch.tensor([
+            [0.0, 5.0],
+            [0.0, 5.0],
+            [0.0, 5.0],
+            [0.0, 5.0],
+        ]).to(device)
+    theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
+    theta_range = theta_max - theta_min
+    def normalize_theta(theta):
+        """
+        Map theta from [min, max] to [-1, 1].
+        """
+        return 2 * (theta - theta_min) / theta_range - 1
+
+    def denormalize_theta(norm_theta):
+        """
+        Map normalized value in [-1,1] back to original scale.
+        """
+        return (norm_theta + 1) * 0.5 * theta_range + theta_min
+        
+    # one-time precompute (before for epoch in range(...))
+    theta_range = (theta_max - theta_min).to(device)       # shape (D,)
+    range_half_sq = ((theta_range / 2.0) ** 2).view(1, -1)  # (1, D) in device
+    mean_weight = range_half_sq.mean().item()
+    range_half_sq = range_half_sq.to(device)
 
     for epoch in range(epochs):
-        # Training phase
         total_train_loss = 0.0
         num_train_batches = 0
-        
+
         for theta, x_sets in train_dataloader:
-            x_sets = x_sets.to(torch.float32)
-            B, n_repeat, num_points, feat_dim = x_sets.shape  # B = batch_size*n_repeat, N = num_points, F = feat_dim
-            x_sets = x_sets.reshape(B*n_repeat, num_points, feat_dim)  # [B*N, F]
+            # ---- prepare batch ----
+            x_sets = x_sets.to(torch.float32)                       # cpu->float32
+            B, n_repeat, num_points, feat_dim = x_sets.shape
+            x_sets = x_sets.reshape(B * n_repeat, num_points, feat_dim)
             x_sets = x_sets.to(device)
-            theta = theta.repeat_interleave(n_repeat, dim=0).to(device)
+            theta = theta.to(device)
+            theta = theta.repeat_interleave(n_repeat, dim=0)
+            
             opt.zero_grad(set_to_none=True)
-            with torch.cuda.amp.autocast(dtype=torch.float16):
-                emb = model(x_sets)  # [B*n_repeat, latent_dim]
-                predicted_theta = param_prediction_model(emb)  # [B*n_repeat, theta_dim]
-                loss = F.mse_loss(predicted_theta, theta)
+
+            # ---- forward/backward with AMP ----
+            # with torch.cuda.amp.autocast():   # default dtype (fp16 on CUDA)
+            # compute normalized target
+            theta_norm = normalize_theta(theta)   # (B, D)
+
+            emb = model(x_sets)           # (B*n_repeat, latent)
+
+            # get raw model output (original units) and normalize it for loss
+            raw_pred = param_prediction_model(emb)        # (B, D)  <-- raw in original units
+            predicted_theta = normalize_theta(raw_pred)   # (B, D) normalized
+
+            # weighted normalized MSE equivalent to unnormalized MSE
+            diff = predicted_theta - theta_norm          # (B, D)
+            weighted = (diff**2 * range_half_sq).mean()  # scalar
+
+            # scale magnitude for optimizer stability (optional but recommended)
+            loss = weighted / mean_weight
+
+            # logging metric in original units (for humans)
+            preds_unnorm = denormalize_theta(predicted_theta)  # or simply raw_pred if raw_pred is in original units
+            unnormalized_loss = F.mse_loss(preds_unnorm, theta)
+
+            # basic NaN/Inf check
+            if not torch.isfinite(loss):
+                raise RuntimeError(f"Non-finite training loss detected: {loss}")
+
+            # scale, backward, unscale, clip, step
             scaler.scale(loss).backward()
+
+            # Unscale before clipping
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(param_prediction_model.parameters(), max_norm=1.0)
+
             scaler.step(opt)
             scaler.update()
+
             total_train_loss += loss.item()
             num_train_batches += 1
-        
-        avg_train_loss = total_train_loss / num_train_batches if num_train_batches > 0 else 0.0
-        
-        # Validation phase
+
+        avg_train_loss = total_train_loss / max(1, num_train_batches)
+
+        # ---- Validation (FP32, no autocast) ----
         model.eval()
         param_prediction_model.eval()
         total_val_loss = 0.0
         num_val_batches = 0
-        
+
         with torch.no_grad():
             for theta, x_sets in val_dataloader:
                 x_sets = x_sets.to(torch.float32)
                 B, n_repeat, num_points, feat_dim = x_sets.shape
-                x_sets = x_sets.reshape(B*n_repeat, num_points, feat_dim)
+                x_sets = x_sets.reshape(B * n_repeat, num_points, feat_dim)
                 x_sets = x_sets.to(device)
-                theta = theta.repeat_interleave(n_repeat, dim=0).to(device)
-                
-                with torch.cuda.amp.autocast(dtype=torch.float16):
-                    emb = model(x_sets)
-                    predicted_theta = param_prediction_model(emb)
-                    val_loss = F.mse_loss(predicted_theta, theta)
-                
+                theta = theta.to(device)
+                theta = theta.repeat_interleave(n_repeat, dim=0)
+
+                # compute normalized target
+                theta_norm = normalize_theta(theta)   # (B, D)
+
+                # No autocast here — evaluate in FP32 for stability
+                emb = model(x_sets)
+
+                # get raw model output (original units) and normalize it for loss
+                raw_pred = param_prediction_model(emb)        # (B, D)  <-- raw in original units
+                predicted_theta = normalize_theta(raw_pred)   # (B, D) normalized
+
+                # weighted normalized MSE equivalent to unnormalized MSE
+                diff = predicted_theta - theta_norm          # (B, D)
+                weighted = (diff**2 * range_half_sq).mean()  # scalar
+
+                # scale magnitude for optimizer stability (optional but recommended)
+                val_loss = weighted / mean_weight
+
+                # logging metric in original units (for humans)
+                preds_unnorm = denormalize_theta(predicted_theta)  # or simply raw_pred if raw_pred is in original units
+                unnormalized_val_loss = F.mse_loss(preds_unnorm, theta)
+                if not torch.isfinite(val_loss):
+                    raise RuntimeError(f"Non-finite val loss detected: {val_loss}")
+
                 total_val_loss += val_loss.item()
                 num_val_batches += 1
-        
-        avg_val_loss = total_val_loss / num_val_batches if num_val_batches > 0 else 0.0
-        
+
+        avg_val_loss = total_val_loss / max(1, num_val_batches)
+
         # Switch back to training mode
         model.train()
         param_prediction_model.train()
+
+        # Logging
+        print(f"Epoch {epoch:03d} train_loss={avg_train_loss:.6g} val_loss={avg_val_loss:.6g}, unnormalized_train_loss={unnormalized_loss.item():.6g}, unnormalized_val_loss={unnormalized_val_loss.item():.6g}")
 
         # Logging and checkpointing (only on rank 0)
         if rank == 0:
@@ -216,7 +327,9 @@ def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
                 wandb.log({
                     "epoch": epoch + 1, 
                     "train_mse_loss": avg_train_loss,
-                    "val_mse_loss": avg_val_loss
+                    "val_mse_loss": avg_val_loss,
+                    "train_unnormalized_mse_loss": unnormalized_loss.item(),
+                    "val_unnormalized_mse_loss": unnormalized_val_loss.item()
                 })
             print(f"Epoch {epoch + 1:3d} | Train Loss: {avg_train_loss:.6f} | Val Loss: {avg_val_loss:.6f}")
 
@@ -339,10 +452,10 @@ def create_train_val_datasets(args, rank, world_size, device):
         elif args.problem == "mceg":
             simulator = MCEGSimulator(device=device)
             train_dataset = MCEGDISDataset(
-                simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+                simulator, args.num_samples, args.num_events, rank, world_size, feature_engineering=improved_feature_engineering
             )
             val_dataset = MCEGDISDataset(
-                simulator, val_samples, args.num_events, rank, world_size, feature_engineering=log_feature_engineering
+                simulator, val_samples, args.num_events, rank, world_size, feature_engineering=improved_feature_engineering
             )
             input_dim = 2
         elif args.problem == "gaussian":
@@ -437,7 +550,10 @@ def main_worker(rank, world_size, args):
     latent_dim = args.latent_dim
 
     # Model setup
-    model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
+    if args.problem == 'mceg':
+        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.2).to(device)
+    else:    
+        model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     if torch.__version__ >= "2.0":
         os.environ["TRITON_CACHE_DIR"] = "/pscratch/sd/k/katiekee/triton_cache"
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/pscratch/sd/k/katiekee/inductor_cache"
@@ -460,7 +576,9 @@ def main_worker(rank, world_size, args):
             ])
     else:
         theta_bounds = None
-    param_prediction_model = TransformerHead(latent_dim, theta_dim, ranges=theta_bounds)
+    theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
+    theta_range = theta_max - theta_min
+    param_prediction_model = MLPHead(latent_dim, theta_dim)
     param_prediction_model = param_prediction_model.to(device)
     
     # Only use DDP in multi-GPU mode
