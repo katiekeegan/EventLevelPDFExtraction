@@ -492,6 +492,30 @@ def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repe
             print("⚠️  Falling back to simulation-based plotting (less reproducible)")
             raise RuntimeError(f"Failed to generate precomputed data: {e}")
 
+
+def get_robust_validation_data(args, problem, device, num_samples=1000):
+    """
+    Get validation data using robust precomputed data loading.
+    
+    This is a convenience wrapper around load_validation_dataset_batch that provides
+    a simpler interface for getting validation data with automatic precomputed data
+    generation if needed.
+    
+    Args:
+        args: Argument namespace with validation parameters (val_samples, num_events, etc.)
+        problem: Problem type string
+        device: PyTorch device
+        num_samples: Number of validation samples to load
+        
+    Returns:
+        tuple: (thetas, xs) where both are already on the specified device
+               xs is already feature engineered and ready for PointNet input
+               
+    Raises:
+        RuntimeError: If validation data cannot be loaded or generated
+    """
+    return load_validation_dataset_batch(args, problem, device, num_samples)
+
 """
 MAJOR UPDATE: Function-Level Uncertainty Quantification
 
@@ -887,6 +911,11 @@ def plot_PDF_distribution_single(
     parameter uncertainty. For each parameter sample θ drawn from the posterior, we evaluate 
     f(x|θ) at each x-point and then compute pointwise statistics (median, IQR) of the function values.
 
+    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation to generate event data
+    for latent extraction from true parameters. Results may vary between runs unless random 
+    seeds are fixed. For reproducible latent extraction, prefer using precomputed data via
+    extract_latents_from_data() where possible.
+
     Parameters:
     -----------
     model : torch.nn.Module
@@ -917,7 +946,7 @@ def plot_PDF_distribution_single(
         
     Method:
     -------
-    1. Extract latent representation from events generated with true parameters
+    1. Extract latent representation from events generated with true parameters (via simulation)
     2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
     3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
     4. Compute pointwise median and quantiles of f(x) across all parameter samples
@@ -933,6 +962,9 @@ def plot_PDF_distribution_single(
     """
     model.eval()
     pointnet_model.eval()
+    
+    print(f"📊 Generating PDF distribution plot for {problem}")
+    print(f"🎲 Simulating events from true parameters for latent extraction")
     
     # Get simulators with fallback
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()

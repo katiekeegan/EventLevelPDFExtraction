@@ -448,6 +448,7 @@ Examples:
             plot_combined_uncertainty_decomposition,
             plot_uncertainty_scaling
         )
+        print(f"🎯 Generating demonstration events for uncertainty plotting...")
         simulator=SimplifiedDIS(device=device)
         true_events = simulator.sample(true_params.numpy(), args.num_events).to(device)
         true_params = true_params.to(device)
