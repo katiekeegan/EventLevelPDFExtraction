@@ -1786,7 +1786,13 @@ def extract_latents_from_data(pointnet_model, args, problem, device, num_samples
     if problem not in ['mceg', 'mceg4dis']:
         feats = advanced_feature_engineering(xs)  # [n_samples * n_events, n_features]
     else:
-        feats = xs
+        # For mceg/mceg4dis, apply log feature engineering as used in training
+        from utils import log_feature_engineering
+        # Reshape to apply feature engineering: [n_samples * n_events, feature_dim]
+        n_samples = xs.shape[0]
+        n_events = xs.shape[1]
+        xs_flat = xs.view(n_samples * n_events, -1)
+        feats = log_feature_engineering(xs_flat)  # [n_samples * n_events, n_features]
     # Reshape for PointNet batching
     n_samples = thetas.shape[0]
     n_events = xs.shape[1]

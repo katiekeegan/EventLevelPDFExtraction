@@ -130,20 +130,26 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     """
     # pointnet_path = os.path.join(experiment_dir, "final_model.pth")
     pointnet_path = os.path.join(experiment_dir, cl_model)
-    # Dynamically infer input dimension based on problem type
+    # Dynamically infer input dimension based on problem type and feature engineering
     if problem not in ['mceg', 'mceg4dis']:
         xs_dummy = np.random.randn(100, 2)
         xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
         input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
-        # For mceg/mceg4dis, the input dimension should be 2 (x, Q2)
-        input_dim = 2
+        # For mceg/mceg4dis, determine input_dim based on log feature engineering
+        # Create dummy 2D data (x, Q2) and apply the same feature engineering used in training
+        xs_dummy = np.random.randn(100, 2)
+        xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
+        from utils import log_feature_engineering
+        feats_dummy = log_feature_engineering(xs_dummy_tensor)
+        input_dim = feats_dummy.shape[-1]
+        print(f"MCEG log feature engineering: 2D -> {input_dim}D")
     
     # Use ChunkedPointNetPMA for mceg problems, PointNetPMA for others
     if problem in ['mceg', 'mceg4dis']:
         pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     else:
-        pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
+        pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
