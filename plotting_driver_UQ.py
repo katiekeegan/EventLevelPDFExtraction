@@ -143,6 +143,7 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
         from utils import log_feature_engineering
         feats_dummy = log_feature_engineering(xs_dummy_tensor)
         input_dim = feats_dummy.shape[-1]
+        # input_dim = 6
         print(f"MCEG log feature engineering: 2D -> {input_dim}D")
     
     # Use ChunkedPointNetPMA for mceg problems, PointNetPMA for others
