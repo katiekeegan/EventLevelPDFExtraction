@@ -136,8 +136,11 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     if problem not in ['mceg', 'mceg4dis']:
         input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
-        input_dim = xs_dummy_tensor.shape[-1]
-    pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
+        input_dim = 6
+    if problem == 'mceg':
+        pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
+    else:
+        pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim, predict_theta=False).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})

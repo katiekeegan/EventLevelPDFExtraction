@@ -391,7 +391,7 @@ def create_train_val_datasets(args, rank, world_size, device):
                 args.problem, 
                 args.num_samples, 
                 args.num_events, 
-                n_repeat=1,
+                n_repeat=args.num_repeat,
                 output_dir=args.precomputed_data_dir
             )
             
@@ -551,7 +551,7 @@ def main_worker(rank, world_size, args):
 
     # Model setup
     if args.problem == 'mceg':
-        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.2).to(device)
+        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.3, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
     else:    
         model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     if torch.__version__ >= "2.0":
@@ -578,7 +578,7 @@ def main_worker(rank, world_size, args):
         theta_bounds = None
     theta_min, theta_max = theta_bounds[:, 0], theta_bounds[:, 1]
     theta_range = theta_max - theta_min
-    param_prediction_model = MLPHead(latent_dim, theta_dim)
+    param_prediction_model = MLPHead(latent_dim, theta_dim, dropout=0.3)
     param_prediction_model = param_prediction_model.to(device)
     
     # Only use DDP in multi-GPU mode
@@ -605,6 +605,7 @@ if __name__ == "__main__":
     parser.add_argument("--num_events", type=int, default=10000)
     parser.add_argument("--num_epochs", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--num_repeat", type=int, default=1)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--latent_dim", type=int, default=512)
     parser.add_argument("--problem", type=str, default="simplified_dis")
