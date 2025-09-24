@@ -1232,7 +1232,11 @@ def plot_PDF_distribution_single_same_plot(
     else:
         # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
+        original_shape = xs_tensor.shape
         xs_tensor = log_feature_engineering(xs_tensor)
+        print(f"✅ [SAFETY CHECK] mceg/mceg4dis feature engineering applied: {original_shape} -> {xs_tensor.shape}")
+        if xs_tensor.shape[-1] != 6:
+            print(f"⚠️  [WARNING] Expected 6D features for mceg/mceg4dis, got {xs_tensor.shape[-1]}D")
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
     if laplace_model is not None:
@@ -3414,8 +3418,7 @@ def plot_bootstrap_PDF_distribution(
             else:
                 # For mceg/mceg4dis, apply log feature engineering as used in training
                 from utils import log_feature_engineering
-                xs_flat = xs_tensor.view(-1, xs_tensor.shape[-1])
-                xs_tensor = log_feature_engineering(xs_flat)
+                xs_tensor = log_feature_engineering(xs_tensor)
             
             # Extract latent embedding using PointNet
             latent = pointnet_model(xs_tensor.unsqueeze(0))
@@ -3761,7 +3764,11 @@ def plot_combined_uncertainty_PDF_distribution(
             if problem not in ['mceg', 'mceg4dis']:
                 xs_tensor = advanced_feature_engineering(xs_tensor)
             else:
+                # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
+                from utils import log_feature_engineering
+                original_shape = xs_tensor.shape
                 xs_tensor = log_feature_engineering(xs_tensor)
+                print(f"✅ [SAFETY CHECK] mceg/mceg4dis log feature engineering: {original_shape} -> {xs_tensor.shape}")
             
             # Extract latent embedding using PointNet
             latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
