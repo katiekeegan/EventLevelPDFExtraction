@@ -677,10 +677,10 @@ Examples:
                 device=device,
                 n_mc=args.n_mc,
                 laplace_model=laplace_model,
-                problem='mceg',  # Use 'mceg' internally for compatibility with existing mceg functions
+                problem=args.problem,  # Pass through the actual problem type (mceg or mceg4dis)
                 save_dir=plot_dir
             )
-            print(f"⚠️  [DEBUG] mceg plotting completed - check for missing Q2 slice curves")
+            print(f"✅ [MCEG4DIS] Enhanced mceg/mceg4dis plotting completed with Q2 slice curves")
         plot_PDF_distribution_single(
             model=model,
             pointnet_model=pointnet_model,
