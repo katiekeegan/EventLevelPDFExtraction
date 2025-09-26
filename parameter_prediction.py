@@ -579,7 +579,7 @@ def main_worker(rank, world_size, args):
 
     # Model setup
     if args.problem == 'mceg':
-        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.3, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
+        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.5, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
     else:    
         model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     if torch.__version__ >= "2.0":
@@ -621,7 +621,7 @@ def main_worker(rank, world_size, args):
         theta_range = theta_max - theta_min
     else:
         theta_min = theta_max = theta_range = None
-    param_prediction_model = MLPHead(latent_dim, theta_dim, dropout=0.3)
+    param_prediction_model = MLPHead(latent_dim, theta_dim, dropout=0.5)
     param_prediction_model = param_prediction_model.to(device)
     
     # Only use DDP in multi-GPU mode
