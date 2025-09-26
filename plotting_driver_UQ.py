@@ -173,7 +173,7 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     
     # Use ChunkedPointNetPMA for mceg problems, PointNetPMA for others
     if problem in ['mceg', 'mceg4dis']:
-        pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
+        pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
     else:
         pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)

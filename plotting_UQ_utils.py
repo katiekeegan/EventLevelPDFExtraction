@@ -422,75 +422,110 @@ def get_datasets():
 
 # ===========================
 # Robust Precomputed Data Loading
-# ===========================
-
-def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2, output_dir="precomputed_data"):
+# ========
+def generate_precomputed_data_if_needed(problem, num_samples, num_events, n_repeat=2,
+                                        output_dir="precomputed_data", ignore_nr=True):
     """
     Check if precomputed data exists for the given parameters, and generate it if not found.
-    
-    This function enforces exact matching: only files with the exact parameters 
-    (problem, num_samples, num_events, n_repeat) will be accepted. If not found,
-    it automatically generates the required data using generate_data_for_problem.
-    
+
+    When ignore_nr is True, the function will accept any precomputed file that matches
+    the problem, num_samples and num_events, ignoring the stored nr value. If multiple
+    matching files exist it picks the one with the largest nr.
+
     Args:
         problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
         num_samples: Number of theta parameter samples
         num_events: Number of events per simulation
-        n_repeat: Number of repeated simulations per theta
+        n_repeat: Number of repeated simulations per theta (used for generation when needed)
         output_dir: Directory where precomputed data should be stored
-    
+        ignore_nr: If True, accept files with any nr that match (problem, ns, ne)
+
     Returns:
         str: Path to the data directory
-        
+
     Raises:
         RuntimeError: If precomputed data support is not available or generation fails
     """
+    import os
+    import glob
+    import re
+
     print("🔍 PRECOMPUTED DATA DIAGNOSTIC:")
     print(f"   Looking for problem: '{problem}' with ns={num_samples}, ne={num_events}, nr={n_repeat}")
     print(f"   Data directory: '{output_dir}'")
-    
+    print(f"   ignore_nr = {ignore_nr}")
+
     # Check precomputed data availability
     try:
         from precomputed_datasets import PrecomputedDataset
         PRECOMPUTED_AVAILABLE = True
     except ImportError:
         PRECOMPUTED_AVAILABLE = False
-        
+
     if not PRECOMPUTED_AVAILABLE:
         print("   ✗ Precomputed data support not available. Please check precomputed_datasets.py")
         raise RuntimeError("Precomputed data support not available. Please check precomputed_datasets.py")
-    
-    # Check if data already exists
-    import os
+
+    # Ensure output directory exists
+    if not os.path.isdir(output_dir):
+        print(f"   Note: output_dir '{output_dir}' does not exist yet.")
+    # Exact filename we would accept if strict matching is desired
     expected_filename = f"{problem}_ns{num_samples}_ne{num_events}_nr{n_repeat}.npz"
     exact_file_path = os.path.join(output_dir, expected_filename)
-    print(f"   Required exact file: '{exact_file_path}'")
-    
-    if os.path.exists(exact_file_path):
-        print(f"   ✓ Found exact matching precomputed data: {exact_file_path}")
-        return output_dir
-    else:
-        print(f"📊 Precomputed data not found for {problem} with ns={num_samples}, ne={num_events}, nr={n_repeat}")
-        print("🚀 Generating precomputed data automatically...")
-        
-        try:
-            # Import and run the data generation function
-            from generate_precomputed_data import generate_data_for_problem
-            import torch
-            
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            print(f"📱 Generating data on device: {device}")
-            
-            filepath = generate_data_for_problem(
-                problem, num_samples, num_events, n_repeat, device, output_dir
-            )
-            print(f"✅ Successfully generated precomputed data: {filepath}")
+    print(f"   Required exact file (if strict): '{exact_file_path}'")
+
+    # If strict matching requested (ignore_nr==False) check exact path first
+    if not ignore_nr:
+        if os.path.exists(exact_file_path):
+            print(f"   ✓ Found exact matching precomputed data: {exact_file_path}")
             return output_dir
-            
-        except Exception as e:
-            print(f"❌ Error generating precomputed data: {e}")
-            print("⚠️  Falling back to simulation-based plotting (less reproducible)")
-            raise RuntimeError(f"Failed to generate precomputed data: {e}")
+        else:
+            print(f"   ✗ Exact matching precomputed data not found.")
+    else:
+        # ignore_nr == True: look for any file matching problem_ns<num>_ne<num>_nr*.npz
+        pattern = os.path.join(output_dir, f"{problem}_ns{num_samples}_ne{num_events}_nr*.npz")
+        candidates = glob.glob(pattern)
+        if candidates:
+            # Prefer the candidate with the largest nr (safer: uses the most repeated data)
+            nr_re = re.compile(r"_nr(\d+)\.npz$")
+            best = None
+            best_nr = -1
+            for c in candidates:
+                m = nr_re.search(c)
+                if m:
+                    nr_val = int(m.group(1))
+                else:
+                    nr_val = 0
+                if nr_val > best_nr:
+                    best = c
+                    best_nr = nr_val
+            print(f"   ✓ Found precomputed data matching ns/ne (ignoring nr): {best} (nr={best_nr})")
+            return output_dir
+        else:
+            print("   ✗ No precomputed files found that match problem/ns/ne (ignoring nr).")
+
+    # If we reach here: no acceptable precomputed data found — generate it
+    print(f"📊 Precomputed data not found for {problem} with ns={num_samples}, ne={num_events} (nr ignored={ignore_nr})")
+    print("🚀 Generating precomputed data automatically...")
+
+    try:
+        # Import and run the data generation function
+        from generate_precomputed_data import generate_data_for_problem
+        import torch
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f"📱 Generating data on device: {device}")
+
+        filepath = generate_data_for_problem(
+            problem, num_samples, num_events, n_repeat, device, output_dir
+        )
+        print(f"✅ Successfully generated precomputed data: {filepath}")
+        return output_dir
+
+    except Exception as e:
+        print(f"❌ Error generating precomputed data: {e}")
+        print("⚠️  Falling back to simulation-based plotting (less reproducible)")
+        raise RuntimeError(f"Failed to generate precomputed data: {e}")
 
 
 def get_robust_validation_data(args, problem, device, num_samples=1000):
@@ -752,7 +787,7 @@ def plot_params_distribution_single(
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
-        xs_tensor = log_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor).float()
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
     if laplace_model is not None:
@@ -1007,7 +1042,7 @@ def plot_PDF_distribution_single(
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
-        xs_tensor = log_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor).float()
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
     # --- Enhanced Sampling Strategy ---
@@ -1233,7 +1268,7 @@ def plot_PDF_distribution_single_same_plot(
         # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
         original_shape = xs_tensor.shape
-        xs_tensor = log_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor).float()
         print(f"✅ [SAFETY CHECK] mceg/mceg4dis feature engineering applied: {original_shape} -> {xs_tensor.shape}")
         if xs_tensor.shape[-1] != 6:
             print(f"⚠️  [WARNING] Expected 6D features for mceg/mceg4dis, got {xs_tensor.shape[-1]}D")
@@ -1658,7 +1693,7 @@ def plot_event_histogram_simplified_DIS(
         xs_tensor = advanced_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
-        xs_tensor = log_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor).float()
     latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
 
     if laplace_model is not None:
@@ -2374,7 +2409,7 @@ def plot_PDF_distribution_single_same_plot_mceg(
     else:
         # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
-        xs_tensor = log_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor).float()
         print(f"✅ [FIXED] mceg/mceg4dis: Applied log_feature_engineering - shape: {xs_tensor.shape}")
     
     print(f"🔧 [FIX] Final tensor shape for PointNet: {xs_tensor.shape}")
@@ -3365,7 +3400,7 @@ def plot_bootstrap_PDF_distribution(
             else:
                 # For mceg/mceg4dis, apply log feature engineering as used in training
                 from utils import log_feature_engineering
-                xs_tensor = log_feature_engineering(xs_tensor)
+                xs_tensor = log_feature_engineering(xs_tensor).float()
             
             # Extract latent embedding using PointNet
             latent = pointnet_model(xs_tensor.unsqueeze(0))
@@ -3714,7 +3749,7 @@ def plot_combined_uncertainty_PDF_distribution(
                 # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
                 from utils import log_feature_engineering
                 original_shape = xs_tensor.shape
-                xs_tensor = log_feature_engineering(xs_tensor)
+                xs_tensor = log_feature_engineering(xs_tensor).float()
                 print(f"✅ [SAFETY CHECK] mceg/mceg4dis log feature engineering: {original_shape} -> {xs_tensor.shape}")
             
             # Extract latent embedding using PointNet
@@ -4434,7 +4469,7 @@ def plot_uncertainty_vs_events(
                 if problem not in ['mceg', 'mceg4dis']:
                     xs_tensor = advanced_feature_engineering(xs_tensor)
                 else:
-                    xs_tensor = log_feature_engineering(xs_tensor)
+                    xs_tensor = log_feature_engineering(xs_tensor).float()
                 
                 # Extract latent embedding
                 latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
@@ -5423,9 +5458,9 @@ def generate_parameter_error_histogram(
             # Apply feature engineering
             try:
                 if problem == 'simplified_dis':
-                    xs_engineered = advanced_feature_engineering(xs)
+                    xs_engineered = advanced_feature_engineering(xs).float()
                 else:
-                    xs_engineered = log_feature_engineering(xs)
+                    xs_engineered = log_feature_engineering(xs).float()
                 if not isinstance(xs_engineered, torch.Tensor):
                     xs_engineered = torch.tensor(xs_engineered, device=device, dtype=torch.float32)
                 xs_engineered = xs_engineered.to(device)

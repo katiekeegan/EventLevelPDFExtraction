@@ -34,7 +34,7 @@ warnings.filterwarnings('ignore')
 
 # Import simulator classes from the main simulator module
 from simulator import SimplifiedDIS, RealisticDIS, MCEGSimulator, Gaussian2DSimulator
-from simulator import advanced_feature_engineering
+from utils import log_feature_engineering
 
 # Set up matplotlib for high-quality plots
 plt.style.use('default')
@@ -118,7 +118,7 @@ def posterior_sampler(
     observed_data = observed_data.to(device)
     if observed_data.ndim == 2:
         observed_data = observed_data.unsqueeze(0)  # [1, num_events, features]
-    observed_data = advanced_feature_engineering(observed_data)
+    observed_data = log_feature_engineering(observed_data).float()
     latent = pointnet_model(observed_data)           # shape: [1, latent_dim]
 
     # 2. Get Laplace mean and covariance (analytic uncertainty)
@@ -1720,7 +1720,7 @@ def _estimate_parameters_nn(data, model, pointnet_model, device):
         
         # Use advanced feature engineering if available
         try:
-            data_tensor = advanced_feature_engineering(data_tensor)
+            data_tensor = log_feature_engineering(data_tensor).float()
         except:
             pass  # Use data as-is if feature engineering fails
         
