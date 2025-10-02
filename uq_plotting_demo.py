@@ -521,6 +521,159 @@ def plot_parameter_uncertainty(
     elif mode == 'combined':
         return {'posterior': samples_to_plot[0], 'bootstrap': samples_to_plot[1]}
 
+def plot_function_uncertainty_mceg(
+    model,
+    pointnet_model,
+    laplace_model,
+    true_params,
+    device,
+    num_events,
+    mode='posterior',
+    n_mc=100,
+    n_bootstrap=100,
+    nx=30,
+    nQ2=20,
+    Q2_slices=None,
+    save_dir=None
+):
+    """
+    MCEG function-space uncertainty bands supporting 'posterior' (Laplace/parameter), 'bootstrap', and 'combined' modes.
+
+    mode='posterior' (or 'parameter'):
+        - Generate one dataset, infer Laplace posterior, sample theta, plot bands.
+
+    mode='bootstrap':
+        - For each bootstrap, generate a dataset, infer theta, plot bands.
+
+    mode='combined':
+        - Plot both bands for comparison.
+
+    All bands are produced using the proper inference pipeline.
+    """
+    from simulator import MCEG, MCEGSimulator, THEORY, PDF, MELLIN, ALPHAS, EWEAK
+    mellin = MELLIN(npts=8)
+    alphaS = ALPHAS()
+    eweak  = EWEAK()
+    pdf    = PDF(mellin, alphaS)
+    idis   = THEORY(mellin, pdf, alphaS, eweak)
+    rs = 140
+    tar = 'p'
+
+    all_bands = []
+
+    # Helper: get reco/stat from events
+    def get_reco_stat(evts, mceg):
+        hist = np.histogram2d(np.log(evts[:,0]), np.log(evts[:,1]), bins=(nx, nQ2))
+        reco = np.zeros(hist[0].shape)
+        stat = np.zeros(hist[0].shape)
+        for i in range(hist[1].shape[0]-1):
+            for j in range(hist[2].shape[0]-1):
+                if hist[0][i,j]>0:
+                    xmin = np.exp(hist[1][i]); xmax = np.exp(hist[1][i+1])
+                    Q2min = np.exp(hist[2][j]); Q2max = np.exp(hist[2][j+1])
+                    dx = xmax-xmin
+                    dQ2 = Q2max-Q2min
+                    reco[i,j] = hist[0][i,j]/dx/dQ2
+                    stat[i,j] = np.sqrt(hist[0][i,j])/dx/dQ2
+        if np.sum(hist[0]) > 0:
+            reco *= mceg.total_xsec/np.sum(hist[0])
+            stat *= mceg.total_xsec/np.sum(hist[0])
+        return reco, stat, hist
+    MCEGSimulator = MCEGSimulator(device=device)
+    # --- 1. Posterior (Laplace/parameter) mode ---
+    if mode in ['posterior', 'parameter', 'combined'] and laplace_model is not None:
+        # Generate one dataset and infer Laplace posterior
+        # Generate dataset from true params
+        evts = MCEGSimulator.sample(true_params, num_events)
+        feats = evts.float().to(device)
+        feats = feats.unsqueeze(0)
+        feats = log_feature_engineering(feats).float()
+        # breakpoint()
+        latents = pointnet_model(feats).detach()
+        theta = model(latents).detach().cpu().numpy()
+        with torch.no_grad():
+            theta_samples = laplace_model.sample(n_mc).cpu()  # shape: (n_mc, param_dim)
+            # dist = laplace_model.predictive_distribution(latents)
+            # mean = dist.loc.cpu()
+            # cov = dist.covariance_matrix.cpu()
+            # mvn = torch.distributions.MultivariateNormal(mean, cov)
+            # theta_samples = mvn.sample((n_mc,))  # [n_mc, param_dim]
+        reco_samples = []
+        stat_samples = []
+        for theta in tqdm(theta_samples, desc="Laplace/parameter bands"):
+            evts_pred = MCEGSimulator.sample(theta, num_events)
+            reco, stat, hist = get_reco_stat(evts_pred, mceg_pred)
+            reco_samples.append(reco)
+            stat_samples.append(stat)
+        reco_samples = np.array(reco_samples)
+        stat_samples = np.array(stat_samples)
+        all_bands.append(('parameter', reco_samples, stat_samples, hist))
+
+    # --- 2. Bootstrap mode ---
+    if mode in ['bootstrap', 'combined']:
+        reco_samples = []
+        stat_samples = []
+        for b in tqdm(range(n_bootstrap), desc="MCEG bootstrap bands"):
+            evts = MCEGSimulator.sample(true_params, num_events)
+            feats = evts.float().to(device)
+            feats = feats.unsqueeze(0)
+            feats = log_feature_engineering(feats).float()
+            latents = pointnet_model(feats).detach()
+            # Infer parameters
+            with torch.no_grad():
+                inferred_theta = model(latents).mean(dim=0).detach().cpu().numpy()
+            # Generate predicted events from inferred params
+                        # Generate dataset from true params
+            evts_pred = MCEGSimulator.sample(inferred_theta, num_events)
+            reco, stat, hist = get_reco_stat(evts_pred, mceg_pred)
+            reco_samples.append(reco)
+            stat_samples.append(stat)
+        reco_samples = np.array(reco_samples)
+        stat_samples = np.array(stat_samples)
+        all_bands.append(('bootstrap', reco_samples, stat_samples, hist))
+
+    # --- Plotting ---
+    label_map = dict(parameter="Laplace Posterior", bootstrap="Bootstrap")
+    color_map = dict(parameter="blue", bootstrap="orange")
+    Q2_centers = np.exp(0.5*(hist[2][:-1]+hist[2][1:]))
+    x_centers = np.exp(0.5*(hist[1][:-1]+hist[1][1:]))
+    if Q2_slices is None:
+        Q2_indices = np.arange(0, nQ2, max(1, nQ2//10))
+    else:
+        Q2_indices = [np.argmin(np.abs(Q2_centers-q2)) for q2 in Q2_slices]
+    fig, ax = plt.subplots(figsize=(10,7))
+    for band_idx, (mode_name, reco_samples, stat_samples, hist) in enumerate(all_bands):
+        for i_q in Q2_indices:
+            curves = reco_samples[:,:,i_q]
+            q5 = np.percentile(curves, 5, axis=0)
+            q95 = np.percentile(curves, 95, axis=0)
+            q25 = np.percentile(curves, 25, axis=0)
+            q75 = np.percentile(curves, 75, axis=0)
+            median = np.median(curves, axis=0)
+            stat_err = np.median(stat_samples[:,:,i_q], axis=0)
+            mask = median > 0
+            label = f'{label_map.get(mode_name, mode_name)} Q²={Q2_centers[i_q]:.2f}'
+            ax.plot(np.log(x_centers[mask]), median[mask],
+                    label=label, color=color_map.get(mode_name, "gray"))
+            ax.fill_between(np.log(x_centers[mask]), q5[mask], q95[mask],
+                            alpha=0.15, color=color_map.get(mode_name, "gray"))
+            ax.fill_between(np.log(x_centers[mask]), q25[mask], q75[mask],
+                            alpha=0.25, color=color_map.get(mode_name, "gray"))
+            ax.errorbar(np.log(x_centers[mask]), median[mask], stat_err[mask],
+                        fmt='.', alpha=0.5, color=color_map.get(mode_name, "gray"))
+
+    ax.tick_params(axis='both', which='major', labelsize=16, direction='in')
+    ax.set_ylabel(r'$d\sigma/dxdQ^2~[{\rm GeV^{-4}}]$', size=22)
+    ax.set_xlabel(r'$x$', size=22)
+    ax.set_xticks(np.log([1e-4,1e-3,1e-2,1e-1]))
+    ax.set_xticklabels([r'$0.0001$', r'$0.001$', r'$0.01$', r'$0.1$'])
+    ax.semilogy()
+    ax.legend(fontsize=14)
+    ax.set_title(f'MCEG Function Uncertainty Bands ({mode})', fontsize=20)
+    plt.tight_layout()
+    if save_dir:
+        plt.savefig(f"{save_dir}/mceg_function_uncertainty_{mode}_bands.png", dpi=200)
+    plt.close(fig)
 
 def plot_function_uncertainty(
     model=None,

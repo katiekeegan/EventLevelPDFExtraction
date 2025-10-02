@@ -41,13 +41,13 @@ Usage:
 import torch
 import os
 import numpy as np
-from PDF_learning import *
+# from PDF_learning import *
 from simulator import *
 from models import *
 from plotting_UQ_utils import *
 from datasets import *
-from PDF_learning_UQ import *
-from cnf import *
+# from PDF_learning_UQ import *
+# from cnf import *
 
 # utils_laplace.py
 import os, torch
@@ -501,22 +501,17 @@ Examples:
             save_path=plot_dir + 'param_errors.png'
         )
 
-        # Enhanced event visualization with both views
-        plot_event_histogram_simplified_DIS(
-            model, pointnet_model, true_params, device,
-            plot_type='both',  # Shows both scatter and 2D histogram
-            save_path="events_enhanced.png"
-        )
+        # # Enhanced event visualization with both views
+        # plot_event_histogram_simplified_DIS(
+        #     model, pointnet_model, true_params, device,
+        #     plot_type='both',  # Shows both scatter and 2D histogram
+        #     save_path="events_enhanced.png"
+        # )
 
-        # Publication-ready parameter distributions
-        plot_params_distribution_single(
-            model, pointnet_model, true_params, device,
-            laplace_model=laplace_model,  # For analytic uncertainty
-            save_path="param_distributions.png"
-        )
         from uq_plotting_demo import (
             plot_parameter_uncertainty,
             plot_function_uncertainty,
+            plot_function_uncertainty_mceg,
             plot_bootstrap_uncertainty,
             plot_combined_uncertainty_decomposition,
             plot_uncertainty_scaling
@@ -559,40 +554,71 @@ Examples:
             save_dir=plot_dir,
             mode='combined'
         )
-
-        plot_function_uncertainty(
-            model=model,
-            pointnet_model=pointnet_model,
-            laplace_model=laplace_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            problem=args.problem,
-            save_dir=plot_dir,
-            mode='posterior'
-        )
-        plot_function_uncertainty(
-            model=model,
-            pointnet_model=pointnet_model,
-            laplace_model=laplace_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            problem=args.problem,
-            save_dir=plot_dir,
-            mode='bootstrap'
-        )
-        plot_function_uncertainty(
-            model=model,
-            pointnet_model=pointnet_model,
-            laplace_model=laplace_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            problem=args.problem,
-            save_dir=plot_dir,
-            mode='combined'
-        )
+        if args.problem in ['mceg', 'mceg4dis']:
+            plot_function_uncertainty_mceg(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                save_dir=plot_dir,
+                mode='posterior'
+            )
+            plot_function_uncertainty_mceg(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                save_dir=plot_dir,
+                mode='bootstrap'
+            )
+            plot_function_uncertainty_mceg(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                save_dir=plot_dir,
+                mode='combined'
+            )
+        else:
+            plot_function_uncertainty(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                problem=args.problem,
+                save_dir=plot_dir,
+                mode='posterior'
+            )
+            plot_function_uncertainty(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                problem=args.problem,
+                save_dir=plot_dir,
+                mode='bootstrap'
+            )
+            plot_function_uncertainty(
+                model=model,
+                pointnet_model=pointnet_model,
+                laplace_model=laplace_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                problem=args.problem,
+                save_dir=plot_dir,
+                mode='combined'
+            )
 
         plot_bootstrap_uncertainty(
             model=model,
