@@ -407,6 +407,7 @@ Examples:
             print("Model output shape:", test_out.shape)
             fit_theta = torch.tensor(thetas[:500], dtype=torch.float32, device=device)
             print(f"fit_z.shape: {fit_z.shape}, fit_theta.shape: {fit_theta.shape}")
+            # breakpoint()
             # For multi-output regression, Laplace expects targets of shape [N, D]
             # If fit_theta shape is [N], expand dims
             if fit_theta.ndim == 1:
@@ -445,18 +446,18 @@ Examples:
                 param_mean, param_std = get_analytic_uncertainty(model, latent_preview, laplace_model=laplace_model)
             print("Output parameter mean (preview):", param_mean.squeeze(0).cpu().numpy())
             print("Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy())
-
-        # Add to plotting workflow  
-        plot_bootstrap_PDF_distribution(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            n_bootstrap=args.n_bootstrap,
-            problem=args.problem,
-            save_dir=plot_dir
-        )
+        if args.problem not in ['mceg', 'mceg4dis']:
+            # Add to plotting workflow  
+            plot_bootstrap_PDF_distribution(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                n_bootstrap=args.n_bootstrap,
+                problem=args.problem,
+                save_dir=plot_dir
+            )
         # Simplified DIS with combined uncertainty
         plot_combined_uncertainty_PDF_distribution(
             model=model,
@@ -474,7 +475,7 @@ Examples:
             pointnet_model=pointnet_model,
             true_params=true_params,
             device=device,
-            event_counts=[1000, 5000, 10000, 50000, 100000],
+            event_counts=[100, 1000, 5000, 10000, 50000, 100000],
             n_bootstrap=args.n_bootstrap,
             problem=args.problem,
             save_dir=plot_dir
@@ -498,7 +499,17 @@ Examples:
             n_draws=100,
             n_events=args.num_events,
             problem=args.problem,
-            save_path=plot_dir + 'param_errors.png'
+            save_path=plot_dir + '/param_errors.png'
+        )
+        if args.problem in ['mceg', 'mceg4dis']:
+            plot_function_error_histogram_mceg(
+            model=model,
+            pointnet_model=pointnet_model,
+            device=device,
+            n_draws=100,
+            n_events=args.num_events,
+            problem=args.problem,
+            save_path=plot_dir + '/function_errors.png'
         )
 
         # # Enhanced event visualization with both views

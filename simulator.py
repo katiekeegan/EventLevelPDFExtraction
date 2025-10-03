@@ -115,6 +115,7 @@ if HAS_MCEG_DEPS:
             self.pdf    = PDF(self.mellin, self.alphaS)
             self.idis   = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
+
         def init(self, params):
             # Take in new parameters and update MCEG class
             new_cpar = self.pdf.get_current_par_array()[::]
@@ -125,6 +126,7 @@ if HAS_MCEG_DEPS:
                 new_cpar[4:8] = params.cpu().numpy()  # Update uv1 parameters
             self.pdf.setup(new_cpar)
             self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
+            self.mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
 
         def sample(self, params, n_events=1000):
             assert n_events > 0, "Number of events must be positive"
@@ -140,6 +142,7 @@ if HAS_MCEG_DEPS:
             random_indices = torch.randperm(samples.size(0))[:n_events]
             samples = samples[random_indices]
             self.clip_alert = mceg.clip_alert
+            self.mceg = mceg
             return samples
 else:
     MCEGSimulator = None

@@ -443,7 +443,7 @@ def plot_parameter_uncertainty(
             mode_colors = [COLORS['blue'], COLORS['orange']]
     
     n_params = len(param_names)
-    fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 8))
+    fig, axes = plt.subplots(2, (n_params + 1) // 2, figsize=(15, 12))
     if n_params <= 2:
         axes = axes.reshape(-1)
     else:
@@ -481,10 +481,11 @@ def plot_parameter_uncertainty(
         
         # Formatting
         ax.set_xlabel(param_names[i])
-        ax.set_ylabel('Probability density')
+        if i == 0:
+            ax.set_ylabel('Probability density')
+            ax.legend(fontsize=15)
         ax.set_title(f'Parameter {i+1}: {param_names[i]}')
-        ax.legend(fontsize=9)
-        ax.grid(True, alpha=0.3)
+        ax.grid(False)
         
         # Add statistics box for the first sample set
         first_samples = samples_to_plot[0][:, i] if samples_to_plot[0].ndim == 2 else samples_to_plot[0][i]
@@ -537,143 +538,306 @@ def plot_function_uncertainty_mceg(
     save_dir=None
 ):
     """
-    MCEG function-space uncertainty bands supporting 'posterior' (Laplace/parameter), 'bootstrap', and 'combined' modes.
-
-    mode='posterior' (or 'parameter'):
-        - Generate one dataset, infer Laplace posterior, sample theta, plot bands.
-
-    mode='bootstrap':
-        - For each bootstrap, generate a dataset, infer theta, plot bands.
-
-    mode='combined':
-        - Plot both bands for comparison.
-
-    All bands are produced using the proper inference pipeline.
+    Drop-in replacement that preserves the collaborator's true-parameter code exactly
+    and aligns all plotted curves to the same x positions (the collaborator's plotting style).
     """
-    from simulator import MCEG, MCEGSimulator, THEORY, PDF, MELLIN, ALPHAS, EWEAK
+    import numpy as np
+    import torch
+    import matplotlib.pyplot as plt
+    from tqdm import tqdm
+
+    from simulator import MCEGSimulator, THEORY, PDF, MELLIN, ALPHAS, EWEAK
+
     mellin = MELLIN(npts=8)
     alphaS = ALPHAS()
     eweak  = EWEAK()
     pdf    = PDF(mellin, alphaS)
     idis   = THEORY(mellin, pdf, alphaS, eweak)
-    rs = 140
-    tar = 'p'
+
+    sim = MCEGSimulator(device=device)
+
+    def evts_to_np(evts):
+        if isinstance(evts, torch.Tensor):
+            return evts.detach().cpu().numpy()
+        return np.asarray(evts)
+
+    def get_reco_stat(evts, mceg):
+        evts_np = evts_to_np(evts)
+        if evts_np.size == 0:
+            hist = np.histogram2d(np.array([]), np.array([]), bins=(nx, nQ2))
+            return np.zeros(hist[0].shape), np.zeros(hist[0].shape), hist
+        log_x = np.log(evts_np[:, 0])
+        log_Q2 = np.log(evts_np[:, 1])
+        hist = np.histogram2d(log_x, log_Q2, bins=(nx, nQ2))
+        counts = hist[0].astype(float)
+        reco = np.zeros_like(counts)
+        stat = np.zeros_like(counts)
+        x_edges = hist[1]
+        Q2_edges = hist[2]
+        for i in range(x_edges.shape[0] - 1):
+            for j in range(Q2_edges.shape[0] - 1):
+                c = counts[i, j]
+                if c > 0:
+                    xmin = np.exp(x_edges[i]); xmax = np.exp(x_edges[i + 1])
+                    Q2min = np.exp(Q2_edges[j]); Q2max = np.exp(Q2_edges[j + 1])
+                    dx = xmax - xmin
+                    dQ2 = Q2max - Q2min
+                    reco[i, j] = c / (dx * dQ2)
+                    stat[i, j] = np.sqrt(c) / (dx * dQ2)
+        if np.sum(counts) > 0:
+            try:
+                scale = float(mceg.total_xsec) / np.sum(counts)
+            except Exception:
+                scale = 1.0
+            reco *= scale
+            stat *= scale
+        return reco, stat, hist
+
+    # -------------------------
+    # Compute TRUE exactly as your collaborator did (VERBATIM logic)
+    # -------------------------
+    sim.init(true_params)
+    evts_true = sim.sample(true_params, num_events).cpu()
+    # Build histogram on log-variables
+    hist = np.histogram2d(np.log(evts_true[:, 0]), np.log(evts_true[:, 1]), bins=(nx, nQ2))
+    true = np.zeros(hist[0].shape)
+    reco = np.zeros(hist[0].shape)
+    stat = np.zeros(hist[0].shape)
+    entries = [(a, b) for a in range(hist[1].shape[0] - 1)
+                     for b in range(hist[2].shape[0] - 1)]
+    for i, j in tqdm(entries, desc="computing true (collab code)"):
+        if hist[0][i, j] > 0:
+            x = np.exp(0.5 * (hist[1][i] + hist[1][i + 1]))
+            Q2 = np.exp(0.5 * (hist[2][j] + hist[2][j + 1]))
+            xmin = np.exp(hist[1][i]); xmax = np.exp(hist[1][i + 1])
+            Q2min = np.exp(hist[2][j]); Q2max = np.exp(hist[2][j + 1])
+            dx = xmax - xmin
+            dQ2 = Q2max - Q2min
+
+            # collaborator's analytic true eval
+            true[i, j],_ = idis.get_diff_xsec(x, Q2, sim.mceg.rs, sim.mceg.tar, 'xQ2')
+
+            # empirical reco/stat from true dataset (same as collab)
+            reco[i, j] = hist[0][i, j] / dx / dQ2
+            stat[i, j] = np.sqrt(hist[0][i, j]) / dx / dQ2
+
+    # scale reco and stat to total_xsec same as collab
+    if np.sum(hist[0]) > 0:
+        try:
+            scale = float(sim.mceg.total_xsec) / np.sum(hist[0])
+        except Exception:
+            scale = 1.0
+        reco *= scale
+        stat *= scale
+
+    # We will use hist (hist from true) edges as the canonical x positions exactly as collab did:
+    log_x_edges = hist[1]   # these are log-space edges
+    log_Q2_edges = hist[2]
+    # collab plotted hist[1][:-1] directly (log-values) and used ax.semilogy()
+    x_plot_log = log_x_edges[:-1]      # this is exactly what collab used for plotting x
+    Q2_centers = np.exp(0.5 * (log_Q2_edges[:-1] + log_Q2_edges[1:]))
 
     all_bands = []
-
-    # Helper: get reco/stat from events
-    def get_reco_stat(evts, mceg):
-        hist = np.histogram2d(np.log(evts[:,0]), np.log(evts[:,1]), bins=(nx, nQ2))
-        reco = np.zeros(hist[0].shape)
-        stat = np.zeros(hist[0].shape)
-        for i in range(hist[1].shape[0]-1):
-            for j in range(hist[2].shape[0]-1):
-                if hist[0][i,j]>0:
-                    xmin = np.exp(hist[1][i]); xmax = np.exp(hist[1][i+1])
-                    Q2min = np.exp(hist[2][j]); Q2max = np.exp(hist[2][j+1])
-                    dx = xmax-xmin
-                    dQ2 = Q2max-Q2min
-                    reco[i,j] = hist[0][i,j]/dx/dQ2
-                    stat[i,j] = np.sqrt(hist[0][i,j])/dx/dQ2
-        if np.sum(hist[0]) > 0:
-            reco *= mceg.total_xsec/np.sum(hist[0])
-            stat *= mceg.total_xsec/np.sum(hist[0])
-        return reco, stat, hist
-    MCEGSimulator = MCEGSimulator(device=device)
-    # --- 1. Posterior (Laplace/parameter) mode ---
+    # --- Posterior (Laplace) mode ---
     if mode in ['posterior', 'parameter', 'combined'] and laplace_model is not None:
-        # Generate one dataset and infer Laplace posterior
-        # Generate dataset from true params
-        evts = MCEGSimulator.sample(true_params, num_events)
-        feats = evts.float().to(device)
-        feats = feats.unsqueeze(0)
-        feats = log_feature_engineering(feats).float()
-        # breakpoint()
-        latents = pointnet_model(feats).detach()
-        theta = model(latents).detach().cpu().numpy()
+        # infer posterior from one dataset (init before sample)
+        sim.init(true_params)
+        evts = sim.sample(true_params, num_events)
+        feats = evts.float().to(device) if isinstance(evts, torch.Tensor) else torch.tensor(evts, device=device).float()
+        from utils import log_feature_engineering
+        feats_for_pointnet = log_feature_engineering(feats).float().unsqueeze(0)
+        latents = pointnet_model(feats_for_pointnet).detach()
         with torch.no_grad():
-            theta_samples = laplace_model.sample(n_mc).cpu()  # shape: (n_mc, param_dim)
-            # dist = laplace_model.predictive_distribution(latents)
-            # mean = dist.loc.cpu()
-            # cov = dist.covariance_matrix.cpu()
-            # mvn = torch.distributions.MultivariateNormal(mean, cov)
-            # theta_samples = mvn.sample((n_mc,))  # [n_mc, param_dim]
+            theta_samples = posterior_sampler(
+                feats,
+                pointnet_model,
+                model,
+                laplace_model,
+                n_samples=n_mc)
         reco_samples = []
         stat_samples = []
         for theta in tqdm(theta_samples, desc="Laplace/parameter bands"):
-            evts_pred = MCEGSimulator.sample(theta, num_events)
-            reco, stat, hist = get_reco_stat(evts_pred, mceg_pred)
-            reco_samples.append(reco)
-            stat_samples.append(stat)
-        reco_samples = np.array(reco_samples)
+            # ensure init before sample
+            try:
+                sim.init(theta)
+            except Exception:
+                sim.init(theta.detach().cpu().numpy() if hasattr(theta, "detach") else np.asarray(theta))
+            evts_pred = sim.sample(theta, num_events)
+            reco_s, stat_s, hist_s = get_reco_stat(evts_pred.cpu(), sim.mceg)
+            reco_samples.append(reco_s)
+            stat_samples.append(stat_s)
+        reco_samples = np.array(reco_samples)  # [n_mc, nx, nQ2]
         stat_samples = np.array(stat_samples)
         all_bands.append(('parameter', reco_samples, stat_samples, hist))
 
-    # --- 2. Bootstrap mode ---
+    # --- Bootstrap mode ---
     if mode in ['bootstrap', 'combined']:
         reco_samples = []
         stat_samples = []
-        for b in tqdm(range(n_bootstrap), desc="MCEG bootstrap bands"):
-            evts = MCEGSimulator.sample(true_params, num_events)
-            feats = evts.float().to(device)
-            feats = feats.unsqueeze(0)
-            feats = log_feature_engineering(feats).float()
-            latents = pointnet_model(feats).detach()
-            # Infer parameters
+        for b in tqdm(range(n_bootstrap), desc="bootstrap bands"):
+            sim.init(true_params)
+            evts = sim.sample(true_params, num_events)
+            feats = evts.float().to(device) if isinstance(evts, torch.Tensor) else torch.tensor(evts, device=device).float()
+            from utils import log_feature_engineering
+            feats_for_pointnet = log_feature_engineering(feats).float().unsqueeze(0)
+            latents = pointnet_model(feats_for_pointnet).detach()
             with torch.no_grad():
-                inferred_theta = model(latents).mean(dim=0).detach().cpu().numpy()
-            # Generate predicted events from inferred params
-                        # Generate dataset from true params
-            evts_pred = MCEGSimulator.sample(inferred_theta, num_events)
-            reco, stat, hist = get_reco_stat(evts_pred, mceg_pred)
-            reco_samples.append(reco)
-            stat_samples.append(stat)
+                inferred = model(latents)
+                try:
+                    inferred_theta = inferred.mean(dim=0).detach().cpu().numpy()
+                except Exception:
+                    inferred_theta = inferred.detach().cpu().numpy().ravel()
+            sim.init(inferred_theta)
+            evts_pred = sim.sample(inferred_theta, num_events)
+            reco_s, stat_s, hist_s = get_reco_stat(evts_pred.cpu(), sim.mceg)
+            reco_samples.append(reco_s)
+            stat_samples.append(stat_s)
         reco_samples = np.array(reco_samples)
         stat_samples = np.array(stat_samples)
         all_bands.append(('bootstrap', reco_samples, stat_samples, hist))
 
-    # --- Plotting ---
+    # --- Plotting using collaborator style exact x positions (log-values) ---
     label_map = dict(parameter="Laplace Posterior", bootstrap="Bootstrap")
-    color_map = dict(parameter="blue", bootstrap="orange")
-    Q2_centers = np.exp(0.5*(hist[2][:-1]+hist[2][1:]))
-    x_centers = np.exp(0.5*(hist[1][:-1]+hist[1][1:]))
+    # color_map = dict(parameter="tab:blue", bootstrap="tab:orange")  # replaced by Q2-based rainbow
+
+    # pick Q2 slices similar to collab method
     if Q2_slices is None:
-        Q2_indices = np.arange(0, nQ2, max(1, nQ2//10))
+        nQ2_selects = 10
+        dnQ2 = max(1, int(log_Q2_edges.shape[0] / nQ2_selects))
+        Q2_indices = list(range(0, log_Q2_edges.shape[0] - 1, dnQ2))
     else:
-        Q2_indices = [np.argmin(np.abs(Q2_centers-q2)) for q2 in Q2_slices]
-    fig, ax = plt.subplots(figsize=(10,7))
-    for band_idx, (mode_name, reco_samples, stat_samples, hist) in enumerate(all_bands):
-        for i_q in Q2_indices:
-            curves = reco_samples[:,:,i_q]
+        # map requested Q2 values to index
+        Q2_indices = [np.argmin(np.abs(Q2_centers - q2)) for q2 in Q2_slices]
+
+    fig, ax = plt.subplots(figsize=(10, 7))
+
+    # Create rainbow colormap for the Q2 slices
+    cmap = plt.cm.rainbow
+    n_Q2_sel = len(Q2_indices)
+    # Avoid division by zero if only one Q2 slice:
+    def cmap_val(idx):
+        if n_Q2_sel == 1:
+            return cmap(0.5)
+        return cmap(float(idx) / float(max(1, n_Q2_sel - 1)))
+
+    # Plot collaborator true line (they used log edges for x positions and true computed at midpoints)
+    for idx, j in enumerate(Q2_indices):
+        if np.exp(log_Q2_edges[j]) > 100:
+            continue
+        color = cmap_val(idx)
+        cond_true = true[:, j] > 0
+        if np.any(cond_true):
+            # collaborator used hist[1][:-1] (log-space) as x positions
+            ax.plot(x_plot_log[cond_true],
+                    true[:, j][cond_true],
+                    label=f'Q²={np.exp(log_Q2_edges[j]):.2f}',
+                    color=color,
+                    linestyle='-',
+                    linewidth=1.5)
+
+        cond_reco = reco[:, j] > 0
+        if np.any(cond_reco):
+            # plot reco and stat at the same x positions (log-values)
+            ax.errorbar(x_plot_log[cond_reco],
+                        reco[:, j][cond_reco],
+                        stat[:, j][cond_reco],
+                        fmt='.',
+                        color=color,
+                        alpha=0.85,
+                        label=f'Empirical Q²={np.exp(log_Q2_edges[j]):.2f}')
+
+    # Now plot bands (percentiles) but aligned to the collaborator x positions (log-values)
+    for mode_name, reco_samples, stat_samples, hist_used in all_bands:
+        # choose a linestyle per mode so modes remain distinguishable while keeping Q2 color consistent
+        if mode_name == 'parameter':
+            ls = '.'
+            alpha_fill_outer = 0.18
+            alpha_fill_inner = 0.30
+            median_marker = None
+        elif mode_name == 'bootstrap':
+            ls = '.' # (0, (3, 1, 1, 1))  # dash-dot-ish
+            alpha_fill_outer = 0.12
+            alpha_fill_inner = 0.22
+            median_marker = None
+        else:
+            ls = 'n'
+            alpha_fill_outer = 0.15
+            alpha_fill_inner = 0.25
+            median_marker = None
+
+        for idx, j in enumerate(Q2_indices):
+            if np.exp(log_Q2_edges[j]) > 100:
+                continue
+            color = cmap_val(idx)
+            # reco_samples: [n_samples, nx, nQ2]
+            curves = reco_samples[:, :, j]  # shape [n_samples, nx]
+            if curves.size == 0:
+                continue
             q5 = np.percentile(curves, 5, axis=0)
             q95 = np.percentile(curves, 95, axis=0)
             q25 = np.percentile(curves, 25, axis=0)
             q75 = np.percentile(curves, 75, axis=0)
             median = np.median(curves, axis=0)
-            stat_err = np.median(stat_samples[:,:,i_q], axis=0)
+            stat_err = np.median(stat_samples[:, :, j], axis=0)
             mask = median > 0
-            label = f'{label_map.get(mode_name, mode_name)} Q²={Q2_centers[i_q]:.2f}'
-            ax.plot(np.log(x_centers[mask]), median[mask],
-                    label=label, color=color_map.get(mode_name, "gray"))
-            ax.fill_between(np.log(x_centers[mask]), q5[mask], q95[mask],
-                            alpha=0.15, color=color_map.get(mode_name, "gray"))
-            ax.fill_between(np.log(x_centers[mask]), q25[mask], q75[mask],
-                            alpha=0.25, color=color_map.get(mode_name, "gray"))
-            ax.errorbar(np.log(x_centers[mask]), median[mask], stat_err[mask],
-                        fmt='.', alpha=0.5, color=color_map.get(mode_name, "gray"))
+            if not np.any(mask):
+                continue
+            label = f'{label_map.get(mode_name, mode_name)} Q²={np.exp(log_Q2_edges[j]):.2f}'
+            # median line (colored by Q2)
+            ax.plot(x_plot_log[mask],
+                    median[mask],
+                    # label=label,
+                    color=color,
+                    linestyle=ls,
+                    linewidth=1.5,
+                    marker=median_marker,
+                    alpha=1.0)
+            # # outer percentile band (5-95)
+            # ax.fill_between(x_plot_log[mask],
+            #                 q5[mask],
+            #                 q95[mask],
+            #                 alpha=alpha_fill_outer,
+            #                 color=color,
+            #                 linewidth=0)
+            # inner percentile band (25-75)
+            ax.fill_between(x_plot_log[mask],
+                            q25[mask],
+                            q75[mask],
+                            alpha=alpha_fill_inner,
+                            color=color,
+                            linewidth=0)
+            # median errorbars (stat)
+            ax.errorbar(x_plot_log[mask],
+                        median[mask],
+                        stat_err[mask],
+                        fmt='.',
+                        alpha=0.6,
+                        color=color)
 
-    ax.tick_params(axis='both', which='major', labelsize=16, direction='in')
-    ax.set_ylabel(r'$d\sigma/dxdQ^2~[{\rm GeV^{-4}}]$', size=22)
-    ax.set_xlabel(r'$x$', size=22)
-    ax.set_xticks(np.log([1e-4,1e-3,1e-2,1e-1]))
-    ax.set_xticklabels([r'$0.0001$', r'$0.001$', r'$0.01$', r'$0.1$'])
+    ax.tick_params(axis='both', which='major', labelsize=20, direction='in')
+    ax.set_ylabel(r'$d\sigma/dxdQ^2~[{\rm GeV^{-4}}]$', size=20)
+    ax.set_xlabel(r'$\log(x)$', size=20)
+
+    # collaborator used semilogy for y scaling (we keep that to match look)
     ax.semilogy()
-    ax.legend(fontsize=14)
-    ax.set_title(f'MCEG Function Uncertainty Bands ({mode})', fontsize=20)
+
+    # xticks use log-values to show familiar x locations
+    ax.set_xticks(np.log([1e-4, 1e-3, 1e-2, 1e-1]))
+    ax.set_xticklabels([r'$10^{-4}$', r'$10^{-3}$', r'$10^{-2}$', r'$10^{-1}$'])
+
+    # Remove duplicated legend entries (keep order)
+    handles, labels = ax.get_legend_handles_labels()
+    by_label = {}
+    for h, l in zip(handles, labels):
+        if l not in by_label:
+            by_label[l] = h
+    ax.legend(by_label.values(), by_label.keys(), fontsize=14, ncol=2)
+
+    # ax.set_title(f'MCEG Function Uncertainty Bands ({mode})', fontsize=14)
     plt.tight_layout()
     if save_dir:
-        plt.savefig(f"{save_dir}/mceg_function_uncertainty_{mode}_bands.png", dpi=200)
-    plt.close(fig)
+        plt.savefig(f"{save_dir}/mceg_function_uncertainty_{mode}_bands_collab_true.png", dpi=200)
+
 
 def plot_function_uncertainty(
     model=None,

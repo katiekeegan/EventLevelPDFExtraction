@@ -1403,7 +1403,7 @@ def plot_parameter_error_histogram(
         elif problem == 'realistic_dis':
             param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$']
         else:
-            param_names = [f'$\\theta_{{{i}}}$' for i in range(n_params)]
+            param_names = [r'$a$', r'$b$', r'$c$', r'$d$']
     
     # Create subplots
     fig, axes = plt.subplots(2, n_params, figsize=(4*n_params, 10))
@@ -1438,11 +1438,14 @@ def plot_parameter_error_histogram(
                    transform=ax_abs.transAxes, verticalalignment='top',
                    bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
         
-        ax_abs.set_xlabel(f'Error in {param_names[i]}')
-        ax_abs.set_ylabel('Frequency')
-        ax_abs.set_title(f'Absolute Error: {param_names[i]}')
+        if i == 0:
+            ax_abs.set_xlabel(f'Absolute Error', fontsize=15)
+            ax_abs.set_ylabel('Frequency', fontsize=15)
+        ax_abs.tick_params(axis='x', fontsize=10)
+        ax_abs.tick_params(axis='y', fontsize=10)
         ax_abs.grid(True, alpha=0.3)
-        ax_abs.legend()
+        ax_abs.legend(fontsize=15)
+        ax_abs.set_xscale('log')
         
         # Relative errors (bottom row)
         ax_rel = axes[1, i]
@@ -1454,6 +1457,8 @@ def plot_parameter_error_histogram(
             edgecolor='white',
             linewidth=0.5
         )
+
+        ax_rel.set_xscale('log')
         
         # Add vertical line at zero
         ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
@@ -1463,154 +1468,270 @@ def plot_parameter_error_histogram(
         std_rel_err = np.std(relative_errors[:, i]) * 100
         ax_rel.text(0.02, 0.98, f'μ = {mean_rel_err:.1f}%\nσ = {std_rel_err:.1f}%', 
                    transform=ax_rel.transAxes, verticalalignment='top',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        ax_rel.set_xlabel(f'Relative Error in {param_names[i]} (%)')
-        ax_rel.set_ylabel('Frequency')
-        ax_rel.set_title(f'Relative Error: {param_names[i]}')
+                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8), fontsize=15)
+        if i == 0:
+            ax_rel.set_xlabel(f'Relative Error', fontsize=15)
+            ax_rel.set_ylabel('Frequency', fontsize=15)
+        ax_rel.tick_params(axis='x', fontsize=10)
+        ax_rel.tick_params(axis='y', fontsize=10)
         ax_rel.grid(True, alpha=0.3)
-        ax_rel.legend()
+        ax_rel.legend(fontsize=15)
     
-    plt.suptitle('Parameter Error Analysis', fontsize=18, y=0.95)
+    # plt.suptitle('Parameter Error Analysis', fontsize=18, y=0.95)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
 
-
-def plot_function_error_histogram(
-    true_function_values_list,
-    predicted_function_values_list,
-    function_names=None,
-    save_path="function_error_histogram.png",
-    bins=50
+def plot_function_error_histogram_mceg(
+    true_params_list,
+    predicted_params_list,
+    param_names=None,
+    save_path="function_error_histogram_mceg.png",
+    problem='simplified_dis',
+    # MCEG-specific args:
+    device='cpu',
+    num_events=10000,
+    nx=30,
+    nQ2=20,
+    Q2_slices=None,
+    # plotting options
+    n_bins_hist=40,
+    seed=None
 ):
     """
-    Create publication-ready histograms of average entrywise function value errors.
-    
+    Plot histogram of average function errors (MCEG) across parameter sets.
+
+    Behavior:
+      - If problem == 'mceg': for each (true_params, predicted_params) pair:
+            * simulate events at true params -> build log(x), log(Q2) histogram (nx x nQ2)
+            * simulate events at predicted params -> build same-style histogram
+            * for selected Q2 indices, compute entrywise abs error across x bins:
+                mean_error_j = mean_{x bins in that Q2} |f_true(x,Q2) - f_pred(x,Q2)|
+              final_error_for_pair = mean_j mean_error_j  (average across chosen Q2)
+            * collect final_error_for_pair for all parameter pairs and plot histogram & stats
+      - If problem != 'mceg' falls back to parameter-error histogram behavior (absolute & relative).
     Parameters:
-    -----------
-    true_function_values_list : list of numpy arrays
-        List of true function evaluations, each array of shape (n_points,) or (n_points, n_functions)
-    predicted_function_values_list : list of numpy arrays
-        List of predicted function evaluations, same shape as true_function_values_list
-    function_names : list of str, optional
-        Function names for labels (e.g., ['u(x)', 'd(x)'])
-    save_path : str
-        Path to save the histogram plot
-    bins : int
-        Number of histogram bins
-        
-    Returns:
-    --------
-    None
-        Saves the plot to save_path
+      - true_params_list, predicted_params_list : lists of arrays or tensors (n_samples x n_params)
+      - param_names: list of strings (optional) for fallback parameter histograms
+      - save_path: where to save the figure
+      - problem: 'mceg' or other (default 'simplified_dis')
+      - device, num_events, nx, nQ2, Q2_slices: control MCEG simulation/binning
     """
-    # Convert to numpy if needed
-    if isinstance(true_function_values_list[0], torch.Tensor):
-        true_function_values_list = [f.detach().cpu().numpy() for f in true_function_values_list]
-    if isinstance(predicted_function_values_list[0], torch.Tensor):
-        predicted_function_values_list = [f.detach().cpu().numpy() for f in predicted_function_values_list]
-    
-    # Ensure consistent shapes
-    true_vals = np.array(true_function_values_list)
-    pred_vals = np.array(predicted_function_values_list)
-    
-    if true_vals.ndim == 2:
-        # Single function case: (n_samples, n_points) -> treat as single function
-        true_vals = true_vals[:, :, np.newaxis]  # (n_samples, n_points, 1)
-        pred_vals = pred_vals[:, :, np.newaxis]
-    
-    n_samples, n_points, n_functions = true_vals.shape
-    
-    # Set default function names
-    if function_names is None:
-        if n_functions == 2:
-            function_names = [r'$u(x)$', r'$d(x)$']
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    # convert lists to numpy arrays
+    def to_numpy_list(lst):
+        if len(lst) == 0:
+            return []
+        first = lst[0]
+        if isinstance(first, torch.Tensor):
+            return [p.detach().cpu().numpy() for p in lst]
+        return [np.asarray(p) for p in lst]
+
+    true_params_list = to_numpy_list(true_params_list)
+    predicted_params_list = to_numpy_list(predicted_params_list)
+
+    if len(true_params_list) != len(predicted_params_list):
+        raise ValueError("true_params_list and predicted_params_list must have same length.")
+
+    n_samples = len(true_params_list)
+
+    # --- Non-mceg fallback: parameter-error histograms (compacted version of your original) ---
+    if problem != 'mceg':
+        # reuse the parameter-error plotting logic (absolute + relative histograms)
+        true_params = np.vstack(true_params_list)
+        predicted_params = np.vstack(predicted_params_list)
+        param_errors = predicted_params - true_params
+        relative_errors = param_errors / (true_params + 1e-8)
+        n_params = param_errors.shape[1]
+
+        if param_names is None:
+            if problem == 'simplified_dis':
+                param_names = [r'$a_u$', r'$b_u$', r'$a_d$', r'$b_d$'][:n_params]
+            elif problem == 'realistic_dis':
+                param_names = [r'$\log A_0$', r'$\delta$', r'$a$', r'$b$', r'$c$', r'$d$'][:n_params]
+            else:
+                param_names = [f'$\\theta_{{{i}}}$' for i in range(n_params)]
+
+        fig, axes = plt.subplots(2, n_params, figsize=(4*n_params, 10))
+        if n_params == 1:
+            axes = axes.reshape(2, 1)
+
+        colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'],
+                       COLORBLIND_COLORS['green'], COLORBLIND_COLORS['red']]
+
+        for i in range(n_params):
+            color = colors_list[i % len(colors_list)]
+            ax_abs = axes[0, i]
+            n_bins = min(50, max(10, len(param_errors) // 5))
+            ax_abs.hist(param_errors[:, i], bins=n_bins, alpha=0.7, color=color,
+                        edgecolor='white', linewidth=0.5)
+            ax_abs.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2)
+            mean_err = np.mean(param_errors[:, i])
+            std_err = np.std(param_errors[:, i])
+            ax_abs.text(0.02, 0.98, f'μ = {mean_err:.3f}\nσ = {std_err:.3f}',
+                        transform=ax_abs.transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            ax_abs.set_xlabel(f'Error in {param_names[i]}')
+            ax_abs.set_ylabel('Frequency')
+            ax_abs.set_title(f'Absolute Error: {param_names[i]}')
+            ax_abs.grid(True, alpha=0.3)
+
+            ax_rel = axes[1, i]
+            ax_rel.hist(relative_errors[:, i] * 100, bins=n_bins, alpha=0.7, color=color,
+                        edgecolor='white', linewidth=0.5)
+            ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2)
+            mean_rel_err = np.mean(relative_errors[:, i]) * 100
+            std_rel_err = np.std(relative_errors[:, i]) * 100
+            ax_rel.text(0.02, 0.98, f'μ = {mean_rel_err:.1f}%\nσ = {std_rel_err:.1f}%',
+                        transform=ax_rel.transAxes, verticalalignment='top',
+                        bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+            ax_rel.set_xlabel(f'Relative Error in {param_names[i]} (%)')
+            ax_rel.set_ylabel('Frequency')
+            ax_rel.set_title(f'Relative Error: {param_names[i]}')
+            ax_rel.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        return
+
+    # --- problem == 'mceg' branch ---
+    # lazily import MCEGSimulator and helpers from your earlier code
+    try:
+        from simulator import MCEGSimulator
+    except Exception as e:
+        raise RuntimeError("Could not import MCEGSimulator from simulator. Ensure it is on PYTHONPATH.") from e
+
+    sim = MCEGSimulator(device=device)
+
+    # helper: build reco and stat given events and mceg instance (same logic as earlier)
+    def evts_to_np(evts):
+        if isinstance(evts, torch.Tensor):
+            return evts.detach().cpu().numpy()
+        return np.asarray(evts)
+
+    def get_reco_stat(evts, mceg):
+        evts_np = evts_to_np(evts)
+        if evts_np.size == 0:
+            hist = np.histogram2d(np.array([]), np.array([]), bins=(nx, nQ2))
+            return np.zeros(hist[0].shape), np.zeros(hist[0].shape), hist
+        log_x = np.log(evts_np[:, 0])
+        log_Q2 = np.log(evts_np[:, 1])
+        hist = np.histogram2d(log_x, log_Q2, bins=(nx, nQ2))
+        counts = hist[0].astype(float)
+        reco = np.zeros_like(counts)
+        stat = np.zeros_like(counts)
+        x_edges = hist[1]
+        Q2_edges = hist[2]
+        for i in range(x_edges.shape[0] - 1):
+            for j in range(Q2_edges.shape[0] - 1):
+                c = counts[i, j]
+                if c > 0:
+                    xmin = np.exp(x_edges[i]); xmax = np.exp(x_edges[i + 1])
+                    Q2min = np.exp(Q2_edges[j]); Q2max = np.exp(Q2_edges[j + 1])
+                    dx = xmax - xmin
+                    dQ2 = Q2max - Q2min
+                    reco[i, j] = c / (dx * dQ2)
+                    stat[i, j] = np.sqrt(c) / (dx * dQ2)
+        if np.sum(counts) > 0:
+            try:
+                scale = float(mceg.total_xsec) / np.sum(counts)
+            except Exception:
+                scale = 1.0
+            reco *= scale
+            stat *= scale
+        return reco, stat, hist
+
+    # Prepare Q2 indices selection by examining a representative true_params (first one)
+    # We will build canonical log edges using the first true_params simulation so all samples align.
+    if n_samples == 0:
+        raise ValueError("No samples provided.")
+
+    # canonical edges: simulate once at first true params to get bin edges (log-space)
+    sim.init(true_params_list[0])
+    evts0 = sim.sample(true_params_list[0], num_events)
+    _, _, hist_ref = get_reco_stat(evts0.cpu(), sim.mceg)
+    log_x_edges = hist_ref[1]
+    log_Q2_edges = hist_ref[2]
+    Q2_centers = np.exp(0.5 * (log_Q2_edges[:-1] + log_Q2_edges[1:]))
+
+    # choose Q2 indices like collaborator code (if Q2_slices provided map to nearest)
+    if Q2_slices is None:
+        nQ2_selects = 10
+        dnQ2 = max(1, int(log_Q2_edges.shape[0] / nQ2_selects))
+        Q2_indices = list(range(0, log_Q2_edges.shape[0] - 1, dnQ2))
+    else:
+        Q2_indices = [int(np.argmin(np.abs(Q2_centers - q2))) for q2 in Q2_slices]
+
+    final_errors = np.zeros(n_samples, dtype=float)
+
+    # iterate over parameter pairs and compute final_error as specified
+    for idx in tqdm(range(n_samples), desc="computing function errors (mceg)"):
+        true_params = true_params_list[idx]
+        pred_params = predicted_params_list[idx]
+
+        # simulate true
+        try:
+            sim.init(true_params)
+        except Exception:
+            sim.init(np.asarray(true_params))
+        evts_true = sim.sample(true_params, num_events)
+        reco_true, stat_true, hist_true = get_reco_stat(evts_true.cpu(), sim.mceg)
+
+        # simulate predicted
+        try:
+            sim.init(pred_params)
+        except Exception:
+            sim.init(np.asarray(pred_params))
+        evts_pred = sim.sample(pred_params, num_events)
+        reco_pred, stat_pred, hist_pred = get_reco_stat(evts_pred.cpu(), sim.mceg)
+
+        # for selected Q2 indices compute mean entrywise abs error across x bins
+        mean_errors_per_Q2 = []
+        for j in Q2_indices:
+            # use same x bins given by log_x_edges; reco arrays use those bins
+            true_col = reco_true[:, j]
+            pred_col = reco_pred[:, j]
+            # define mask of bins to include: bins where either true or pred has positive entry
+            mask = (true_col > 0) | (pred_col > 0)
+            if not np.any(mask):
+                # no info in this Q2 slice for this pair -> treat error as 0 (or could be nan)
+                mean_errors_per_Q2.append(0.0)
+            else:
+                err_array = np.abs(true_col[mask] - pred_col[mask])
+                mean_errors_per_Q2.append(np.mean(err_array))
+
+        # final error for this pair = average of the mean_errors over Q2 slices
+        if len(mean_errors_per_Q2) == 0:
+            final_errors[idx] = 0.0
         else:
-            function_names = [f'$f_{{{i}}}(x)$' for i in range(n_functions)]
-    
-    # Compute average entrywise errors for each sample and function
-    abs_errors = np.abs(pred_vals - true_vals)  # (n_samples, n_points, n_functions)
-    avg_abs_errors = np.mean(abs_errors, axis=1)  # (n_samples, n_functions)
-    
-    rel_errors = abs_errors / (np.abs(true_vals) + 1e-8)  # Relative errors
-    avg_rel_errors = np.mean(rel_errors, axis=1)  # (n_samples, n_functions)
-    
-    # Create subplots
-    fig, axes = plt.subplots(2, n_functions, figsize=(6*n_functions, 10))
-    if n_functions == 1:
-        axes = axes.reshape(2, 1)
-    
-    colors_list = [COLORBLIND_COLORS['blue'], COLORBLIND_COLORS['orange'], 
-                   COLORBLIND_COLORS['green'], COLORBLIND_COLORS['purple']]
-    
-    for i in range(n_functions):
-        color = colors_list[i % len(colors_list)]
-        
-        # Absolute errors (top row)
-        ax_abs = axes[0, i]
-        counts, bins_abs, patches = ax_abs.hist(
-            avg_abs_errors[:, i], 
-            bins=bins, 
-            alpha=0.7, 
-            color=color,
-            edgecolor='white',
-            linewidth=0.5,
-            density=True  # Normalize to show probability density
-        )
-        
-        # Add statistics
-        mean_abs = np.mean(avg_abs_errors[:, i])
-        std_abs = np.std(avg_abs_errors[:, i])
-        median_abs = np.median(avg_abs_errors[:, i])
-        
-        ax_abs.axvline(mean_abs, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_abs:.4f}')
-        ax_abs.axvline(median_abs, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_abs:.4f}')
-        
-        ax_abs.text(0.98, 0.98, f'μ = {mean_abs:.4f}\nσ = {std_abs:.4f}', 
-                   transform=ax_abs.transAxes, verticalalignment='top', horizontalalignment='right',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        ax_abs.set_xlabel(f'Average Absolute Error in {function_names[i]}')
-        ax_abs.set_ylabel('Probability Density')
-        ax_abs.set_title(f'Distribution of Errors: {function_names[i]}')
-        ax_abs.grid(True, alpha=0.3)
-        ax_abs.legend()
-        
-        # Relative errors (bottom row)
-        ax_rel = axes[1, i]
-        counts, bins_rel, patches = ax_rel.hist(
-            avg_rel_errors[:, i] * 100,  # Convert to percentage
-            bins=bins, 
-            alpha=0.7, 
-            color=color,
-            edgecolor='white',
-            linewidth=0.5,
-            density=True
-        )
-        
-        # Add statistics
-        mean_rel = np.mean(avg_rel_errors[:, i]) * 100
-        std_rel = np.std(avg_rel_errors[:, i]) * 100
-        median_rel = np.median(avg_rel_errors[:, i]) * 100
-        
-        ax_rel.axvline(mean_rel, color='red', linestyle='--', alpha=0.8, linewidth=2, label=f'Mean: {mean_rel:.2f}%')
-        ax_rel.axvline(median_rel, color='purple', linestyle=':', alpha=0.8, linewidth=2, label=f'Median: {median_rel:.2f}%')
-        
-        ax_rel.text(0.98, 0.98, f'μ = {mean_rel:.2f}%\nσ = {std_rel:.2f}%', 
-                   transform=ax_rel.transAxes, verticalalignment='top', horizontalalignment='right',
-                   bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
-        
-        ax_rel.set_xlabel(f'Average Relative Error in {function_names[i]} (%)')
-        ax_rel.set_ylabel('Probability Density')
-        ax_rel.set_title(f'Distribution of Relative Errors: {function_names[i]}')
-        ax_rel.grid(True, alpha=0.3)
-        ax_rel.legend()
-    
-    plt.suptitle('Function Value Error Analysis', fontsize=18, y=0.95)
+            final_errors[idx] = float(np.mean(mean_errors_per_Q2))
+
+    # Now plot histogram of final_errors
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.hist(final_errors, bins=n_bins_hist, alpha=0.8, edgecolor='white')
+    mean_final = np.mean(final_errors)
+    std_final = np.std(final_errors)
+    median_final = np.median(final_errors)
+    ax.axvline(mean_final, color='red', linestyle='--', linewidth=1.8, label=f'Mean = {mean_final:.4g}')
+    ax.axvline(median_final, color='black', linestyle=':', linewidth=1.2, label=f'Median = {median_final:.4g}')
+    ax.set_xlabel('Average function error (averaged over x then Q²)', fontsize=12)
+    ax.set_ylabel('Frequency', fontsize=12)
+    ax.set_title('Histogram of Average Function Errors (MCEG)', fontsize=14)
+    ax.text(0.98, 0.98, f'μ = {mean_final:.4g}\nσ = {std_final:.4g}',
+            transform=ax.transAxes, verticalalignment='top', horizontalalignment='right',
+            bbox=dict(boxstyle='round', facecolor='white', alpha=0.9))
+    ax.grid(True, alpha=0.25)
+    ax.legend()
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
+
+    # Also return the final errors array so user can inspect them programmatically
+    return final_errors
 
 
 def plot_event_histogram_simplified_DIS(
@@ -4309,70 +4430,14 @@ def plot_uncertainty_vs_events(
     problem='simplified_dis',
     save_dir=None,
     Q2_slices=None,
-    fixed_x_values=None
+    fixed_x_values=None,
+    nx=30,            # histogram x bins (matches your other function)
+    nQ2=20            # histogram Q2 bins
 ):
     """
-    Plot uncertainty quantification consistency: how uncertainty bands shrink 
-    as the number of events (data) increases.
-    
-    This function demonstrates the fundamental principle that uncertainty should 
-    decrease as more data becomes available. For each event count, it runs the 
-    full uncertainty quantification pipeline and shows how both bootstrap 
-    (data uncertainty) and Laplace (model uncertainty) behave with varying 
-    amounts of training data.
-    
-    **Key Consistency Check**: Uncertainty should generally decrease as N_events 
-    increases, following statistical scaling laws (roughly proportional to 1/√N).
-    
-    Args:
-        model: Trained model head for parameter prediction
-        pointnet_model: Trained PointNet model for latent extraction
-        true_params: Fixed true parameter values [tensor of shape (param_dim,)]
-        device: Device to run computations on
-        event_counts: List of event counts to test [default: [1e3, 5e3, 1e4, 5e4, 1e5, 5e5, 1e6]]
-        n_bootstrap: Number of bootstrap samples per event count
-        laplace_model: Fitted Laplace approximation for model uncertainty (optional)
-        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
-        save_dir: Directory to save plots (required)
-        Q2_slices: List of Q2 values for realistic_dis problem (optional)
-        fixed_x_values: List of x values to track uncertainty (optional)
-        
-    Returns:
-        Dict: Summary statistics and scaling analysis results
-        
-    Saves:
-        - uncertainty_vs_events_scaling.png: Overall uncertainty scaling plot
-        - uncertainty_vs_events_by_function.png: Per-function uncertainty scaling  
-        - uncertainty_vs_events_fixed_x.png: Uncertainty at fixed x values
-        - uncertainty_scaling_analysis.txt: Statistical analysis of scaling behavior
-        
-    Example Usage:
-        # Test uncertainty scaling for simplified DIS
-        scaling_results = plot_uncertainty_vs_events(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=torch.tensor([2.0, 1.2, 2.0, 1.2]),
-            device=device,
-            event_counts=[1000, 5000, 10000, 50000, 100000],
-            n_bootstrap=30,
-            laplace_model=laplace_model,
-            problem='simplified_dis',
-            save_dir='./plots/scaling_analysis'
-        )
-        
-        # Test with specific x values and Q2 slices for realistic DIS
-        scaling_results = plot_uncertainty_vs_events(
-            model=model,
-            pointnet_model=pointnet_model, 
-            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
-            device=device,
-            event_counts=[5000, 25000, 100000, 500000],
-            n_bootstrap=25,
-            problem='realistic_dis',
-            save_dir='./plots/scaling_analysis',
-            Q2_slices=[2.0, 10.0, 50.0],
-            fixed_x_values=[0.01, 0.1, 0.5]
-        )
+    Compute and plot how uncertainties (bootstrap and optional Laplace) scale with number of events.
+    This version uses the exact MCEG histogram-based approach for function uncertainties (matching
+    plot_function_uncertainty_mceg) and ensures `simulator` variable is defined for all problem types.
     """
     if save_dir is None:
         raise ValueError("save_dir must be specified for saving uncertainty scaling plots")
@@ -4397,7 +4462,7 @@ def plot_uncertainty_vs_events(
     else:
         print("   Using bootstrap-only uncertainty (no Laplace)")
     
-    # Initialize simulator
+    # Initialize simulator factories (user's helper)
     SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
     
     if problem == 'realistic_dis':
@@ -4413,6 +4478,7 @@ def plot_uncertainty_vs_events(
     elif problem in ['mceg', 'mceg4dis']:
         if MCEGSimulator is None:
             raise ImportError("MCEGSimulator not available - please install required dependencies")
+        # IMPORTANT: assign to `simulator` so later code uses same name
         simulator = MCEGSimulator(device=torch.device('cpu'))
         param_names = [f'Param {i+1}' for i in range(len(true_params))]
     else:
@@ -4425,6 +4491,47 @@ def plot_uncertainty_vs_events(
     pointnet_model.eval()
     true_params = true_params.to(device)
     
+    # Helper copied exactly from your earlier code to build reco/stat histograms
+    def get_reco_stat(evts, mceg):
+        """
+        Input: evts is a CPU tensor or array with columns [x, Q2, ...]
+        mceg: the simulator.mceg object used only for scaling by total_xsec (same as your code)
+        Output: reco [nx,nQ2], stat [nx,nQ2], hist (numpy histogram tuple)
+        """
+        if isinstance(evts, torch.Tensor):
+            evts_np = evts.detach().cpu().numpy()
+        else:
+            evts_np = np.asarray(evts)
+        if evts_np.size == 0:
+            hist = np.histogram2d(np.array([]), np.array([]), bins=(nx, nQ2))
+            return np.zeros(hist[0].shape), np.zeros(hist[0].shape), hist
+        log_x = np.log(evts_np[:, 0])
+        log_Q2 = np.log(evts_np[:, 1])
+        hist = np.histogram2d(log_x, log_Q2, bins=(nx, nQ2))
+        counts = hist[0].astype(float)
+        reco = np.zeros_like(counts)
+        stat = np.zeros_like(counts)
+        x_edges = hist[1]
+        Q2_edges = hist[2]
+        for i in range(x_edges.shape[0] - 1):
+            for j in range(Q2_edges.shape[0] - 1):
+                c = counts[i, j]
+                if c > 0:
+                    xmin = np.exp(x_edges[i]); xmax = np.exp(x_edges[i + 1])
+                    Q2min = np.exp(Q2_edges[j]); Q2max = np.exp(Q2_edges[j + 1])
+                    dx = xmax - xmin
+                    dQ2 = Q2max - Q2min
+                    reco[i, j] = c / (dx * dQ2)
+                    stat[i, j] = np.sqrt(c) / (dx * dQ2)
+        if np.sum(counts) > 0:
+            try:
+                scale = float(mceg.total_xsec) / np.sum(counts)
+            except Exception:
+                scale = 1.0
+            reco *= scale
+            stat *= scale
+        return reco, stat, hist
+    
     # Storage for scaling analysis results
     scaling_results = {
         'event_counts': event_counts,
@@ -4432,23 +4539,54 @@ def plot_uncertainty_vs_events(
         'n_bootstrap': n_bootstrap,
         'true_params': true_params.cpu().numpy(),
         'param_names': param_names,
-        'function_uncertainties': {},  # {function_name: [uncertainties_per_event_count]}
-        'parameter_uncertainties': [],  # [param_uncertainties_per_event_count]
-        'fixed_x_uncertainties': {},   # {x_value: {function: [uncertainties_per_event_count]}}
+        'function_uncertainties': {},      # {function_name: [avg_uncertainty_per_event_count]}
+        'function_uncertainties_per_Q2': {},  # {function_key: [avg_unc_per_count]}
+        'parameter_uncertainties': [],     # [param_uncertainties_per_event_count]
+        'fixed_x_uncertainties': {},       # {x_value: {function: [uncertainties_per_event_count]}}
         'laplace_available': laplace_model is not None
     }
     
     # Set up fixed x values for tracking
     if fixed_x_values is None:
         fixed_x_values = [0.01, 0.1, 0.5] if problem == 'simplified_dis' else [0.01, 0.1, 0.5]
-    
     for x_val in fixed_x_values:
         scaling_results['fixed_x_uncertainties'][x_val] = {}
+    
+    # Ensure Q2_slices is a list when provided; if not provided, set sensible defaults
+    if Q2_slices is None:
+        if problem == 'realistic_dis':
+            Q2_slices = [2.0, 10.0, 50.0, 200.0]
+        elif problem in ['mceg', 'mceg4dis']:
+            Q2_slices = [2.0, 10.0, 50.0]
+        else:
+            Q2_slices = []
+    Q2_slices = list(Q2_slices)
     
     print("Running uncertainty analysis for each event count...")
     
     for i, num_events in enumerate(tqdm(event_counts, desc="Event counts")):
         print(f"\n  📊 Event count: {num_events:,}")
+        
+        # For MCEG we need canonical histogram edges computed from the true sample (same as plotting function)
+        if problem in ['mceg', 'mceg4dis']:
+            # ensure simulator is initialized with true params and sample once to get canonical hist edges
+            simulator.init(true_params.detach().cpu())
+            evts_true = simulator.sample(true_params.detach().cpu(), int(num_events)).cpu()
+            # Build histogram on log-variables to get edges (same as collaborator code)
+            hist_true = np.histogram2d(np.log(evts_true[:, 0]), np.log(evts_true[:, 1]), bins=(nx, nQ2))
+            log_x_edges = hist_true[1]
+            log_Q2_edges = hist_true[2]
+            x_plot_log = log_x_edges[:-1]
+            Q2_centers = np.exp(0.5 * (log_Q2_edges[:-1] + log_Q2_edges[1:]))
+            # Map user-requested Q2_slices to closest Q2 bin indices (keep order)
+            Q2_indices = [int(np.argmin(np.abs(Q2_centers - q2))) for q2 in Q2_slices]
+        else:
+            # placeholders (not used)
+            log_x_edges = None
+            log_Q2_edges = None
+            x_plot_log = None
+            Q2_centers = None
+            Q2_indices = []
         
         # Storage for this event count
         function_uncertainties_this_count = {}
@@ -4457,10 +4595,10 @@ def plot_uncertainty_vs_events(
         
         # Run bootstrap analysis for this event count
         bootstrap_params = []
-        bootstrap_pdfs = {}
+        bootstrap_pdfs = {}  # keys: 'up','down' or 'q_Q2_{val}' or 'mceg_Q2_{val}'
         
         for j in tqdm(range(n_bootstrap), desc=f"Bootstrap (N={num_events})", leave=False):
-            # Generate events with this count
+            # Generate events with this count (for feature extraction)
             with torch.no_grad():
                 xs = simulator.sample(true_params.detach().cpu(), int(num_events))
                 xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
@@ -4476,71 +4614,73 @@ def plot_uncertainty_vs_events(
                 
                 # Get parameter prediction
                 if laplace_model is not None:
-                    # Use analytic uncertainty (includes model uncertainty)
-                    mean_params, std_params = get_analytic_uncertainty(
-                        model, latent_embedding, laplace_model
-                    )
+                    mean_params, std_params = get_analytic_uncertainty(model, latent_embedding, laplace_model)
                     predicted_params = mean_params.cpu().squeeze(0)  # [param_dim]
                     param_std = std_params.cpu().squeeze(0)          # [param_dim]
                 else:
-                    # Fallback to model output only
                     with torch.no_grad():
                         output = model(latent_embedding)
-                    if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
+                    if isinstance(output, tuple) and len(output) == 2:
                         mean_params, logvars = output
                         predicted_params = mean_params.cpu().squeeze(0)
                         param_std = torch.exp(0.5 * logvars).cpu().squeeze(0)
-                    else:  # Deterministic
+                    else:
                         predicted_params = output.cpu().squeeze(0)
                         param_std = torch.zeros_like(predicted_params)
                 
                 bootstrap_params.append(predicted_params)
                 
-                # Compute PDFs for this parameter set
-                simulator.init(predicted_params.detach().cpu())
-                
+                # --- simplified_dis & realistic_dis unchanged ---
                 if problem == 'simplified_dis':
-                    # Evaluate up and down PDFs
                     x_vals = torch.linspace(1e-3, 1, 500)
-                    
                     for fn_name in ['up', 'down']:
                         fn = getattr(simulator, fn_name)
                         pdf_vals = fn(x_vals).detach().cpu()
-                        
-                        if fn_name not in bootstrap_pdfs:
-                            bootstrap_pdfs[fn_name] = []
-                        bootstrap_pdfs[fn_name].append(pdf_vals)
-                        
-                        # Evaluate at fixed x values
+                        bootstrap_pdfs.setdefault(fn_name, []).append(pdf_vals)
+                        # fixed x storage
                         for x_fixed in fixed_x_values:
                             x_tensor = torch.tensor([x_fixed])
                             pdf_at_x = fn(x_tensor).item()
-                            if fn_name not in fixed_x_uncertainties_this_count[x_fixed]:
-                                fixed_x_uncertainties_this_count[x_fixed][fn_name] = []
-                            fixed_x_uncertainties_this_count[x_fixed][fn_name].append(pdf_at_x)
-                            
+                            fixed_x_uncertainties_this_count[x_fixed].setdefault(fn_name, []).append(pdf_at_x)
+                
                 elif problem == 'realistic_dis':
-                    # Evaluate q PDFs at different Q2 slices
-                    Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
                     x_vals = torch.linspace(1e-3, 0.9, 500)
-                    
                     for Q2_fixed in Q2_slices:
                         Q2_vals = torch.full_like(x_vals, Q2_fixed)
                         q_vals = simulator.q(x_vals, Q2_vals).detach().cpu()
-                        
                         q_key = f'q_Q2_{Q2_fixed}'
-                        if q_key not in bootstrap_pdfs:
-                            bootstrap_pdfs[q_key] = []
-                        bootstrap_pdfs[q_key].append(q_vals)
-                        
-                        # Evaluate at fixed x values
+                        bootstrap_pdfs.setdefault(q_key, []).append(q_vals)
                         for x_fixed in fixed_x_values:
                             x_tensor = torch.tensor([x_fixed])
                             Q2_tensor = torch.tensor([Q2_fixed])
                             q_at_x = simulator.q(x_tensor, Q2_tensor).item()
-                            if q_key not in fixed_x_uncertainties_this_count[x_fixed]:
-                                fixed_x_uncertainties_this_count[x_fixed][q_key] = []
-                            fixed_x_uncertainties_this_count[x_fixed][q_key].append(q_at_x)
+                            fixed_x_uncertainties_this_count[x_fixed].setdefault(q_key, []).append(q_at_x)
+                
+                # --- MCEG: match earlier function's approach exactly (use sampling + hist)
+                elif problem in ['mceg', 'mceg4dis']:
+                    # initialize simulator to predicted params and sample predicted events
+                    simulator.init(predicted_params.detach().cpu())
+                    evts_pred = simulator.sample(predicted_params.detach().cpu(), int(num_events)).cpu()
+                    reco_s, stat_s, hist_s = get_reco_stat(evts_pred, simulator.mceg)  # reco_s shape [nx, nQ2]
+                    # For each requested Q2 index, collect the reco curve across x
+                    for k_idx, q_idx in enumerate(Q2_indices):
+                        # skip if out of range
+                        if q_idx < 0 or q_idx >= reco_s.shape[1]:
+                            continue
+                        key = f'mceg_Q2_{Q2_slices[k_idx]}'
+                        curve = torch.tensor(reco_s[:, q_idx])  # length nx
+                        bootstrap_pdfs.setdefault(key, []).append(curve)
+                        # fixed-x: evaluate curve at nearest x bin to x_fixed
+                        x_centers = np.exp(0.5 * (hist_s[1][:-1] + hist_s[1][1:]))  # in x-space
+                        for x_fixed in fixed_x_values:
+                            ix = int(np.argmin(np.abs(x_centers - x_fixed)))
+                            val = float(reco_s[ix, q_idx])
+                            fixed_x_uncertainties_this_count[x_fixed].setdefault(key, []).append(val)
+                
+                else:
+                    raise ValueError(f"Unhandled problem type: {problem}")
+        
+        # End bootstrap loop for this event count
         
         # Convert bootstrap results to tensors and compute uncertainties
         bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
@@ -4549,45 +4689,80 @@ def plot_uncertainty_vs_events(
         param_uncertainties_this_count = torch.std(bootstrap_params, dim=0).numpy()
         scaling_results['parameter_uncertainties'].append(param_uncertainties_this_count)
         
-        # Function-level uncertainty  
-        for key in bootstrap_pdfs:
-            pdf_stack = torch.stack(bootstrap_pdfs[key])  # [n_bootstrap, n_points]
-            # Average standard deviation across x-points for this function
-            avg_std = torch.std(pdf_stack, dim=0).mean().item()
+        # Function-level uncertainty: per-key -> std_at_x -> avg over x -> (if Q2-indexed) avg across requested Q2_slices
+        per_q2_aggregates = {}
+        for key, pdf_list in bootstrap_pdfs.items():
+            if len(pdf_list) == 0:
+                continue
+            # each pdf_list element is a 1D tensor (n_points)
+            pdf_stack = torch.stack([torch.as_tensor(p) for p in pdf_list])  # [n_bootstrap, n_points]
+            std_at_x = torch.std(pdf_stack, dim=0)  # std across bootstrap at each x
+            avg_std_over_x = float(std_at_x.mean().item())
+            scaling_results['function_uncertainties_per_Q2'].setdefault(key, []).append(avg_std_over_x)
             
-            if key not in function_uncertainties_this_count:
-                function_uncertainties_this_count[key] = avg_std
-            if key not in scaling_results['function_uncertainties']:
-                scaling_results['function_uncertainties'][key] = []
-            scaling_results['function_uncertainties'][key].append(avg_std)
+            # parse key
+            if key.startswith('q_Q2_') or key.startswith('mceg_Q2_'):
+                base = 'q' if key.startswith('q_Q2_') else 'mceg'
+                # extract Q2 value
+                Q2_val = float(key.split('_')[-1])
+                per_q2_aggregates.setdefault(base, {})[Q2_val] = avg_std_over_x
+            else:
+                # simplified functions
+                per_q2_aggregates.setdefault(key, {})[None] = avg_std_over_x
+        
+        # Reduce per_q2_aggregates to canonical function uncertainties
+        for func_base, q2dict in per_q2_aggregates.items():
+            if any(k is not None for k in q2dict.keys()):
+                # Q2-indexed; average only over the requested Q2_slices that are present
+                collected = []
+                for qval in Q2_slices:
+                    if qval in q2dict:
+                        collected.append(q2dict[qval])
+                    else:
+                        # try approximate match
+                        for k in q2dict:
+                            if k is not None and abs(k - qval) < 1e-8:
+                                collected.append(q2dict[k])
+                                break
+                if len(collected) == 0:
+                    avg_across_q2 = float(np.mean(list(q2dict.values())))
+                else:
+                    avg_across_q2 = float(np.mean(collected))
+                name = f'{func_base}_avg_over_Q2'
+                scaling_results['function_uncertainties'].setdefault(name, []).append(avg_across_q2)
+                function_uncertainties_this_count[name] = avg_across_q2
+            else:
+                # non-Q2 keyed functions (simplified_dis)
+                avg_std = list(q2dict.values())[0]
+                scaling_results['function_uncertainties'].setdefault(func_base, []).append(avg_std)
+                function_uncertainties_this_count[func_base] = avg_std
         
         # Fixed x uncertainty
         for x_val in fixed_x_values:
             for func_key in fixed_x_uncertainties_this_count[x_val]:
                 values = fixed_x_uncertainties_this_count[x_val][func_key]
-                uncertainty = np.std(values)
-                
-                if func_key not in scaling_results['fixed_x_uncertainties'][x_val]:
-                    scaling_results['fixed_x_uncertainties'][x_val][func_key] = []
-                scaling_results['fixed_x_uncertainties'][x_val][func_key].append(uncertainty)
+                uncertainty = float(np.std(values))
+                scaling_results['fixed_x_uncertainties'][x_val].setdefault(func_key, []).append(uncertainty)
         
         print(f"    Parameter uncertainties: {param_uncertainties_this_count}")
-        print(f"    Function uncertainties: {function_uncertainties_this_count}")
+        print(f"    Function uncertainties (averaged over Q2 where relevant): {function_uncertainties_this_count}")
     
     print("\n📈 Creating uncertainty scaling plots...")
     
+    # ---------- PLOTTING (kept consistent with previous function) ----------
     # Plot 1: Overall uncertainty scaling (log-log)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
     
     # Parameter uncertainty scaling
-    param_uncertainties = np.array(scaling_results['parameter_uncertainties'])  # [n_event_counts, n_params]
+    param_uncertainties_arr = np.array(scaling_results['parameter_uncertainties'])  # [n_event_counts, n_params]
     
     for i, param_name in enumerate(param_names):
-        uncertainties = param_uncertainties[:, i]
+        uncertainties = param_uncertainties_arr[:, i]
         ax1.loglog(event_counts, uncertainties, 'o-', label=param_name, linewidth=2, markersize=6)
     
-    # Add theoretical 1/sqrt(N) scaling line
-    theoretical_scaling = uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+    # Add theoretical 1/sqrt(N) scaling line using the first parameter as reference
+    ref_unc = param_uncertainties_arr[0, 0]
+    theoretical_scaling = ref_unc * np.sqrt(event_counts[0] / np.array(event_counts))
     ax1.loglog(event_counts, theoretical_scaling, 'k--', alpha=0.7, linewidth=2, 
                label=r'$\propto 1/\sqrt{N}$ (theoretical)')
     
@@ -4598,17 +4773,22 @@ def plot_uncertainty_vs_events(
     ax1.legend()
     
     # Function uncertainty scaling
-    colors = plt.cm.tab10(np.linspace(0, 1, len(scaling_results['function_uncertainties'])))
-    for i, (func_name, uncertainties) in enumerate(scaling_results['function_uncertainties'].items()):
-        ax2.loglog(event_counts, uncertainties, 'o-', color=colors[i], 
+    func_names = list(scaling_results['function_uncertainties'].keys())
+    colors = plt.cm.tab10(np.linspace(0, 1, max(1, len(func_names))))
+    for idx, func_name in enumerate(func_names):
+        uncertainties = scaling_results['function_uncertainties'][func_name]
+        xvals = event_counts[:len(uncertainties)]
+        ax2.loglog(xvals, uncertainties, 'o-', color=colors[idx % len(colors)], 
                    label=func_name, linewidth=2, markersize=6)
     
-    # Add theoretical scaling line for functions
-    if len(scaling_results['function_uncertainties']) > 0:
-        first_func_uncertainties = list(scaling_results['function_uncertainties'].values())[0]
-        theoretical_func_scaling = first_func_uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
-        ax2.loglog(event_counts, theoretical_func_scaling, 'k--', alpha=0.7, linewidth=2,
-                   label=r'$\propto 1/\sqrt{N}$ (theoretical)')
+    # Add theoretical scaling line for functions if we have at least one function with entries
+    if func_names:
+        first_func_uncertainties = scaling_results['function_uncertainties'][func_names[0]]
+        if len(first_func_uncertainties) > 0:
+            ref_f_unc = first_func_uncertainties[0]
+            theoretical_func_scaling = ref_f_unc * np.sqrt(event_counts[0] / np.array(event_counts))
+            ax2.loglog(event_counts, theoretical_func_scaling, 'k--', alpha=0.7, linewidth=2,
+                       label=r'$\propto 1/\sqrt{N}$ (theoretical)')
     
     ax2.set_xlabel('Number of Events')
     ax2.set_ylabel('Function Uncertainty (avg std)')
@@ -4632,14 +4812,17 @@ def plot_uncertainty_vs_events(
             
             for func_name, uncertainties in scaling_results['fixed_x_uncertainties'][x_val].items():
                 if uncertainties:  # Check if we have data
-                    ax.loglog(event_counts, uncertainties, 'o-', label=func_name, 
+                    xvals = event_counts[:len(uncertainties)]
+                    ax.loglog(xvals, uncertainties, 'o-', label=func_name, 
                              linewidth=2, markersize=6)
             
             # Add theoretical scaling
-            if scaling_results['fixed_x_uncertainties'][x_val]:
-                first_uncertainties = list(scaling_results['fixed_x_uncertainties'][x_val].values())[0]
-                if first_uncertainties:
-                    theoretical = first_uncertainties[0] * np.sqrt(event_counts[0] / np.array(event_counts))
+            all_unc_lists = list(scaling_results['fixed_x_uncertainties'][x_val].values())
+            if all_unc_lists:
+                first_unc_list = next((lst for lst in all_unc_lists if len(lst) > 0), None)
+                if first_unc_list:
+                    ref_unc = first_unc_list[0]
+                    theoretical = ref_unc * np.sqrt(event_counts[0] / np.array(event_counts))
                     ax.loglog(event_counts, theoretical, 'k--', alpha=0.7, linewidth=2,
                              label=r'$\propto 1/\sqrt{N}$')
             
@@ -4673,30 +4856,33 @@ def plot_uncertainty_vs_events(
         f.write("-" * 30 + "\n")
         for i, param_name in enumerate(param_names):
             f.write(f"{param_name}:\n")
-            uncertainties = param_uncertainties[:, i]
+            uncertainties = param_uncertainties_arr[:, i] if 'param_uncertainties_arr' in locals() else np.array(scaling_results['parameter_uncertainties'])[:, i]
             for j, (count, unc) in enumerate(zip(event_counts, uncertainties)):
                 f.write(f"  {count:>8,} events: {unc:.6f}\n")
-            
-            # Compute scaling exponent via linear regression in log space
-            log_counts = np.log(event_counts)
-            log_uncertainties = np.log(uncertainties)
-            slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-            f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
-            f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+            # fit only if enough points
+            if len(uncertainties) >= 2:
+                log_counts = np.log(event_counts)
+                log_uncertainties = np.log(uncertainties)
+                slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+                f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
+                f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+            else:
+                f.write("  Not enough points to fit scaling exponent.\n\n")
         
-        f.write("Function Uncertainty Results:\n")
+        f.write("Function Uncertainty Results (averaged over requested Q2 slices when applicable):\n")
         f.write("-" * 30 + "\n")
         for func_name, uncertainties in scaling_results['function_uncertainties'].items():
             f.write(f"{func_name}:\n")
-            for count, unc in zip(event_counts, uncertainties):
+            for count, unc in zip(event_counts[:len(uncertainties)], uncertainties):
                 f.write(f"  {count:>8,} events: {unc:.6f}\n")
-            
-            # Compute scaling exponent
-            log_counts = np.log(event_counts)
-            log_uncertainties = np.log(uncertainties)
-            slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-            f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
-            f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+            if len(uncertainties) >= 2:
+                log_counts = np.log(event_counts[:len(uncertainties)])
+                log_uncertainties = np.log(uncertainties)
+                slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+                f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
+                f.write(f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n")
+            else:
+                f.write("  Not enough points to fit scaling exponent.\n\n")
         
         if fixed_x_values:
             f.write("Fixed X-Value Uncertainty Results:\n")
@@ -4706,14 +4892,15 @@ def plot_uncertainty_vs_events(
                 for func_name, uncertainties in scaling_results['fixed_x_uncertainties'][x_val].items():
                     if uncertainties:
                         f.write(f"  {func_name}:\n")
-                        for count, unc in zip(event_counts, uncertainties):
+                        for count, unc in zip(event_counts[:len(uncertainties)], uncertainties):
                             f.write(f"    {count:>8,} events: {unc:.6f}\n")
-                        
-                        # Compute scaling exponent
-                        log_counts = np.log(event_counts)
-                        log_uncertainties = np.log(uncertainties)
-                        slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-                        f.write(f"    Scaling exponent: {slope:.3f} (ideal: -0.5)\n\n")
+                        if len(uncertainties) >= 2:
+                            log_counts = np.log(event_counts[:len(uncertainties)])
+                            log_uncertainties = np.log(uncertainties)
+                            slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
+                            f.write(f"    Scaling exponent: {slope:.3f} (ideal: -0.5)\n\n")
+                        else:
+                            f.write("    Not enough points to fit scaling exponent.\n\n")
         
         f.write("INTERPRETATION:\n")
         f.write("- Scaling exponents close to -0.5 indicate proper statistical behavior\n")
@@ -5566,3 +5753,357 @@ def generate_parameter_error_histogram(
     
     if return_data:
         return true_params_list, predicted_params_list
+
+@torch.no_grad()
+def plot_function_error_histogram_mceg(
+    model,
+    pointnet_model,
+    device,
+    n_draws=100,
+    n_events=10000,
+    problem='simplified_dis',   # default preserved
+    laplace_model=None,
+    save_path="function_error_histogram_mceg.png",
+    param_names=None,
+    return_data=False,
+    nx=30,
+    nQ2=20,
+    Q2_slices=None,
+    use_log_feature_engineering=True,
+    verbose=True,
+):
+    """
+    For each sampled parameter set:
+      - simulate events (true)
+      - infer parameters via the pipeline (PointNet -> model, optional laplace)
+      - simulate events from inferred params (predicted)
+      - compute log-space 2D histograms (x, Q2) and convert to density (counts / bin_area)
+      - for the requested Q2_slices: select nearest Q2 bins and compute abs(true_density - pred_density)
+      - per Q2 slice: average the entrywise absolute error across x bins
+      - per draw: average the Q2-averaged errors into one scalar
+    Finally: plot a histogram of the per-draw scalar errors. Optionally return raw arrays.
+
+    Returns:
+      If return_data: (true_params_list, predicted_params_list, per_draw_errors)
+      Else: saves plot and returns None.
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # sanity prints
+    if verbose:
+        print(f"🎯 Starting MCEG function error histogram (problem={problem})")
+        print(f"🔁 n_draws={n_draws}, n_events={n_events}, bins=(nx={nx}, nQ2={nQ2})")
+
+    model.eval()
+    pointnet_model.eval()
+    if laplace_model is not None:
+        laplace_model.eval()
+
+    # Try to obtain parameter bounds and simulator; provide fallbacks for 'mceg'
+    try:
+        theta_bounds = get_parameter_bounds_for_problem(problem).to(device)
+        simulator = get_simulator_for_problem(problem, device=device)
+    except Exception:
+        # fallback for mceg or when helper is unavailable
+        if problem == 'mceg':
+            try:
+                from simulator import MCEGSimulator
+                simulator = MCEGSimulator(device=device)
+                # try to obtain bounds if helper exists; else set None
+                try:
+                    theta_bounds = get_parameter_bounds_for_problem(problem).to(device)
+                except Exception:
+                    theta_bounds = None
+            except Exception as e:
+                raise RuntimeError("Could not create MCEG simulator: " + str(e))
+        else:
+            raise RuntimeError(f"Failed to setup problem '{problem}' and no fallback available.")
+
+    # Helpers: feature engineering, posterior sampler (if laplace), and density builder
+    try:
+        from utils import log_feature_engineering
+    except Exception:
+        # fallback identity if missing
+        log_feature_engineering = lambda x: x
+
+    # Posterior sampling wrapper used if laplace_model is provided
+    def posterior_sampler(feats, pointnet, model_, laplace_, n_samples=100):
+        # Default fallback: sample MAP (repeat) if a real sampler isn't available
+        # If user has a specialized sampler (like the one used in your plotting func),
+        # their code should override this name in the module or we will use MAP repeats.
+        try:
+            # if there's a helper in user's namespace, use it
+            from inference_utils import posterior_sampler as _ps
+            return _ps(feats, pointnet, model_, laplace_, n_samples=n_samples)
+        except Exception:
+            # fallback: sample model.mean (or model output) repeated
+            with torch.no_grad():
+                feats_device = feats.to(device) if isinstance(feats, torch.Tensor) else torch.tensor(feats, device=device)
+                feats_pe = log_feature_engineering(feats_device).float().unsqueeze(0)
+                lat = pointnet_model(feats_pe).detach()
+                if laplace_ is not None:
+                    try:
+                        samples = laplace_.sample(n_samples, x=lat)  # shape [n_samples, param_dim]
+                        return [s.detach().cpu().numpy() for s in samples]
+                    except Exception:
+                        pass
+                pred = model_(lat)
+                try:
+                    mean = pred.mean(dim=0).detach().cpu().numpy()
+                except Exception:
+                    mean = pred.detach().cpu().numpy().ravel()
+                return [mean for _ in range(n_samples)]
+
+    # Histogram builder: returns density and bin edges (log-edges) using log variables consistent with collaborator style
+    def build_density_from_events(evts_np, nx_local=nx, nQ2_local=nQ2):
+        # evts_np: numpy array with columns [x, Q2, ...] or shape [N, 2]
+        if evts_np.size == 0:
+            hist = np.histogram2d(np.array([]), np.array([]), bins=(nx_local, nQ2_local))
+            counts = hist[0].astype(float)
+            return np.zeros_like(counts), hist[1], hist[2]
+        log_x = np.log(evts_np[:, 0])
+        log_Q2 = np.log(evts_np[:, 1])
+        hist = np.histogram2d(log_x, log_Q2, bins=(nx_local, nQ2_local))
+        counts = hist[0].astype(float)
+        x_edges = hist[1]
+        Q2_edges = hist[2]
+        density = np.zeros_like(counts)
+        for i in range(x_edges.shape[0] - 1):
+            for j in range(Q2_edges.shape[0] - 1):
+                c = counts[i, j]
+                if c > 0:
+                    xmin = np.exp(x_edges[i]); xmax = np.exp(x_edges[i + 1])
+                    Q2min = np.exp(Q2_edges[j]); Q2max = np.exp(Q2_edges[j + 1])
+                    dx = xmax - xmin
+                    dQ2 = Q2max - Q2min
+                    density[i, j] = c / (dx * dQ2)
+        # scale to simulator total_xsec if available
+        try:
+            scale = float(simulator.mceg.total_xsec) / np.sum(counts)
+        except Exception:
+            scale = 1.0
+        density *= scale
+        return density, x_edges, Q2_edges
+
+    # Storage
+    true_params_list = []
+    predicted_params_list = []
+    per_draw_scalar_errors = []
+    failed = 0
+
+    # We'll build canonical bin edges from the first successful draw so that every draw uses the same grid
+    canonical_x_edges = None
+    canonical_Q2_edges = None
+
+    # iterate draws
+    for draw_idx in tqdm(range(n_draws), desc="computing function errors"):
+        try:
+            # sample params from bounds if we have them, else random normal fallback
+            if theta_bounds is not None:
+                theta_raw = torch.rand(theta_bounds.shape[0], device=device)
+                true_params = (theta_raw * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0])
+            else:
+                # fallback: 4-dim standard uniform
+                true_params = torch.rand(4, device=device)
+
+            # simulate true events
+            try:
+                if problem == 'gaussian':
+                    evts_true = simulator.sample(true_params, nevents=n_events)
+                else:
+                    # many simulators expect (params, n_events) naming; be permissive
+                    try:
+                        evts_true = simulator.sample(true_params, n_events)
+                    except TypeError:
+                        evts_true = simulator.sample(true_params, n_events=n_events)
+            except Exception as e:
+                # attempt alternate call signatures
+                try:
+                    evts_true = simulator.sample(n_events, true_params)
+                except Exception:
+                    if verbose:
+                        print(f"   ⚠️  draw {draw_idx}: simulation failed: {e}")
+                    failed += 1
+                    continue
+
+            # convert to numpy for histogramming
+            evts_true_np = evts_true.detach().cpu().numpy() if torch.is_tensor(evts_true) else np.asarray(evts_true)
+
+            # For the first successful draw, compute canonical edges
+            if canonical_x_edges is None or canonical_Q2_edges is None:
+                _, canonical_x_edges, canonical_Q2_edges = build_density_from_events(evts_true_np, nx_local=nx, nQ2_local=nQ2)
+
+            # Build true density on canonical grid: to guarantee same edges, we feed log-values into numpy.histogram2d directly
+            # Recompute histogram with canonical edges to get counts consistent with canonical grid
+            log_x = np.log(evts_true_np[:, 0])
+            log_Q2 = np.log(evts_true_np[:, 1])
+            counts_true, _, _ = np.histogram2d(log_x, log_Q2, bins=[canonical_x_edges, canonical_Q2_edges])
+            # convert counts -> density using canonical bin areas
+            true_density = np.zeros_like(counts_true)
+            for i in range(canonical_x_edges.shape[0] - 1):
+                for j in range(canonical_Q2_edges.shape[0] - 1):
+                    c = counts_true[i, j]
+                    if c > 0:
+                        xmin = np.exp(canonical_x_edges[i]); xmax = np.exp(canonical_x_edges[i + 1])
+                        Q2min = np.exp(canonical_Q2_edges[j]); Q2max = np.exp(canonical_Q2_edges[j + 1])
+                        dx = xmax - xmin
+                        dQ2 = Q2max - Q2min
+                        true_density[i, j] = c / (dx * dQ2)
+            # scale same as build_density_from_events would
+            try:
+                scale = float(simulator.mceg.total_xsec) / np.sum(counts_true)
+            except Exception:
+                scale = 1.0
+            true_density *= scale
+
+            # inference: feature engineering -> pointnet -> model (optionally laplace)
+            try:
+                feats = evts_true.float().to(device) if torch.is_tensor(evts_true) else torch.tensor(evts_true_np, device=device, dtype=torch.float32)
+                feats_for_pointnet = log_feature_engineering(feats).float().unsqueeze(0)
+                lat = pointnet_model(feats_for_pointnet).detach()
+                # model prediction
+                if hasattr(model, 'nll_mode') and model.nll_mode:
+                    pred_mean, _ = model(lat)
+                    inferred_theta = pred_mean.squeeze()
+                else:
+                    outp = model(lat)
+                    try:
+                        inferred_theta = outp.mean(dim=0).squeeze()
+                    except Exception:
+                        inferred_theta = outp.squeeze()
+                # apply laplace if requested
+                if laplace_model is not None:
+                    try:
+                        # use mean of laplace samples
+                        lap_samps = laplace_model.sample(20, x=lat)
+                        inferred_theta = lap_samps.mean(dim=0).squeeze()
+                    except Exception:
+                        pass
+            except Exception as e:
+                if verbose:
+                    print(f"   ⚠️  draw {draw_idx}: inference failed: {e}")
+                failed += 1
+                continue
+
+            # simulate predicted events from inferred theta
+            try:
+                inferred_theta_cpu = inferred_theta.detach().cpu().numpy() if torch.is_tensor(inferred_theta) else np.asarray(inferred_theta)
+                # ensure correct call signature
+                try:
+                    evts_pred = simulator.sample(inferred_theta_cpu, n_events)
+                except TypeError:
+                    evts_pred = simulator.sample(inferred_theta_cpu, n_events=n_events)
+            except Exception:
+                try:
+                    evts_pred = simulator.sample(n_events, inferred_theta_cpu)
+                except Exception as e:
+                    if verbose:
+                        print(f"   ⚠️  draw {draw_idx}: predicted simulation failed: {e}")
+                    failed += 1
+                    continue
+
+            evts_pred_np = evts_pred.detach().cpu().numpy() if torch.is_tensor(evts_pred) else np.asarray(evts_pred)
+
+            # compute predicted density on canonical grid
+            log_xp = np.log(evts_pred_np[:, 0])
+            log_Q2p = np.log(evts_pred_np[:, 1])
+            counts_pred, _, _ = np.histogram2d(log_xp, log_Q2p, bins=[canonical_x_edges, canonical_Q2_edges])
+            pred_density = np.zeros_like(counts_pred)
+            for i in range(canonical_x_edges.shape[0] - 1):
+                for j in range(canonical_Q2_edges.shape[0] - 1):
+                    c = counts_pred[i, j]
+                    if c > 0:
+                        xmin = np.exp(canonical_x_edges[i]); xmax = np.exp(canonical_x_edges[i + 1])
+                        Q2min = np.exp(canonical_Q2_edges[j]); Q2max = np.exp(canonical_Q2_edges[j + 1])
+                        dx = xmax - xmin
+                        dQ2 = Q2max - Q2min
+                        pred_density[i, j] = c / (dx * dQ2)
+            try:
+                scalep = float(simulator.mceg.total_xsec) / np.sum(counts_pred)
+            except Exception:
+                scalep = 1.0
+            pred_density *= scalep
+
+            # Determine Q2 slice indices:
+            Q2_centers = np.exp(0.5 * (canonical_Q2_edges[:-1] + canonical_Q2_edges[1:]))  # absolute Q2 centers
+            if Q2_slices is None:
+                # choose up to 10 widely spaced slices similar to collaborator code
+                nQ2_selects = 10
+                dnQ2 = max(1, int(canonical_Q2_edges.shape[0] / nQ2_selects))
+                Q2_idx_list = list(range(0, canonical_Q2_edges.shape[0] - 1, dnQ2))
+            else:
+                # map absolute requested Q2 values to nearest index in Q2_centers
+                Q2_idx_list = [int(np.argmin(np.abs(Q2_centers - float(q2)))) for q2 in Q2_slices]
+
+            # compute per-Q2-slice average entrywise absolute error across x bins
+            per_q2_errors = []
+            for qidx in Q2_idx_list:
+                # take column at qidx across x (true_density[:, qidx], pred_density[:, qidx])
+                tcol = true_density[:, qidx]
+                pcol = pred_density[:, qidx]
+                # consider only bins where either true or pred > 0? We'll compute absolute error entrywise,
+                # but to avoid dividing by zeros we use absolute difference (not relative). This matches user ask.
+                entrywise_abs = np.abs(tcol - pcol)  # shape [nx]
+                # average across x bins but only where either bin has non-zero support OR include all x bins?
+                # The user asked "average entrywise function error at the same Q^2 values I provided" -> average across all x bins
+                avg_entrywise = np.mean(entrywise_abs)
+                per_q2_errors.append(avg_entrywise)
+
+            # per-draw scalar = average across chosen Q2 slices
+            if len(per_q2_errors) == 0:
+                draw_scalar = np.nan
+            else:
+                draw_scalar = float(np.mean(per_q2_errors))
+
+            # store
+            true_params_list.append(true_params.detach().cpu() if torch.is_tensor(true_params) else torch.tensor(true_params))
+            predicted_params_list.append(torch.tensor(inferred_theta_cpu))
+            per_draw_scalar_errors.append(draw_scalar)
+
+        except Exception as e:
+            if verbose:
+                print(f"   ⚠️ draw {draw_idx} unexpected error: {e}")
+            failed += 1
+            continue
+
+    successful = len(per_draw_scalar_errors)
+    if successful == 0:
+        raise RuntimeError("All draws failed; check simulator / models / settings.")
+
+    if failed > 0 and verbose:
+        print(f"   ⚠️ {failed}/{n_draws} draws failed; proceeding with {successful} results")
+
+    per_draw_array = np.array(per_draw_scalar_errors)
+    # remove NaNs if present
+    valid_mask = ~np.isnan(per_draw_array)
+    per_draw_array = per_draw_array[valid_mask]
+    # summary stats
+    mean_error = float(np.mean(per_draw_array))
+    med_error = float(np.median(per_draw_array))
+    std_error = float(np.std(per_draw_array))
+
+    if verbose:
+        print(f"   ✅ Computed per-draw averaged function errors (n={len(per_draw_array)}).")
+        print(f"      mean={mean_error:.6g}, median={med_error:.6g}, std={std_error:.6g}")
+
+    # Plot histogram of per-draw averaged errors
+    plt.figure(figsize=(8, 5))
+    plt.hist(per_draw_array, bins=30, alpha=0.85)
+    plt.xlabel("Per-draw averaged entrywise function error (avg over x and selected Q² slices)")
+    plt.ylabel("Count")
+    plt.title(f"Function error histogram (problem={problem})\nmean={mean_error:.3e}, median={med_error:.3e}")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    if verbose:
+        print(f"   ✅ Saved histogram to: {save_path}")
+
+    if return_data:
+        # convert param lists to tensors/arrays trimmed to valid_mask
+        true_params_array = torch.stack(true_params_list) if len(true_params_list) > 0 else None
+        pred_params_array = torch.stack(predicted_params_list) if len(predicted_params_list) > 0 else None
+        # filter per-draw arrays to valid entries (if any NaNs were removed)
+        return true_params_array, pred_params_array, per_draw_array
+
+    return None
