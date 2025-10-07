@@ -53,6 +53,42 @@ from datasets import *
 import os, torch
 from laplace.laplace import Laplace
 
+import glob
+import matplotlib.pyplot as plt
+# Set up matplotlib for high-quality plots
+plt.style.use('default')
+plt.rcParams.update({
+    'font.size': 12,
+    'axes.labelsize': 14,
+    'axes.titlesize': 16,
+    'legend.fontsize': 11,
+    'xtick.labelsize': 11,
+    'ytick.labelsize': 11,
+    'figure.dpi': 300,
+    'savefig.dpi': 300,
+    'savefig.bbox': 'tight',
+    'text.usetex': False,
+    'font.family': 'serif',
+    'axes.grid': True,
+    'grid.alpha': 0.3,
+    'grid.linestyle': ':',
+    'axes.axisbelow': True,
+})
+
+def find_experiment_dir_with_repeats(base_dir):
+    """
+    Returns the path to the repeat directory with the highest repeat number, or the base_dir if no repeat dirs exist.
+    """
+    pattern = os.path.join(base_dir, "repeat_*")
+    repeat_dirs = sorted(glob.glob(pattern))
+    # Only accept dirs that are actually directories
+    repeat_dirs = [d for d in repeat_dirs if os.path.isdir(d)]
+    if repeat_dirs:
+        # Pick the highest-numbered repeat dir (lexicographically last)
+        return repeat_dirs[-1]
+    else:
+        return base_dir
+
 def build_head(arch, latent_dim, param_dim, device, nmodes=None):
     if arch == "mlp":
         return MLPHead(latent_dim, param_dim).to(device)
@@ -175,7 +211,7 @@ def reload_pointnet(experiment_dir, latent_dim, device, cl_model='final_model.pt
     if problem in ['mceg', 'mceg4dis']:
         pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
     else:
-        pointnet_model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
+        pointnet_model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.3, chunk_latent=32, num_seeds=8, num_heads=4).to(device)
     state_dict = torch.load(pointnet_path, map_location=device)
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
     pointnet_model.load_state_dict({k.replace('module.', ''): v for k, v in state_dict.items()})
@@ -257,23 +293,9 @@ def main():
         description='Generate plots with analytic Laplace uncertainty propagation. '
                    'Uses delta method for fast, accurate uncertainty quantification.',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Uncertainty Methods:
-  When Laplace models are available, uses analytic uncertainty propagation 
-  via delta method for improved speed and accuracy. Falls back to Monte 
-  Carlo sampling when Laplace models are not found.
-
-Examples:
-  # Plot with analytic uncertainty (recommended):
-  python plotting_driver_UQ.py --arch gaussian --problem simplified_dis
-  
-  # Plot all architectures:
-  python plotting_driver_UQ.py --arch all --latent_dim 512
-  
-  # Faster fallback for missing Laplace models:
-  python plotting_driver_UQ.py --arch mlp --n_mc 50
-        """
+        epilog=""" ... [unchanged] ... """
     )
+    # [arguments as before]
     parser.add_argument('--arch', type=str, default='all',
                         help='Which architecture to plot: mlp, transformer, gaussian, multimodal, or all')
     parser.add_argument('--latent_dim', type=int, default=128,
@@ -303,8 +325,17 @@ Examples:
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
-    experiment_dir_pointnet = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+
+    # Construct the base experiment directory (without repeat)
+    base_experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+    # Find the correct experiment dir (with repeat, if exists)
+    experiment_dir = find_experiment_dir_with_repeats(base_experiment_dir)
+    experiment_dir_pointnet = experiment_dir
+
+    if experiment_dir != base_experiment_dir:
+        print(f"🔍 Found experiment repeats, using directory: {experiment_dir}")
+    else:
+        print(f"🔍 No experiment repeats found, using directory: {base_experiment_dir}")
 
     # Which architectures to plot?
     archs = []
@@ -322,7 +353,7 @@ Examples:
         elif args.problem in ['mceg', 'mceg4dis']:
             true_params = torch.tensor([-7.10000000e-01, 3.48000000e+00, 1.34000000e+00, 2.33000000], dtype=torch.float32)
         elif args.problem == 'simplified_dis':
-            true_params = torch.tensor([0.5, 1.2, 2.0, 0.5], dtype=torch.float32)
+            true_params = torch.tensor([1.0, 1.2, 1.1, 0.5], dtype=torch.float32)
     
     # Diagnostic: Check if true parameters are within training bounds
     print(f"\n🔍 PARAMETER BOUNDS DIAGNOSTIC:")
@@ -360,11 +391,11 @@ Examples:
 
     # Extract latents and parameters
     latents, thetas = extract_latents_from_data(pointnet_model, args, args.problem, device)
-    # plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap', save_path=os.path.join(experiment_dir, "umap_single.png"))
+    plot_latents_umap(latents, thetas, color_mode='single', param_idx=0, method='umap', save_path=os.path.join(experiment_dir, "umap_single.png"))
     # plot_latents_umap(latents, params, color_mode='single', param_idx=0, method='umap')
-    # plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
-    # plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
-    # plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
+    plot_latents_umap(latents, thetas, color_mode='mean', method='umap', save_path=os.path.join(experiment_dir, "umap_mean.png"))
+    plot_latents_umap(latents, thetas, color_mode='pca', method='tsne', save_path=os.path.join(experiment_dir, "tsne_pca.png"))
+    plot_latents_all_params(latents, thetas, method='umap', save_path=os.path.join(experiment_dir, "umap_all_params.png"))
     for arch in archs:
         print(f"\n=== Arch: {arch} ===")
         print(f"\n==== Plotting for architecture: {arch.upper()} ====")
@@ -480,6 +511,10 @@ Examples:
             problem=args.problem,
             save_dir=plot_dir
         )
+        samples_snpe = torch.tensor(np.loadtxt("samples_snpe.txt"), dtype=torch.float32)
+        samples_wass = torch.tensor(np.loadtxt("samples_wasserstein.txt"), dtype=torch.float32)
+        samples_mmd = torch.tensor(np.loadtxt("samples_mmd.txt"), dtype=torch.float32)
+
         # Run all plotting functions, passing laplace_model if available
         plot_params_distribution_single(
             model=model,
@@ -487,8 +522,10 @@ Examples:
             true_params=true_params,
             device=device,
             n_mc=args.n_mc,
+            sbi_posteriors=[samples_snpe, samples_mmd, samples_wass],
+            sbi_labels=["SNPE", "MCABC", "Wasserstein MCABC"],
             laplace_model=laplace_model,
-            compare_with_sbi=False,
+            compare_with_sbi=True if args.problem == 'simplified_dis' else False,
             problem=args.problem,
             save_path=os.path.join(plot_dir, "params_distribution.png")
         )

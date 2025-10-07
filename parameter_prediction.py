@@ -176,6 +176,7 @@ def train_joint(model, param_prediction_model, train_dataloader, val_dataloader,
     opt = optim.Adam(list(model.parameters()) + list(param_prediction_model.parameters()),
                      lr=lr, weight_decay=1e-4)
     scaler = torch.cuda.amp.GradScaler()
+    scheduler = optim.lr_scheduler.StepLR(opt, step_size=100, gamma=0.5)
 
     model.train()
     param_prediction_model.train()
@@ -581,7 +582,7 @@ def main_worker(rank, world_size, args):
     if args.problem == 'mceg':
         model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.3, chunk_latent=128, num_seeds=8, num_heads=4).to(device)
     else:    
-        model = PointNetPMA(input_dim=input_dim, latent_dim=latent_dim).to(device)
+        model = ChunkedPointNetPMA(input_dim=input_dim, latent_dim=latent_dim, dropout=0.3, chunk_latent=32, num_seeds=8, num_heads=4).to(device)
     if torch.__version__ >= "2.0":
         os.environ["TRITON_CACHE_DIR"] = "/pscratch/sd/k/katiekee/triton_cache"
         os.environ["TORCHINDUCTOR_CACHE_DIR"] = "/pscratch/sd/k/katiekee/inductor_cache"
@@ -603,7 +604,7 @@ def main_worker(rank, world_size, args):
                 [-10.0, 10.0],
             ])
     else:
-        theta_bounds = None
+        theta_bounds = torch.tensor([[0.0, 5]] * 4)
     
     # Print parameter bounds for transparency
     if rank == 0:  # Only print once in distributed training

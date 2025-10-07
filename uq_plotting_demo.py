@@ -744,23 +744,24 @@ def plot_function_uncertainty_mceg(
                         fmt='.',
                         color=color,
                         alpha=0.85,
-                        label=f'Empirical Q²={np.exp(log_Q2_edges[j]):.2f}')
+                        # label=f'Empirical Q²={np.exp(log_Q2_edges[j]):.2f}'
+                        )
 
     # Now plot bands (percentiles) but aligned to the collaborator x positions (log-values)
     for mode_name, reco_samples, stat_samples, hist_used in all_bands:
         # choose a linestyle per mode so modes remain distinguishable while keeping Q2 color consistent
         if mode_name == 'parameter':
-            ls = '.'
+            ls = 'dotted'
             alpha_fill_outer = 0.18
             alpha_fill_inner = 0.30
             median_marker = None
         elif mode_name == 'bootstrap':
-            ls = '.' # (0, (3, 1, 1, 1))  # dash-dot-ish
+            ls = 'dotted' # (0, (3, 1, 1, 1))  # dash-dot-ish
             alpha_fill_outer = 0.12
             alpha_fill_inner = 0.22
             median_marker = None
         else:
-            ls = 'n'
+            ls = 'dotted'
             alpha_fill_outer = 0.15
             alpha_fill_inner = 0.25
             median_marker = None

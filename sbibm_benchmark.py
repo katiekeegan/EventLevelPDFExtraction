@@ -10,7 +10,7 @@ from scipy.stats import wasserstein_distance
 
 @torch.no_grad()
 def simulator(theta):
-    N = 100000 # Number of events in cross-sections
+    N = 10000 # Number of events in cross-sections
 
     def up(x, theta):
         return 1 * (x ** theta[0]) * ((1 - x) ** theta[1])
@@ -38,13 +38,58 @@ def simulator_batch_summary(theta_batch):
     """
     return torch.stack([histogram_summary(simulator(theta)) for theta in theta_batch])
 
-def histogram_summary(x, nbins=32, range_min=-10, range_max=10):
+def _hist_from_edges(x1d, edges):
+    idx = torch.bucketize(x1d, edges, right=False) - 1
+    B = edges.numel() - 1
+    idx = idx.clamp(min=0, max=B-1)
+    counts = torch.bincount(idx, minlength=B)
+    widths = edges[1:] - edges[:-1]
+    return counts, widths
+
+def histogram_summary(
+    x,
+    nbins_per_side=16,
+    min_abs=1e-6,
+    max_abs=10.0,
+    density=True
+):
+    """
+    Symmetric log-spaced bins for data that may be negative, zero, or positive.
+    Bins are geometric in |x| and symmetric about 0.
+    """
+    x = x.detach()
     D = x.shape[1]
+    device, dtype = x.device, x.dtype
+
+    # Use torch.logspace instead of geomspace for compatibility
+    pos_edges = torch.logspace(
+        torch.log10(torch.tensor(min_abs, device=device, dtype=dtype)),
+        torch.log10(torch.tensor(max_abs, device=device, dtype=dtype)),
+        steps=nbins_per_side + 1,
+        device=device,
+        dtype=dtype
+    )
+    neg_edges = -torch.logspace(
+        torch.log10(torch.tensor(max_abs, device=device, dtype=dtype)),
+        torch.log10(torch.tensor(min_abs, device=device, dtype=dtype)),
+        steps=nbins_per_side + 1,
+        device=device,
+        dtype=dtype
+    )
+    edges = torch.cat([neg_edges, pos_edges])
+
     summaries = []
     for d in range(D):
-        hist = torch.histc(x[:, d], bins=nbins, min=range_min, max=range_max)
-        hist = hist / (hist.sum() + 1e-8)
-        summaries.append(hist)
+        counts, widths = _hist_from_edges(x[:, d], edges)
+        h = counts.to(dtype)
+        if density:
+            total = counts.sum().clamp_min(1)
+            h = h / total / widths
+            Z = (h * widths).sum().clamp_min(1e-12)
+            h = h / Z
+        else:
+            h = h / counts.sum().clamp_min(1)
+        summaries.append(h)
     return torch.cat(summaries, dim=0)
 
 ########################
@@ -146,7 +191,7 @@ if __name__ == "__main__":
     prior_dist = BoxUniform(low=torch.zeros(4), high=5 * torch.ones(4)) # 4-dimensional uniform prior
 
     # True observation cross-section
-    true_theta = torch.tensor([2.0, 1.2, 2.0, 1.2]) # example true parameters - arbitrary
+    true_theta = torch.tensor([0.5, 1.2, 2.0, 0.5]) # example true parameters - arbitrary
     x_o = simulator(true_theta) # [N, D] tensor of observed data
     x_o_summary = histogram_summary(x_o) # [D * nbins] summary vector
     samples = simulator_batch_summary(prior_dist.sample((100,))) # [B, D * nbins] batch of simulated summaries

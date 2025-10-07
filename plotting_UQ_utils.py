@@ -172,8 +172,8 @@ try:
 except ImportError:
     pass  # Will handle missing dataset classes in get_datasets() function
 
-# Set publication-ready plotting style
-plt.style.use('default')  # Start with clean default style
+# Set up matplotlib for high-quality plots
+plt.style.use('default')
 plt.rcParams.update({
     'font.size': 12,
     'axes.labelsize': 14,
@@ -184,19 +184,12 @@ plt.rcParams.update({
     'figure.dpi': 300,
     'savefig.dpi': 300,
     'savefig.bbox': 'tight',
-    'figure.figsize': [10, 8],
+    'text.usetex': False,
+    'font.family': 'serif',
     'axes.grid': True,
     'grid.alpha': 0.3,
-    'grid.linewidth': 0.5,
+    'grid.linestyle': ':',
     'axes.axisbelow': True,
-    'axes.edgecolor': '#333333',
-    'axes.linewidth': 1.2,
-    'xtick.direction': 'in',
-    'ytick.direction': 'in',
-    'xtick.major.size': 6,
-    'ytick.major.size': 6,
-    'xtick.minor.size': 3,
-    'ytick.minor.size': 3,
 })
 
 # Define colorblind-friendly color palette
@@ -401,7 +394,7 @@ def get_simulator_module():
 
 def get_advanced_feature_engineering():
     try:
-        from PDF_learning import advanced_feature_engineering
+        from utils import advanced_feature_engineering
         return advanced_feature_engineering
     except ImportError:
         return lambda x: x  # fallback identity function
@@ -934,13 +927,13 @@ def plot_params_distribution_single(
             stats_text = f'μ = {sample_mean:.3f}\nσ = {sample_std:.3f}'
             
         ax.text(0.02, 0.98, stats_text, transform=ax.transAxes, 
-               verticalalignment='top', fontsize=9,
+               verticalalignment='top', fontsize=12,
                bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
 
     # Add overall title
     method_str = "Analytic Laplace" if use_analytic else "Monte Carlo"
-    fig.suptitle(f'Parameter Posterior Distributions ({method_str} Uncertainty)', 
-                fontsize=16, y=0.98, fontweight='bold')
+    # fig.suptitle(f'Parameter Posterior Distributions ({method_str} Uncertainty)', 
+    #             fontsize=16, y=0.98, fontweight='bold')
     
     plt.tight_layout()
     plt.subplots_adjust(top=0.93)  # Make room for suptitle
@@ -1441,8 +1434,8 @@ def plot_parameter_error_histogram(
         if i == 0:
             ax_abs.set_xlabel(f'Absolute Error', fontsize=15)
             ax_abs.set_ylabel('Frequency', fontsize=15)
-        ax_abs.tick_params(axis='x', fontsize=10)
-        ax_abs.tick_params(axis='y', fontsize=10)
+        ax_abs.tick_params(axis='x', labelsize=10)
+        ax_abs.tick_params(axis='y', labelsize=10)
         ax_abs.grid(True, alpha=0.3)
         ax_abs.legend(fontsize=15)
         ax_abs.set_xscale('log')
@@ -1461,7 +1454,7 @@ def plot_parameter_error_histogram(
         ax_rel.set_xscale('log')
         
         # Add vertical line at zero
-        ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
+        # ax_rel.axvline(0, color='red', linestyle='--', alpha=0.8, linewidth=2, label='True Value')
         
         # Statistics text
         mean_rel_err = np.mean(relative_errors[:, i]) * 100
@@ -1472,8 +1465,8 @@ def plot_parameter_error_histogram(
         if i == 0:
             ax_rel.set_xlabel(f'Relative Error', fontsize=15)
             ax_rel.set_ylabel('Frequency', fontsize=15)
-        ax_rel.tick_params(axis='x', fontsize=10)
-        ax_rel.tick_params(axis='y', fontsize=10)
+        ax_rel.tick_params(axis='x', labelsize=10)
+        ax_rel.tick_params(axis='y', labelsize=10)
         ax_rel.grid(True, alpha=0.3)
         ax_rel.legend(fontsize=15)
     
@@ -1859,11 +1852,11 @@ def plot_event_histogram_simplified_DIS(
         ax.set_title(title, fontsize=14, pad=10)
         if problem == 'simplified_dis':
             if is_generated:
-                ax.set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
-                ax.set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})", fontsize=12)
+                ax.set_xlabel(fr"$x_{{u}} \sim u(x|\hat{{\theta}})$ ({method_label})", fontsize=14)
+                ax.set_ylabel(fr"$x_{{d}} \sim d(x|\hat{{\theta}})$ ({method_label})", fontsize=14)
             else:
-                ax.set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$", fontsize=12)
-                ax.set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$", fontsize=12)
+                ax.set_xlabel(r"$x_{u} \sim u(x|\theta^{*})$", fontsize=14)
+                ax.set_ylabel(r"$x_{d} \sim d(x|\theta^{*})$", fontsize=14)
         else:
             ax.set_xlabel("$x$", fontsize=12)
             ax.set_ylabel("$Q^2$", fontsize=12)
@@ -1936,16 +1929,16 @@ def plot_event_histogram_simplified_DIS(
         
         # Add colorbar for generated events
         cbar_gen = plt.colorbar(im_gen, ax=ax_gen_hist_ax, fraction=0.046, pad=0.04)
-        cbar_gen.set_label('Event Count', fontsize=11)
-        cbar_gen.ax.tick_params(labelsize=10)
+        cbar_gen.set_label('Event Count', fontsize=14)
+        cbar_gen.ax.tick_params(labelsize=14)
     
-    # Add overall title
-    if plot_type == 'both':
-        fig.suptitle('Event Distribution Analysis: Scatter & Histogram Views', fontsize=16, y=0.95)
-    elif plot_type == 'scatter':
-        fig.suptitle('Event Distribution Analysis: Scatter View', fontsize=16, y=0.95)
-    else:
-        fig.suptitle('Event Distribution Analysis: Histogram View', fontsize=16, y=0.95)
+    # # Add overall title
+    # if plot_type == 'both':
+    #     fig.suptitle('Event Distribution Analysis: Scatter & Histogram Views', fontsize=16, y=0.95)
+    # elif plot_type == 'scatter':
+    #     fig.suptitle('Event Distribution Analysis: Scatter View', fontsize=16, y=0.95)
+    # else:
+    #     fig.suptitle('Event Distribution Analysis: Histogram View', fontsize=16, y=0.95)
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches='tight')
@@ -2185,10 +2178,10 @@ def plot_latents_umap(latents, params, color_mode='single', param_idx=0, method=
     if show:
         plt.show()
 
-def plot_latents_all_params(latents, params, method='umap', save_path=None, show=True):
+def plot_latents_all_params(latents, params, method='umap', save_path=None, show=True, param_names=None):
     """
     Plot latent vectors (n_samples x latent_dim) reduced to 2D via UMAP or t-SNE,
-    with one subplot per parameter dimension.
+    with one subplot per parameter dimension and a unique colormap for each.
     """
     # Reduce latents to 2D
     if method == 'tsne':
@@ -2197,23 +2190,34 @@ def plot_latents_all_params(latents, params, method='umap', save_path=None, show
         reducer = umap.UMAP(n_components=2, random_state=42)
     emb = reducer.fit_transform(latents)
 
+    # distinct colormaps (extend or cycle automatically)
+    cmaps = [
+        'viridis', 'plasma', 'winter', 'autumn', 'inferno', 'magma', 'cividis',
+        'cool', 'hot',  'spring', 'summer', 
+        'Spectral', 'turbo', 'twilight', 'hsv'
+    ]
+
     n_params = params.shape[1]
     fig, axes = plt.subplots(1, n_params, figsize=(5 * n_params, 5))
+    if n_params == 1:
+        axes = [axes]
 
-    for i in range(n_params):
-        ax = axes[i] if n_params > 1 else axes
+    for i, ax in enumerate(axes):
         color = params[:, i]
-        sc = ax.scatter(emb[:, 0], emb[:, 1], c=color, cmap='viridis', s=30)
-        ax.set_xlabel(f"{method.upper()} dim 1")
-        ax.set_ylabel(f"{method.upper()} dim 2")
-        ax.set_title(f"Colored by Parameter {i}")
-        plt.colorbar(sc, ax=ax, label=f"Parameter {i}")
+        cmap = cmaps[i % len(cmaps)]  # cycle through colormaps
+        sc = ax.scatter(emb[:, 0], emb[:, 1], c=color, cmap=cmap, s=30)
+        if i == 0:
+            ax.set_xlabel(f"{method.upper()} dim 1", fontsize=20)
+            ax.set_ylabel(f"{method.upper()} dim 2", fontsize=20)
+        # ax.set_title(param_names[i] if param_names else f"Parameter {i}", fontsize=18)
+        plt.colorbar(sc, ax=ax)
 
     plt.tight_layout()
     if save_path:
-        plt.savefig(save_path, bbox_inches='tight')
+        plt.savefig(save_path, bbox_inches='tight', dpi=300)
     if show:
         plt.show()
+
 def _bin_edges_log(evts_list, nx_bins=50, nQ2_bins=50, x_min=1e-4, x_max=1e-1, Q2_min=10.0, Q2_max=1e3):
     """
     Build common log-space edges across all provided event clouds.
@@ -6091,9 +6095,10 @@ def plot_function_error_histogram_mceg(
     # Plot histogram of per-draw averaged errors
     plt.figure(figsize=(8, 5))
     plt.hist(per_draw_array, bins=30, alpha=0.85)
-    plt.xlabel("Per-draw averaged entrywise function error (avg over x and selected Q² slices)")
-    plt.ylabel("Count")
-    plt.title(f"Function error histogram (problem={problem})\nmean={mean_error:.3e}, median={med_error:.3e}")
+    plt.xlabel("Function Errors", fontsize=14)
+    plt.xticks(fontsize=12)
+    plt.ylabel("Count", fontsize=15)
+    # plt.title(f"Function error histogram (problem={problem})\nmean={mean_error:.3e}, median={med_error:.3e}")
     plt.tight_layout()
     plt.savefig(save_path, dpi=200)
     if verbose:
