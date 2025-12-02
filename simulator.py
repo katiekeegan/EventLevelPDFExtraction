@@ -1,43 +1,46 @@
-import torch
-from torch.distributions import Uniform, Distribution
-import numpy as np
-
+import os
 # Basic imports that should always work
 import sys
+
+import numpy as np
 import pandas as pd
+import torch
+from scipy.integrate import fixed_quad, quad
+from torch.distributions import Distribution, Uniform
 from tqdm import tqdm
-from scipy.integrate import quad, fixed_quad
-import os
 
 # Try to import optional dependencies for advanced simulators
 try:
     sys.path.append(os.path.abspath("mceg4dis"))
-    
-    #--matplotlib
+
+    # --matplotlib
     import matplotlib
     from matplotlib.lines import Line2D
-    matplotlib.rc('text',usetex=True)
-    import pylab as py
-    from matplotlib import colors
-    import matplotlib.gridspec as gridspec
 
-    import params as par 
+    matplotlib.rc("text", usetex=True)
     import cfg
-    from alphaS  import ALPHAS
-    from eweak   import EWEAK
-    from pdf     import PDF
-    from mellin  import MELLIN
-    from idis    import THEORY
-    from mceg    import MCEG
+    import matplotlib.gridspec as gridspec
+    import params as par
+    import pylab as py
+    from alphaS import ALPHAS
+    from eweak import EWEAK
+    from idis import THEORY
+    from matplotlib import colors
+    from mceg import MCEG
+    from mellin import MELLIN
+    from pdf import PDF
+
     HAS_MCEG_DEPS = True
 except ImportError:
     HAS_MCEG_DEPS = False
+
 
 class Gaussian2DSimulator:
     """
     Unimodal 2D Gaussian simulator with 1D parameter vector input.
     Parameter vector: [mu_x, mu_y, sigma_x, sigma_y, rho]
     """
+
     def __init__(self, device=None):
         self.device = device or torch.device("cpu")
 
@@ -48,18 +51,24 @@ class Gaussian2DSimulator:
         """
         mu_x, mu_y, sigma_x, sigma_y, rho = theta
         mean = torch.tensor([mu_x, mu_y], device=self.device)
-        cov = torch.tensor([
-            [sigma_x**2, rho * sigma_x * sigma_y],
-            [rho * sigma_x * sigma_y, sigma_y**2]
-        ], device=self.device)
+        cov = torch.tensor(
+            [
+                [sigma_x**2, rho * sigma_x * sigma_y],
+                [rho * sigma_x * sigma_y, sigma_y**2],
+            ],
+            device=self.device,
+        )
         samples = torch.distributions.MultivariateNormal(mean, cov).sample((n_events,))
         return samples
-    
+
     def f(self, x, theta):
         """Evaluate function f(x|theta) for 1D marginal."""
         mu_x, mu_y, sigma_x, sigma_y, rho = theta
         # Return 1D marginal PDF for plotting
-        return torch.exp(-0.5 * ((x - mu_x) / sigma_x) ** 2) / (sigma_x * torch.sqrt(2 * torch.tensor(torch.pi)))
+        return torch.exp(-0.5 * ((x - mu_x) / sigma_x) ** 2) / (
+            sigma_x * torch.sqrt(2 * torch.tensor(torch.pi))
+        )
+
 
 class SimplifiedDIS:
     def __init__(self, device=None, smear=False, smear_std=0.05):
@@ -72,29 +81,34 @@ class SimplifiedDIS:
 
     def init(self, params):
         self.au, self.bu, self.ad, self.bd = [
-            torch.tensor(p, device=self.device) if not torch.is_tensor(p) else p.to(self.device)
+            (
+                torch.tensor(p, device=self.device)
+                if not torch.is_tensor(p)
+                else p.to(self.device)
+            )
             for p in params
         ]
 
     def up(self, x):
-        return self.Nu * (x ** self.au) * ((1 - x) ** self.bu)
+        return self.Nu * (x**self.au) * ((1 - x) ** self.bu)
 
     def down(self, x):
-        return self.Nd * (x ** self.ad) * ((1 - x) ** self.bd)
+        return self.Nd * (x**self.ad) * ((1 - x) ** self.bd)
 
     def f(self, x, theta):
         """Evaluate PDF functions f(x|theta). Returns dict with 'up' and 'down'."""
         self.init(theta)
-        return {
-            'up': self.up(x),
-            'down': self.down(x)
-        }
+        return {"up": self.up(x), "down": self.down(x)}
 
     def sample(self, params, n_events=1000):
         self.init(params)
         eps = 1e-6
-        rand = lambda: torch.clamp(torch.rand(n_events, device=self.device), min=eps, max=1 - eps)
-        smear_noise = lambda s: s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
+        rand = lambda: torch.clamp(
+            torch.rand(n_events, device=self.device), min=eps, max=1 - eps
+        )
+        smear_noise = lambda s: (
+            s + torch.randn_like(s) * (self.smear_std * s) if self.smear else s
+        )
 
         xs_p, xs_n = rand(), rand()
         sigma_p = smear_noise(4 * self.up(xs_p) + self.down(xs_p))
@@ -103,18 +117,19 @@ class SimplifiedDIS:
         sigma_n = torch.nan_to_num(sigma_n, nan=0.0, posinf=1e8, neginf=0.0)
         return torch.stack([sigma_p, sigma_n], dim=-1)
 
+
 # MCEGSimulator: Only available if MCEG dependencies are installed
 if HAS_MCEG_DEPS:
+
     class MCEGSimulator:
         def __init__(self, device=None):
             self.device = device
             # Initialize MCEG Sampler with default parameters
             self.mellin = MELLIN(npts=8)
             self.alphaS = ALPHAS()
-            self.eweak  = EWEAK()
-            self.pdf    = PDF(self.mellin, self.alphaS)
-            self.idis   = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
-
+            self.eweak = EWEAK()
+            self.pdf = PDF(self.mellin, self.alphaS)
+            self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
 
         def init(self, params):
             # Take in new parameters and update MCEG class
@@ -126,7 +141,7 @@ if HAS_MCEG_DEPS:
                 new_cpar[4:8] = params.cpu().numpy()  # Update uv1 parameters
             self.pdf.setup(new_cpar)
             self.idis = THEORY(self.mellin, self.pdf, self.alphaS, self.eweak)
-            self.mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
+            self.mceg = MCEG(self.idis, rs=140, tar="p", W2min=10, nx=30, nQ2=20)
 
         def sample(self, params, n_events=1000):
             assert n_events > 0, "Number of events must be positive"
@@ -134,42 +149,57 @@ if HAS_MCEG_DEPS:
                 params = torch.tensor(params, dtype=torch.float32, device=self.device)
             self.init(params)  # Take in new parameters
             # Initialize Monte Carlo Event Generator
-            mceg = MCEG(self.idis, rs=140, tar='p', W2min=10, nx=30, nQ2=20)
+            mceg = MCEG(self.idis, rs=140, tar="p", W2min=10, nx=30, nQ2=20)
             # TODO: negative probabilities may arise with certain parameters.
             # Find a way to work around this (maybe work directly with idis if there is a bug in mceg.gen_events)
 
-            samples = torch.tensor(mceg.gen_events(n_events+1000, verb=False)).to(self.device)
+            samples = torch.tensor(mceg.gen_events(n_events + 1000, verb=False)).to(
+                self.device
+            )
             random_indices = torch.randperm(samples.size(0))[:n_events]
             samples = samples[random_indices]
             self.clip_alert = mceg.clip_alert
             self.mceg = mceg
             return samples
+
 else:
     MCEGSimulator = None
+
 
 def up(x, params):
     return (x ** params[0]) * ((1 - x) ** params[1])
 
+
 def down(x, params):
     return (x ** params[2]) * ((1 - x) ** params[3])
 
+
 def advanced_feature_engineering(xs_tensor):
-    log_features = torch.log1p(xs_tensor)
-    symlog_features = torch.sign(xs_tensor) * torch.log1p(xs_tensor.abs())
+    # Basic features with clamping for numerical stability
+    xs_clamped = torch.clamp(xs_tensor, min=1e-8, max=1e8)
+    del xs_tensor
+    log_features = torch.log1p(xs_clamped)
+    symlog_features = torch.sign(xs_clamped) * torch.log1p(xs_clamped.abs())
 
-    ratio_features = []
-    diff_features = []
-    for i in range(xs_tensor.shape[-1]):
-        for j in range(i + 1, xs_tensor.shape[-1]):
-            ratio = xs_tensor[..., i] / (xs_tensor[..., j] + 1e-8)
-            ratio_features.append(torch.log1p(ratio.abs()).unsqueeze(-1))
-            diff = torch.log1p(xs_tensor[..., i]) - torch.log1p(xs_tensor[..., j])
-            diff_features.append(diff.unsqueeze(-1))
+    # Pairwise features with vectorized operations
+    n_features = xs_clamped.shape[-1]
+    # del xs_tensor
+    combinations = torch.combinations(torch.arange(n_features), r=2)
+    i, j = combinations[:, 0], combinations[:, 1]
+    del combinations
+    # Safe division with clamping
+    ratio = xs_clamped[..., i] / (xs_clamped[..., j] + 1e-8)
+    ratio_features = torch.log1p(ratio.abs())
+    del ratio
 
-    ratio_features = torch.cat(ratio_features, dim=-1)
-    diff_features = torch.cat(diff_features, dim=-1)
-    return torch.cat([log_features, symlog_features, ratio_features, diff_features], dim=-1)
-    
+    diff_features = torch.log1p(xs_clamped[..., i]) - torch.log1p(xs_clamped[..., j])
+    del xs_clamped
+    data = torch.cat(
+        [log_features, symlog_features, ratio_features, diff_features], dim=-1
+    )
+    return data
+
+
 class RealisticDIS:
     def __init__(self, device=None, smear=True, smear_std=0.05):
         self.device = device or torch.device("cpu")
@@ -194,8 +224,11 @@ class RealisticDIS:
     def q(self, x, Q2):
         A0 = torch.exp(self.logA0)
         scale_factor = (Q2 / self.Q0_squared).clamp(min=1e-6)
-        A_Q2 = A0 * scale_factor ** self.delta
-        shape = x.clamp(min=1e-6, max=1.0)**self.a * (1 - x.clamp(min=0.0, max=1.0))**self.b
+        A_Q2 = A0 * scale_factor**self.delta
+        shape = (
+            x.clamp(min=1e-6, max=1.0) ** self.a
+            * (1 - x.clamp(min=0.0, max=1.0)) ** self.b
+        )
         poly = 1 + self.c * x + self.d * x**2
         shape = shape * poly.clamp(min=1e-6)  # avoid negative polynomial tail
         return A_Q2 * shape
@@ -203,15 +236,20 @@ class RealisticDIS:
     def F2(self, x, Q2):
         return x * self.q(x, Q2)
 
-    def sample(self, params, n_events=1000, x_range=(1e-3, 0.9), Q2_range=(1.0, 1000.0)):
+    def sample(
+        self, params, n_events=1000, x_range=(1e-3, 0.9), Q2_range=(1.0, 1000.0)
+    ):
         self.init(params)
 
         # Sample x ~ Uniform, Q2 ~ LogUniform
-        x = torch.rand(n_events, device=self.device) * (x_range[1] - x_range[0]) + x_range[0]
+        x = (
+            torch.rand(n_events, device=self.device) * (x_range[1] - x_range[0])
+            + x_range[0]
+        )
         logQ2 = torch.rand(n_events, device=self.device) * (
             np.log10(Q2_range[1]) - np.log10(Q2_range[0])
         ) + np.log10(Q2_range[0])
-        Q2 = 10 ** logQ2
+        Q2 = 10**logQ2
 
         f2 = self.F2(x, Q2)
 

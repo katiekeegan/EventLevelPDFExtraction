@@ -1,0 +1,74 @@
+# Conda environment to run Simformer score-based experiments (recommended)
+# Assumptions:
+# - Use Python 3.11 for best compatibility with JAX, jaxlib, and PyTorch wheels.
+# - This environment pins versions that are known-compatible together (tested
+#   around mid-2024 / early-2025). If you prefer Python 3.12, you may try the
+#   same pip installs but some wheels may not be available; see notes below.
+#
+# Usage:
+# 1) Create the conda env (this installs conda packages and pip):
+#    conda env create -f environment.yml
+# 2) Activate it:
+#    conda activate simformer-env
+# 3) Install the PyTorch CPU wheel (recommended) using the PyTorch index so
+#    you get an optimized build. Example (CPU-only):
+#
+#    # Linux / CPU-only
+#    pip install --index-url https://download.pytorch.org/whl/cpu torch==2.1.0
+#
+#    # If you need CUDA, pick the wheel that matches your CUDA version (see
+#    # https://pytorch.org/get-started/locally/). Example for CUDA 11.8:
+#    # pip install --index-url https://download.pytorch.org/whl/cu118 torch==2.1.0
+#
+# 4) If you need probjax from the repository (recommended when using simformer
+#    local code), install it in editable mode from the simformer tree:
+#    pip install -e simformer/src/probjax --no-deps
+# 5) Install the local scoresbibm package (editable) without dependencies to
+#    avoid pulling heavyweight wheels automatically:
+#    pip install -e simformer/src/scoresbibm --no-deps
+#
+# Notes:
+# - If you have restricted disk quota, install packages one-by-one and avoid
+#   GPU wheels (which are large). Use CPU-only jax/jaxlib and CPU torch wheels.
+# - These pins are a tested combination; if pip cannot find a prebuilt wheel on
+#   your platform, you may need a slightly different jax/jaxlib version for
+#   Python and CPU architecture.
+
+name: simformer-env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy=1.26.*
+  - scipy=1.10.*
+  - matplotlib
+  - pandas
+  - scikit-learn
+  - tqdm
+  - h5py
+  - git
+  - pip:
+    - jax[cpu]==0.4.31
+    - jaxlib==0.4.31
+    - torch==2.1.0
+    - sbi==0.19.0
+    - optax==0.1.5
+    - flax==0.6.0
+    - chex>=0.1.8,<0.2
+    - dm-tree
+    - arviz
+    - seaborn
+    - torchvision
+    - Pillow
+    - matplotlib
+    - pyyaml
+    - hydra-core
+    - omegaconf
+    - cloudpickle
+    - scikit-learn
+    - networkx
+    - corner
+    - tabulate
+    - typing_extensions

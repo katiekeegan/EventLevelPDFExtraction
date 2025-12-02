@@ -89,3 +89,14 @@ precomputed_data/*_ns[0-9][0-9][0-9][0-9][0-9]*.npz
 # UQ plotting demo generated files
 test_plots/
 demo_plot_preview.png
+*.png
+./ipynb_checkpoints/
+./demo
+plots/
+precomputed_data/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.gitmodules
+.venv

@@ -1,13 +1,15 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.utils.data as data
-import torch.nn.functional as F
-import math
-from torch.nn.utils import spectral_norm as sn
-from torch.nn import MultiheadAttention
 import math
 from typing import Optional, Tuple
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+import torch.utils.data as data
+from torch.nn import MultiheadAttention
+from torch.nn.utils import spectral_norm as sn
+
+
 # from nflows.transforms import (
 #     CompositeTransform,
 #     ReversePermutation,
@@ -16,11 +18,11 @@ from typing import Optional, Tuple
 # from nflows.distributions import StandardNormal
 # from nflows.flows import Flow
 class InferenceNet(nn.Module):
-    def __init__(self, embedding_dim, output_dim = 6, hidden_dim=512, nll_mode=False):
+    def __init__(self, embedding_dim, output_dim=6, hidden_dim=512, nll_mode=False):
         super().__init__()
         self.nll_mode = nll_mode
         self.output_dim = output_dim
-        
+
         # Shared network layers
         self.shared_net = nn.Sequential(
             nn.Linear(embedding_dim, hidden_dim),
@@ -32,30 +34,30 @@ class InferenceNet(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(hidden_dim, hidden_dim//2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
             nn.ReLU(),
         )
-        
+
         if nll_mode:
             # Separate heads for mean and log-variance
-            self.mean_head = nn.Linear(hidden_dim//2, output_dim)
-            self.log_var_head = nn.Linear(hidden_dim//2, output_dim)
+            self.mean_head = nn.Linear(hidden_dim // 2, output_dim)
+            self.log_var_head = nn.Linear(hidden_dim // 2, output_dim)
         else:
             # Original single output head
-            self.output_head = nn.Linear(hidden_dim//2, output_dim)
-            
+            self.output_head = nn.Linear(hidden_dim // 2, output_dim)
+
         self._init_weights()
-        
+
     def _init_weights(self):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='relu')
+                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
                 nn.init.constant_(m.bias, 0)
 
     def forward(self, z):
         # Get shared features
         features = self.shared_net(z)
-        
+
         if self.nll_mode:
             # Return both means and log-variances
             means = self.mean_head(features)
@@ -68,12 +70,13 @@ class InferenceNet(nn.Module):
             params = self.output_head(features)
             return params
 
+
 # class ConditionalRealNVP(nn.Module):
 #     def __init__(self, latent_dim, param_dim, hidden_dim=256, num_flows=5):
 #         super().__init__()
 #         self.latent_dim = latent_dim
 #         self.param_dim = param_dim
-        
+
 #         def create_transform():
 #             return MaskedAffineAutoregressiveTransform(
 #                 features=param_dim,
@@ -83,15 +86,15 @@ class InferenceNet(nn.Module):
 #                 use_residual_blocks=True,
 #                 activation=nn.ReLU()
 #             )
-        
+
 #         transforms = []
 #         for _ in range(num_flows):
 #             transforms.append(ReversePermutation(features=param_dim))
 #             transforms.append(create_transform())
-        
+
 #         transform = CompositeTransform(transforms)
 #         base_distribution = StandardNormal(shape=[param_dim])
-        
+
 #         self.flow = Flow(transform=transform, distribution=base_distribution)
 
 #     def forward(self, latent_embedding, true_params):
@@ -102,6 +105,7 @@ class InferenceNet(nn.Module):
 #     def sample(self, latent_embedding, num_samples=1):
 #         # latent_embedding: [batch_size, latent_dim]
 #         return self.flow.sample(num_samples=num_samples, context=latent_embedding)
+
 
 class HierarchicalAttentionPooling(nn.Module):
     def __init__(self, hidden_dim, chunk_size=4096):
@@ -116,23 +120,30 @@ class HierarchicalAttentionPooling(nn.Module):
         B, N, D = x.shape
         # Step 1: Split into manageable chunks
         x = x.view(B, -1, self.chunk_size, D)  # [B, num_chunks, chunk_size, D]
-        
+
         # Step 2: Local attention within each chunk
-        local_weights = torch.softmax(self.local_attn(x), dim=2)  # [B, num_chunks, chunk_size, 1]
+        local_weights = torch.softmax(
+            self.local_attn(x), dim=2
+        )  # [B, num_chunks, chunk_size, 1]
         chunk_summaries = (x * local_weights).sum(dim=2)  # [B, num_chunks, D]
-        
+
         # Step 3: Global attention across chunks
-        global_weights = torch.softmax(self.global_attn(chunk_summaries), dim=1)  # [B, num_chunks, 1]
+        global_weights = torch.softmax(
+            self.global_attn(chunk_summaries), dim=1
+        )  # [B, num_chunks, 1]
         pooled = (chunk_summaries * global_weights).sum(dim=1)  # [B, D]
-        
+
         return pooled
+
 
 class PointNetEmbedding(nn.Module):
     def __init__(self, input_dim=2, latent_dim=64, hidden_dim=256, predict_theta=True):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
-        self.predict_theta = predict_theta  # control whether to return regression output
+        self.predict_theta = (
+            predict_theta  # control whether to return regression output
+        )
 
         # Initial MLP for point-wise feature extraction
         self.mlp1 = nn.Sequential(
@@ -141,7 +152,7 @@ class PointNetEmbedding(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Sigmoid()
+            nn.Sigmoid(),
         )
 
         # Hierarchical pooling layer
@@ -151,7 +162,7 @@ class PointNetEmbedding(nn.Module):
         self.mlp2 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
+            nn.Linear(hidden_dim, latent_dim),
         )
 
         # Optional theta regressor (only used if predict_theta=True)
@@ -159,7 +170,7 @@ class PointNetEmbedding(nn.Module):
             self.theta_regressor = nn.Sequential(
                 nn.Linear(latent_dim, 128),
                 nn.ReLU(),
-                nn.Linear(128, 4)  # Output dimension is number of θ parameters
+                nn.Linear(128, 4),  # Output dimension is number of θ parameters
             )
 
     def forward(self, x):
@@ -181,8 +192,16 @@ class PointNetEmbedding(nn.Module):
         else:
             return latent
 
+
 class PointNetWithAttention(nn.Module):
-    def __init__(self, input_dim=2, latent_dim=64, hidden_dim=256, num_heads=4, predict_theta=True):
+    def __init__(
+        self,
+        input_dim=2,
+        latent_dim=64,
+        hidden_dim=256,
+        num_heads=4,
+        predict_theta=True,
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -193,11 +212,13 @@ class PointNetWithAttention(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
         # Self-attention layer: expects (N, B, D)
-        self.self_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
 
         # Optional: LayerNorm + residual
         self.norm = nn.LayerNorm(hidden_dim)
@@ -209,14 +230,12 @@ class PointNetWithAttention(nn.Module):
         self.mlp2 = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, latent_dim)
+            nn.Linear(hidden_dim, latent_dim),
         )
 
         if predict_theta:
             self.theta_regressor = nn.Sequential(
-                nn.Linear(latent_dim, 128),
-                nn.ReLU(),
-                nn.Linear(128, 4)
+                nn.Linear(latent_dim, 128), nn.ReLU(), nn.Linear(128, 4)
             )
 
     def forward(self, x):
@@ -236,8 +255,11 @@ class PointNetWithAttention(nn.Module):
         else:
             return latent
 
+
 class PointNetCrossAttention(nn.Module):
-    def __init__(self, input_dim=2, latent_dim=64, hidden_dim=16, num_heads=2, predict_theta=True):
+    def __init__(
+        self, input_dim=2, latent_dim=64, hidden_dim=16, num_heads=2, predict_theta=True
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -248,27 +270,27 @@ class PointNetCrossAttention(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
         # Learnable global token (same per batch)
         self.global_token = nn.Parameter(torch.randn(1, 1, hidden_dim))  # (1, 1, D)
 
         # Multi-head attention: Q from global token, K/V from points
-        self.cross_attn = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.cross_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
 
         # Final latent projection
         self.mlp2 = nn.Sequential(
             nn.Linear(hidden_dim, latent_dim),
             nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim)
+            nn.Linear(latent_dim, latent_dim),
         )
 
         if predict_theta:
             self.theta_regressor = nn.Sequential(
-                nn.Linear(latent_dim, 128),
-                nn.ReLU(),
-                nn.Linear(128, 4)
+                nn.Linear(latent_dim, 128), nn.ReLU(), nn.Linear(128, 4)
             )
 
     def forward(self, x):
@@ -280,7 +302,9 @@ class PointNetCrossAttention(nn.Module):
         global_token = self.global_token.expand(B, -1, -1)  # (B, 1, hidden_dim)
 
         # Apply cross-attention: Q=global_token, K/V=point features
-        attended, _ = self.cross_attn(query=global_token, key=x, value=x)  # (B, 1, hidden_dim)
+        attended, _ = self.cross_attn(
+            query=global_token, key=x, value=x
+        )  # (B, 1, hidden_dim)
         attended = attended.squeeze(1)  # (B, hidden_dim)
 
         latent = self.mlp2(attended)  # (B, latent_dim)
@@ -290,6 +314,7 @@ class PointNetCrossAttention(nn.Module):
             return latent, theta_hat
         else:
             return latent
+
 
 class DISPointCloudRegressor(nn.Module):
     def __init__(self, input_dim=6, hidden_dim=64, latent_dim=128, predict_theta=True):
@@ -303,7 +328,7 @@ class DISPointCloudRegressor(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.Tanh()
+            nn.Tanh(),
         )
 
         # Set-based pooling (learnable or stateless)
@@ -311,7 +336,7 @@ class DISPointCloudRegressor(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, latent_dim),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
         # Regression head
@@ -342,8 +367,17 @@ class DISPointCloudRegressor(nn.Module):
         #     return z, theta_hat
         return z
 
+
 class PointNetPDFRegressor(nn.Module):
-    def __init__(self, input_dim=6, latent_dim=64, hidden_dim=256, num_heads=4, num_seeds=1, num_points_sampled=4096):
+    def __init__(
+        self,
+        input_dim=6,
+        latent_dim=64,
+        hidden_dim=256,
+        num_heads=4,
+        num_seeds=1,
+        num_points_sampled=4096,
+    ):
         super().__init__()
         self.num_points_sampled = num_points_sampled
         self.hidden_dim = hidden_dim
@@ -353,20 +387,22 @@ class PointNetPDFRegressor(nn.Module):
             nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU()
+            nn.ReLU(),
         )
 
         # Learnable seed vector(s)
         self.seed_vectors = nn.Parameter(torch.randn(1, num_seeds, hidden_dim))
 
         # Pooling by Multihead Attention (PMA)
-        self.pma = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.pma = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
 
         # Latent MLP → latent_dim → predict PDF parameters
         self.mlp2 = nn.Sequential(
             nn.Linear(num_seeds * hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(latent_dim, latent_dim)  # predict 4 parameters: au, bu, ad, bd
+            nn.Linear(latent_dim, latent_dim),  # predict 4 parameters: au, bu, ad, bd
         )
 
     def subsample(self, x):
@@ -393,6 +429,7 @@ class PointNetPDFRegressor(nn.Module):
         latent = attended.view(x.size(0), -1)
         theta_hat = self.mlp2(latent)  # (B, 4)
         return theta_hat
+
 
 # class PointNetPMA(nn.Module):
 #     def __init__(self, input_dim=2, latent_dim=64, hidden_dim=32, num_heads=2, num_seeds=4, predict_theta=True):
@@ -461,13 +498,21 @@ class PointNetPDFRegressor(nn.Module):
 #             return latent, theta_hat
 #         return latent
 
+
 class SmallPointEncoder(nn.Module):
     """
     Tiny point-wise encoder applied to points in a chunk.
     Input: (B*C, K, D)
     Output: (B*C, K, chunk_latent)
     """
-    def __init__(self, input_dim: int = 2, hidden_dim: int = 64, chunk_latent: int = 64, dropout: float = 0.0):
+
+    def __init__(
+        self,
+        input_dim: int = 2,
+        hidden_dim: int = 64,
+        chunk_latent: int = 64,
+        dropout: float = 0.0,
+    ):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
@@ -482,13 +527,13 @@ class SmallPointEncoder(nn.Module):
         # x: (B*C, K, D)
         Bc, K, D = x.shape
         x_flat = x.view(Bc * K, D)
-        z = self.net(x_flat)                  # (Bc*K, chunk_latent)
-        z = z.view(Bc, K, -1)                 # (Bc, K, chunk_latent)
+        z = self.net(x_flat)  # (Bc*K, chunk_latent)
+        z = z.view(Bc, K, -1)  # (Bc, K, chunk_latent)
         z = self.dropout(z)
         # per-chunk pooling (mean + LayerNorm)
-        z_pool = z.mean(dim=1)                # (Bc, chunk_latent)
+        z_pool = z.mean(dim=1)  # (Bc, chunk_latent)
         z_out = self.ln(z_pool)
-        return z_out                          # (Bc, chunk_latent)
+        return z_out  # (Bc, chunk_latent)
 
 
 class ChunkedPointNetPMA(nn.Module):
@@ -502,6 +547,7 @@ class ChunkedPointNetPMA(nn.Module):
     Input: x (B, N, D)
     Output: latent (B, latent_dim)
     """
+
     def __init__(
         self,
         input_dim: int = 2,
@@ -521,22 +567,26 @@ class ChunkedPointNetPMA(nn.Module):
         self.latent_dim = latent_dim
 
         # per-chunk encoder (applied to K points at a time)
-        self.chunk_encoder = SmallPointEncoder(input_dim=input_dim,
-                                               hidden_dim=hidden_dim,
-                                               chunk_latent=chunk_latent,
-                                               dropout=dropout)
+        self.chunk_encoder = SmallPointEncoder(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            chunk_latent=chunk_latent,
+            dropout=dropout,
+        )
 
         # PMA: queries = learnable seed vectors, keys/vals = chunk summaries
         self.seed_vectors = nn.Parameter(torch.randn(1, num_seeds, chunk_latent) * 0.05)
         self.ln_seed = nn.LayerNorm(chunk_latent)
-        self.pma = nn.MultiheadAttention(embed_dim=chunk_latent, num_heads=num_heads, batch_first=True)
+        self.pma = nn.MultiheadAttention(
+            embed_dim=chunk_latent, num_heads=num_heads, batch_first=True
+        )
 
         # final projection from flattened seeds -> latent
         self.proj = nn.Sequential(
             nn.Linear(num_seeds * chunk_latent, latent_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(latent_dim, latent_dim)
+            nn.Linear(latent_dim, latent_dim),
         )
 
         # init weights
@@ -551,9 +601,9 @@ class ChunkedPointNetPMA(nn.Module):
                     nn.init.zeros_(m.bias)
         # reinit MHA subparams safe
         for name, p in self.pma.named_parameters():
-            if name.endswith('in_proj_weight') or name.endswith('out_proj.weight'):
+            if name.endswith("in_proj_weight") or name.endswith("out_proj.weight"):
                 nn.init.xavier_uniform_(p)
-            if name.endswith('in_proj_bias') or name.endswith('out_proj.bias'):
+            if name.endswith("in_proj_bias") or name.endswith("out_proj.bias"):
                 nn.init.zeros_(p)
 
     def _pad_and_chunk(self, x: torch.Tensor) -> Tuple[torch.Tensor, int]:
@@ -570,9 +620,9 @@ class ChunkedPointNetPMA(nn.Module):
         pad = n_chunks * K - N
         if pad > 0:
             pad_t = x.new_zeros(B, pad, D)
-            x = torch.cat([x, pad_t], dim=1)   # (B, n_chunks*K, D)
-        x = x.view(B, n_chunks, K, D)          # (B, C, K, D)
-        x = x.view(B * n_chunks, K, D)         # (B*C, K, D)
+            x = torch.cat([x, pad_t], dim=1)  # (B, n_chunks*K, D)
+        x = x.view(B, n_chunks, K, D)  # (B, C, K, D)
+        x = x.view(B * n_chunks, K, D)  # (B*C, K, D)
         return x, n_chunks
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -584,20 +634,22 @@ class ChunkedPointNetPMA(nn.Module):
             raise ValueError("Expected input x to be (B, N, D)")
         B, N, D = x.shape
         # 1) chunk and encode
-        x_chunks, n_chunks = self._pad_and_chunk(x)          # (B*C, K, D)
-        chunk_summaries = self.chunk_encoder(x_chunks)       # (B*C, chunk_latent)
+        x_chunks, n_chunks = self._pad_and_chunk(x)  # (B*C, K, D)
+        chunk_summaries = self.chunk_encoder(x_chunks)  # (B*C, chunk_latent)
         chunk_summaries = chunk_summaries.view(B, n_chunks, -1)  # (B, C, chunk_latent)
 
         # 2) PMA aggregation: queries = seeds, keys/vals = chunk_summaries
-        seed = self.seed_vectors.expand(B, -1, -1)           # (B, S, E)
+        seed = self.seed_vectors.expand(B, -1, -1)  # (B, S, E)
         seed_norm = self.ln_seed(seed)
-        attended, _ = self.pma(query=seed_norm, key=chunk_summaries, value=chunk_summaries)
+        attended, _ = self.pma(
+            query=seed_norm, key=chunk_summaries, value=chunk_summaries
+        )
         # residual + norm on seeds
-        attended = self.ln_seed(attended + seed)             # (B, S, E)
+        attended = self.ln_seed(attended + seed)  # (B, S, E)
 
         # 3) flatten seeds and project
         attended_flat = attended.reshape(B, self.num_seeds * self.chunk_latent)
-        latent = self.proj(attended_flat)                    # (B, latent_dim)
+        latent = self.proj(attended_flat)  # (B, latent_dim)
         return latent
 
 
@@ -608,13 +660,16 @@ class PointNetPMA(nn.Module):
     - returns: (B, latent_dim)
     Stable defaults: LayerNorm, small seed init, residual, Xavier init, optional dropout.
     """
-    def __init__(self,
-                 input_dim=2,
-                 latent_dim=64,
-                 hidden_dim=64,
-                 num_heads=4,
-                 num_seeds=8,
-                 dropout=0.0):
+
+    def __init__(
+        self,
+        input_dim=2,
+        latent_dim=64,
+        hidden_dim=64,
+        num_heads=4,
+        num_seeds=8,
+        dropout=0.0,
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.latent_dim = latent_dim
@@ -640,7 +695,9 @@ class PointNetPMA(nn.Module):
 
         # PMA via MultiheadAttention: queries = seeds, keys/vals = point features
         # batch_first=True keeps shapes (B, S, E) and (B, N, E)
-        self.pma = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
+        self.pma = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=num_heads, batch_first=True
+        )
 
         # optional projection after attended seeds (residual + norm already added in forward)
         # final latent projection: flatten seeds -> latent
@@ -665,9 +722,9 @@ class PointNetPMA(nn.Module):
         # MultiheadAttention has in_proj_weight and out_proj.weight which are Linear-like
         # Torch already initializes these, but we will do a safe re-init if present:
         for name, p in self.pma.named_parameters():
-            if name.endswith('in_proj_weight') or name.endswith('out_proj.weight'):
+            if name.endswith("in_proj_weight") or name.endswith("out_proj.weight"):
                 nn.init.xavier_uniform_(p)
-            if name.endswith('in_proj_bias') or name.endswith('out_proj.bias'):
+            if name.endswith("in_proj_bias") or name.endswith("out_proj.bias"):
                 nn.init.zeros_(p)
 
     def forward(self, x):
@@ -685,27 +742,30 @@ class PointNetPMA(nn.Module):
             pass
 
         # point-wise encoding
-        x_flat = x.view(B * N, self.input_dim)           # (B*N, input_dim)
-        h = self.mlp1(x_flat)                            # (B*N, hidden_dim)
-        h = h.view(B, N, self.hidden_dim)                # (B, N, hidden_dim)
+        x_flat = x.view(B * N, self.input_dim)  # (B*N, input_dim)
+        h = self.mlp1(x_flat)  # (B*N, hidden_dim)
+        h = h.view(B, N, self.hidden_dim)  # (B, N, hidden_dim)
         h = self.ln_point(h)
 
         # seeds
-        seed = self.seed_vectors.expand(B, -1, -1)       # (B, num_seeds, hidden_dim)
+        seed = self.seed_vectors.expand(B, -1, -1)  # (B, num_seeds, hidden_dim)
         seed_norm = self.ln_seed(seed)
 
         # PMA: queries = seed, keys/vals = h
         # MultiheadAttention returns (output, attn_weights)
-        attended, _ = self.pma(query=seed_norm, key=h, value=h)  # (B, num_seeds, hidden_dim)
+        attended, _ = self.pma(
+            query=seed_norm, key=h, value=h
+        )  # (B, num_seeds, hidden_dim)
 
         # residual + norm (helps stability)
         attended = self.ln_seed(attended + seed)
 
         # flatten seeds and produce latent
         attended_flat = attended.reshape(B, self.num_seeds * self.hidden_dim)
-        latent = self.mlp2(attended_flat)                 # (B, latent_dim)
+        latent = self.mlp2(attended_flat)  # (B, latent_dim)
 
         return latent
+
 
 class LatentToParamsNN(nn.Module):
     def __init__(self, latent_dim, param_dim, dropout_prob=0.2):
@@ -714,7 +774,7 @@ class LatentToParamsNN(nn.Module):
         self.dropout1 = nn.Dropout(dropout_prob)
         self.fc2 = nn.Linear(128, 64)
         self.dropout2 = nn.Dropout(dropout_prob)
-        
+
         # Separate layers for mean and variance
         self.fc_mean = nn.Linear(64, param_dim)
         self.fc_log_var = nn.Linear(64, param_dim)  # Output log variance
@@ -724,13 +784,16 @@ class LatentToParamsNN(nn.Module):
         x = self.dropout1(x)
         x = torch.relu(self.fc2(x))
         x = self.dropout2(x)
-        
+
         mean = 10 * torch.sigmoid(self.fc_mean(x))  # Scale to parameter range
         # log_var = self.fc_log_var(x)  # Unconstrained log variance
-        log_var = torch.tanh(self.fc_log_var(x), min=-10, max=10)  # Prevent extreme values
+        log_var = torch.tanh(
+            self.fc_log_var(x), min=-10, max=10
+        )  # Prevent extreme values
         variance = torch.exp(log_var)
         # log_var = torch.tanh(self.fc_logvar(x)) * 5  # Keep within a reasonable range
         return mean, variance
+
 
 # class TransformerHead(nn.Module):
 #     def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
@@ -748,9 +811,19 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class TransformerHead(nn.Module):
-    def __init__(self, embedding_dim, out_dim, ranges=None, nhead=4, num_layers=2,
-                 dropout=0.1, eps=1e-8, pool='mean'):
+    def __init__(
+        self,
+        embedding_dim,
+        out_dim,
+        ranges=None,
+        nhead=4,
+        num_layers=2,
+        dropout=0.1,
+        eps=1e-8,
+        pool="mean",
+    ):
         super().__init__()
         self.out_dim = out_dim
         self.use_scaling = ranges is not None
@@ -770,30 +843,31 @@ class TransformerHead(nn.Module):
             self.width = None
 
         self.embedding = nn.Linear(embedding_dim, 128)
-        enc_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead,
-                                               dropout=dropout, batch_first=True)
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=128, nhead=nhead, dropout=dropout, batch_first=True
+        )
         self.transformer = nn.TransformerEncoder(enc_layer, num_layers)
         self.fc = nn.Linear(128, out_dim)
 
     def forward(self, x):
         # Accept (B, E), (B, S, E)
         if x.dim() == 2:
-            x = x.unsqueeze(1)   # (B, 1, E)
+            x = x.unsqueeze(1)  # (B, 1, E)
         elif x.dim() == 3:
-            pass                 # (B, S, E)
+            pass  # (B, S, E)
         else:
             raise ValueError(f"Unexpected input dim {x.dim()}")
 
-        x = self.embedding(x)    # (B, S, 128)
+        x = self.embedding(x)  # (B, S, 128)
         x = self.transformer(x)  # (B, S, 128)
-        z = self.fc(x)           # (B, S, out_dim)
+        z = self.fc(x)  # (B, S, out_dim)
 
         # default pooling -> (B, out_dim)
-        if self.pool == 'mean':
+        if self.pool == "mean":
             z = z.mean(dim=1)
-        elif self.pool == 'first':
+        elif self.pool == "first":
             z = z[:, 0, :]
-        elif self.pool in (None, 'none'):
+        elif self.pool in (None, "none"):
             pass
         else:
             raise ValueError("pool must be 'mean', 'first', or None")
@@ -808,9 +882,13 @@ class TransformerHead(nn.Module):
         # else:
         #     return self.low.view(1, -1) + self.width.view(1, -1) * torch.sigmoid(z)
 
+
 class MLPHead(nn.Module):
     """Simple, stable MLP head for mapping (B, E) -> (B, out_dim)."""
-    def __init__(self, embedding_dim, out_dim, hidden=256, dropout=0.0, use_layernorm=True):
+
+    def __init__(
+        self, embedding_dim, out_dim, hidden=256, dropout=0.0, use_layernorm=True
+    ):
         super().__init__()
         self.use_ln = use_layernorm
         self.net = nn.Sequential(
@@ -818,20 +896,21 @@ class MLPHead(nn.Module):
             nn.ReLU(),
             nn.LayerNorm(hidden) if use_layernorm else nn.Identity(),
             nn.Dropout(dropout),
-            nn.Linear(hidden, hidden//2),
+            nn.Linear(hidden, hidden // 2),
             nn.ReLU(),
-            nn.LayerNorm(hidden//2) if use_layernorm else nn.Identity(),
+            nn.LayerNorm(hidden // 2) if use_layernorm else nn.Identity(),
             nn.Dropout(dropout),
-            nn.Linear(hidden//2, out_dim)
+            nn.Linear(hidden // 2, out_dim),
         )
         # safe init
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 nn.init.xavier_uniform_(m.weight)
-                if m.bias is not None: nn.init.zeros_(m.bias)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, x):
         # Accept (B, E) or (B, 1, E)
         if x.dim() == 3 and x.size(1) == 1:
             x = x.squeeze(1)
-        return self.net(x)    # (B, out_dim)
+        return self.net(x)  # (B, out_dim)

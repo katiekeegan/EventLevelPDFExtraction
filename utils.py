@@ -1,53 +1,55 @@
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import numpy as np
-from torch.distributions import *
-from torch.utils.data import DataLoader, Dataset, TensorDataset
-from torch.nn.parallel import DataParallel
-import torch.distributed as dist
-from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
+import os
+
 import h5py
 import numpy as np
-from tqdm import tqdm
-import os
-import torch.nn.functional as F
+import torch
+import torch.distributed as dist
 import torch.multiprocessing as mp
-from torch.cuda.amp import autocast, GradScaler
-from torch.utils.data import IterableDataset
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data import TensorDataset
-from simulator import * 
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast
+from torch.distributions import *
+from torch.nn.parallel import DataParallel
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.utils.data import (DataLoader, Dataset, IterableDataset,
+                              TensorDataset)
+from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
+
+from simulator import *
+
 # Ensure reproducibility
 torch.manual_seed(42)
 # Set default device
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def gaussian_nll_loss(means, log_vars, targets):
     """
     Compute Gaussian negative log-likelihood loss.
-    
+
     Args:
         means: Predicted means, shape (batch_size, output_dim)
-        log_vars: Predicted log-variances, shape (batch_size, output_dim)  
+        log_vars: Predicted log-variances, shape (batch_size, output_dim)
         targets: True parameter values, shape (batch_size, output_dim)
-        
+
     Returns:
         Scalar loss value
     """
     # Convert log-variances to variances
     variances = torch.exp(log_vars)
-    
+
     # Compute squared differences
     squared_diffs = (targets - means) ** 2
-    
+
     # Gaussian NLL = 0.5 * (log(2π) + log(σ²) + (x-μ)²/σ²)
     # We can ignore the constant log(2π) term for optimization
     nll = 0.5 * (log_vars + squared_diffs / variances)
-    
+
     # Return mean over batch and dimensions
     return torch.mean(nll)
+
 
 # Feature Engineering with improved stability
 def log_feature_engineering(xs_tensor):
@@ -67,26 +69,35 @@ def log_feature_engineering(xs_tensor):
     ratio = xs_clamped[..., i] / (xs_clamped[..., j] + 1e-8)
     ratio_features = torch.log1p(ratio.abs())
     del ratio
-    
+
     diff_features = torch.log1p(xs_clamped[..., i]) - torch.log1p(xs_clamped[..., j])
     del xs_clamped
-    data = torch.cat([log_features, symlog_features, ratio_features, diff_features], dim=-1)
+    data = torch.cat(
+        [log_features, symlog_features, ratio_features, diff_features], dim=-1
+    )
     return data
 
-def precompute_features_and_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, chunk_size=4):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def precompute_features_and_latents_to_disk(
+    pointnet_model, xs_tensor, thetas, output_path, chunk_size=4
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pointnet_model = pointnet_model.to(device)
     pointnet_model.eval()
 
     latent_dim = 1024
     num_samples = xs_tensor.shape[0]
     print(f"[precompute] Saving HDF5 to: {output_path}")
-    if os.path.dirname(output_path) != '':
+    if os.path.dirname(output_path) != "":
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
-    with h5py.File(output_path, 'w') as f:
-        latent_dset = f.create_dataset('latents', shape=(num_samples, latent_dim), dtype=np.float32)
-        theta_dset = f.create_dataset('thetas', data=thetas.cpu().numpy(), dtype=np.float32)
+    with h5py.File(output_path, "w") as f:
+        latent_dset = f.create_dataset(
+            "latents", shape=(num_samples, latent_dim), dtype=np.float32
+        )
+        theta_dset = f.create_dataset(
+            "thetas", data=thetas.cpu().numpy(), dtype=np.float32
+        )
 
         for i in tqdm(range(num_samples)):
             print(f"xs_tensor shape: {xs_tensor.shape}")
@@ -94,7 +105,7 @@ def precompute_features_and_latents_to_disk(pointnet_model, xs_tensor, thetas, o
             xs_engineered = log_feature_engineering(xs_sample)  # CPU-safe
             xs_engineered = xs_engineered.to(device)
 
-            with torch.no_grad(), torch.amp.autocast(device_type='cuda'):
+            with torch.no_grad(), torch.amp.autocast(device_type="cuda"):
                 latent = pointnet_model(xs_engineered)
                 latent = latent.squeeze().cpu().numpy()  # shape: (latent_dim,)
 
@@ -103,33 +114,43 @@ def precompute_features_and_latents_to_disk(pointnet_model, xs_tensor, thetas, o
             del xs_sample, xs_engineered, latent
             torch.cuda.empty_cache()
 
-def precompute_latents_to_disk(pointnet_model, xs_tensor, thetas, output_path, latent_dim, chunk_size=4):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+def precompute_latents_to_disk(
+    pointnet_model, xs_tensor, thetas, output_path, latent_dim, chunk_size=4
+):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pointnet_model = pointnet_model.to(device)
     pointnet_model.eval()
-    
-    with h5py.File(output_path, 'w') as f:
+
+    with h5py.File(output_path, "w") as f:
         latent_shape = (len(xs_tensor), latent_dim)
-        latent_dset = f.create_dataset('latents', shape=latent_shape, dtype=np.float32,
-                                       chunks=(chunk_size, latent_shape[1]))
-        
-        theta_dset = f.create_dataset('thetas', data=thetas.cpu().numpy(), dtype=np.float32)
+        latent_dset = f.create_dataset(
+            "latents",
+            shape=latent_shape,
+            dtype=np.float32,
+            chunks=(chunk_size, latent_shape[1]),
+        )
+
+        theta_dset = f.create_dataset(
+            "thetas", data=thetas.cpu().numpy(), dtype=np.float32
+        )
 
         for i in tqdm(range(0, len(xs_tensor), chunk_size)):
-            chunk = xs_tensor[i:i+chunk_size].to(device)
-            with torch.no_grad(), torch.amp.autocast(device_type='cuda'):
+            chunk = xs_tensor[i : i + chunk_size].to(device)
+            with torch.no_grad(), torch.amp.autocast(device_type="cuda"):
                 latent = pointnet_model(chunk)
                 latent = latent.squeeze(1).cpu().numpy()
-            latent_dset[i:i+len(latent)] = latent
+            latent_dset[i : i + len(latent)] = latent
             del chunk, latent
             torch.cuda.empty_cache()
-    
+
     return output_path
 
-def precompute_latents_chunked(pointnet_model, xs_tensor, chunk_size=32, device='cuda'):
+
+def precompute_latents_chunked(pointnet_model, xs_tensor, chunk_size=32, device="cuda"):
     """
     Compute latent features in memory-friendly chunks and normalize them.
-    
+
     Returns:
         latents_normalized: Tensor of normalized latent features
         z_mean: Tensor of latent feature means (shape: [latent_dim])
@@ -137,33 +158,36 @@ def precompute_latents_chunked(pointnet_model, xs_tensor, chunk_size=32, device=
     """
     pointnet_model = pointnet_model.to(device)
     pointnet_model.eval()
-    
+
     latents = []
     with torch.no_grad():
         for i in range(0, len(xs_tensor), chunk_size):
-            chunk = xs_tensor[i:i+chunk_size].to(device)
+            chunk = xs_tensor[i : i + chunk_size].to(device)
             latent, _ = pointnet_model(chunk).squeeze(1).cpu()  # shape: [B, latent_dim]
             latents.append(latent)
             del chunk, latent
             torch.cuda.empty_cache()
-    
+
     latents = torch.cat(latents, dim=0)  # shape: [N, latent_dim]
-    
+
     # Compute normalization stats
     z_mean = latents.mean(dim=0, keepdim=True)  # shape: [1, latent_dim]
     z_std = latents.std(dim=0, keepdim=True) + 1e-6  # Avoid divide-by-zero
-    
+
     # Normalize
     latents_normalized = (latents - z_mean) / z_std
 
     return latents_normalized, z_mean.squeeze(), z_std.squeeze()
+
 
 def pairwise_cosine_similarity(x):
     x = F.normalize(x, p=2, dim=1)
     return x @ x.T  # [B, B]
 
 
-def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, dissim_threshold=0.3):
+def triplet_theta_contrastive_loss(
+    z, theta, margin=0.5, sim_threshold=0.1, dissim_threshold=0.3
+):
     # Normalize embeddings
     z = F.normalize(z, p=2, dim=1)  # [B, D]
 
@@ -191,32 +215,44 @@ def triplet_theta_contrastive_loss(z, theta, margin=0.5, sim_threshold=0.1, diss
     triplet_loss = F.relu(hardest_pos_val - easiest_neg_val + margin)
     return triplet_loss.mean()
 
+
 def get_optimizer(model, lr):
     return optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
+
 def get_scheduler(optimizer, epochs):
-    return optim.lr_scheduler.OneCycleLR(optimizer, max_lr=1e-3, 
-                                       total_steps=epochs, 
-                                       pct_start=0.3)
+    return optim.lr_scheduler.OneCycleLR(
+        optimizer, max_lr=1e-3, total_steps=epochs, pct_start=0.3
+    )
 
 
 def cleanup():
     dist.destroy_process_group()
 
+
 def setup(rank, world_size):
     import os
-    os.environ['MASTER_ADDR'] = 'localhost'
-    os.environ['MASTER_PORT'] = '12355'
+
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "12355"
     dist.init_process_group("nccl", rank=rank, world_size=world_size)
 
+
 @torch.no_grad()
-def _make_default_grids(device, x_range=(1e-3, 0.9), n_x=500, Q2_slices=(1.0, 1.5, 2.0, 10.0, 50.0)):
+def _make_default_grids(
+    device, x_range=(1e-3, 0.9), n_x=500, Q2_slices=(1.0, 1.5, 2.0, 10.0, 50.0)
+):
     # log-space in x is common for PDFs
-    x_vals = torch.logspace(torch.log10(torch.tensor(x_range[0])),
-                            torch.log10(torch.tensor(x_range[1])),
-                            steps=n_x, device=device, dtype=torch.float32)
+    x_vals = torch.logspace(
+        torch.log10(torch.tensor(x_range[0])),
+        torch.log10(torch.tensor(x_range[1])),
+        steps=n_x,
+        device=device,
+        dtype=torch.float32,
+    )
     Q2_vals = torch.tensor(Q2_slices, device=device, dtype=torch.float32)  # (S,)
     return x_vals, Q2_vals
+
 
 def _compute_pdf_grid(simulator, params_batch, x_vals, Q2_vals):
     """
@@ -241,6 +277,7 @@ def _compute_pdf_grid(simulator, params_batch, x_vals, Q2_vals):
         q_pred.append(torch.cat(q_slices, dim=0).unsqueeze(0))  # (1, S, X)
 
     return torch.cat(q_pred, dim=0)  # (B, S, X)
+
 
 def pdf_theta_loss(theta_pred, theta_true, problem):
     """
@@ -268,7 +305,7 @@ def pdf_theta_loss(theta_pred, theta_true, problem):
     device = theta_pred.device
     eps = 1e-12
 
-    if problem == 'simplified_dis':
+    if problem == "simplified_dis":
         simulator = SimplifiedDIS(device=device)
         x_vals = torch.linspace(0, 1, 500).to(device)
         pred_vals_all = []
@@ -281,13 +318,17 @@ def pdf_theta_loss(theta_pred, theta_true, problem):
                 fn = getattr(simulator, fn_name)
                 vals_pred = fn(x_vals).unsqueeze(0)
                 # Replace NaN with 1000, +inf with 1000, -inf with -1000
-                vals_pred = torch.nan_to_num(vals_pred, nan=10000.0, posinf=10000.0, neginf=-10000.0)
+                vals_pred = torch.nan_to_num(
+                    vals_pred, nan=10000.0, posinf=10000.0, neginf=-10000.0
+                )
                 fn_vals_all.append(vals_pred)
 
                 simulator.init(theta_true[i])
                 fn_true = getattr(simulator, fn_name)
                 vals_true = fn_true(x_vals).unsqueeze(0)
-                vals_true = torch.nan_to_num(vals_true, nan=10000.0, posinf=10000.0, neginf=-10000.0)
+                vals_true = torch.nan_to_num(
+                    vals_true, nan=10000.0, posinf=10000.0, neginf=-10000.0
+                )
                 fn_true_vals_all.append(vals_true)
 
                 # print(f"Predicted Parameters: {theta_pred[i]}")
@@ -298,11 +339,18 @@ def pdf_theta_loss(theta_pred, theta_true, problem):
             true_vals_all.append(fn_true_stack)
         pred_vals = torch.stack(pred_vals_all, dim=1)  # [batch_size, 2, 500]
         true_vals = torch.stack(true_vals_all, dim=1)
-        loss = torch.log(torch.clamp(pred_vals, min=eps) / torch.clamp(true_vals, min=eps)).abs().mean()
+        loss = (
+            torch.log(torch.clamp(pred_vals, min=eps) / torch.clamp(true_vals, min=eps))
+            .abs()
+            .mean()
+        )
 
     return loss
 
+
 EPS = 1e-8
+
+
 def improved_feature_engineering(xs_tensor):
     """
     Drop-in replacement for your original function.
@@ -319,8 +367,8 @@ def improved_feature_engineering(xs_tensor):
     eps = EPS
 
     # basic transforms
-    log1p_abs = torch.log1p(x.abs().clamp(min=eps))      # log1p of magnitude
-    symlog_feat = torch.sign(x) * log1p_abs              # symmetric log-like
+    log1p_abs = torch.log1p(x.abs().clamp(min=eps))  # log1p of magnitude
+    symlog_feat = torch.sign(x) * log1p_abs  # symmetric log-like
 
     # positive-only log1p (keeps zeros for negatives)
     log1p_pos = torch.log1p(torch.clamp(x, min=0.0) + eps)
@@ -333,7 +381,7 @@ def improved_feature_engineering(xs_tensor):
         # log-difference proxy for ratio: log1p(|x_i|) - log1p(|x_j|)
         pair_logdiff = log1p_abs[..., i] - log1p_abs[..., j]
         # signed raw difference as additional signal
-        pair_diff = (x[..., i] - x[..., j])
+        pair_diff = x[..., i] - x[..., j]
         pair_feats = torch.cat([pair_logdiff, pair_diff], dim=-1)
     else:
         pair_feats = x.new_empty(x.shape[:-1] + (0,))
