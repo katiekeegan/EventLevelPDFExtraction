@@ -145,106 +145,6 @@ def atomic_savez_compressed(filepath, **kwargs):
         )
 
 
-def create_minimal_simulators():
-    """Create minimal simulators when full ones are not available."""
-
-    class MinimalGaussian2DSimulator:
-        def __init__(self, device=None):
-            self.device = device or torch.device("cpu")
-
-        def sample(self, theta, nevents=1000):
-            mu_x, mu_y, sigma_x, sigma_y, rho = theta
-            mean = torch.tensor([mu_x, mu_y], device=self.device)
-            cov = torch.tensor(
-                [
-                    [sigma_x**2, rho * sigma_x * sigma_y],
-                    [rho * sigma_x * sigma_y, sigma_y**2],
-                ],
-                device=self.device,
-            )
-            samples = torch.distributions.MultivariateNormal(mean, cov).sample(
-                (nevents,)
-            )
-            return samples
-
-    class MinimalSimplifiedDIS:
-        def __init__(self, device=None):
-            self.device = device or torch.device("cpu")
-            self.clip_alert = False
-
-        def sample(self, theta, nevents=1000):
-            torch.manual_seed(hash(tuple(theta.cpu().numpy())) % 2**32)
-            x = torch.rand(nevents, device=self.device) * 0.9 + 0.01
-            Q2 = torch.rand(nevents, device=self.device) * 999 + 1
-            au, bu, ad, bd = theta[:4]
-            f2 = x * (au * x**bu + ad * x**bd)
-            return torch.stack([x, Q2, f2], dim=1)
-
-    class MinimalRealisticDIS:
-        def __init__(self, device=None, smear=True, smear_std=0.05):
-            self.device = device or torch.device("cpu")
-            self.smear = smear
-            self.smear_std = smear_std
-
-        def sample(self, theta, nevents=1000):
-            torch.manual_seed(hash(tuple(theta.cpu().numpy())) % 2**32)
-            x = torch.rand(nevents, device=self.device) * 0.9 + 0.01
-            Q2 = torch.rand(nevents, device=self.device) * 999 + 1
-            logA0, delta, a, b, c, d = theta[:6]
-            A0 = torch.exp(logA0)
-            scale_factor = (Q2 / 1.0).clamp(min=1e-6)
-            A_Q2 = A0 * scale_factor**delta
-            shape = (
-                x.clamp(min=1e-6, max=1.0) ** a * (1 - x.clamp(min=0.0, max=1.0)) ** b
-            )
-            poly = 1 + c * x + d * x**2
-            shape = shape * poly.clamp(min=1e-6)
-            f2 = A_Q2 * shape
-
-            if self.smear:
-                noise = torch.randn_like(f2) * self.smear_std
-                f2 = f2 + noise
-
-            return torch.stack([x, Q2, f2], dim=1)
-
-    class MinimalMCEGSimulator:
-        def __init__(self, device=None):
-            self.device = device or torch.device("cpu")
-
-        def sample(self, theta, nevents=1000):
-            torch.manual_seed(hash(tuple(theta.cpu().numpy())) % 2**32)
-            x = torch.rand(nevents, device=self.device) * 0.9 + 0.01
-            Q2 = torch.rand(nevents, device=self.device) * 999 + 1
-            # Generate additional physics-inspired data based on theta
-            theta_expanded = (
-                theta[:4]
-                if len(theta) >= 4
-                else torch.cat([theta, torch.zeros(4 - len(theta), device=self.device)])
-            )
-            f2 = x * (
-                theta_expanded[0] * x ** theta_expanded[1]
-                + theta_expanded[2] * x ** theta_expanded[3]
-            )
-            return torch.stack([x, Q2], dim=1)
-
-    return (
-        MinimalGaussian2DSimulator,
-        MinimalSimplifiedDIS,
-        MinimalRealisticDIS,
-        MinimalMCEGSimulator,
-    )
-
-
-def minimal_log_feature_engineering(x):
-    """Minimal feature engineering when utils not available."""
-    return torch.log(x + 1e-8)
-
-
-def minimal_advanced_feature_engineering(x):
-    """Minimal advanced feature engineering when utils not available."""
-    return torch.log(x + 1e-8)
-
-
 def get_simulators_and_utils():
     """Get simulators and utility functions, falling back to minimal versions if needed."""
     if FULL_SIMULATORS_AVAILABLE:
@@ -257,12 +157,7 @@ def get_simulators_and_utils():
             advanced_feature_engineering,
         )
     else:
-        minimal_sims = create_minimal_simulators()
-        return (
-            *minimal_sims,
-            minimal_log_feature_engineering,
-            minimal_advanced_feature_engineering,
-        )
+        raise RuntimeError("Full simulators not availabl. Aborting precomputed data generation.")
 
 
 def generate_theta_samples(problem, num_samples, device):
