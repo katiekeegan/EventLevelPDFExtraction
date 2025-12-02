@@ -2355,7 +2355,7 @@ def _bin_edges_log(
 def _hist2d_density_log(evts, logx_edges, logQ2_edges, total_xsec=None):
     """
     Histogram in (log x, log Q2), convert to differential rate by dividing by bin area (dx*dQ2).
-    Optionally scale to match total cross section like your original code.
+    Optionally scale to match total cross section.
     """
     if evts is None or len(evts) == 0:
         H = np.zeros((len(logx_edges) - 1, len(logQ2_edges) - 1), dtype=float)
@@ -2460,7 +2460,7 @@ def safe_log_levels(A, n=60, lo_pct=1.0, hi_pct=99.0, default=(1e-6, 1.0)):
     ):
         vmin, vmax = default
 
-    # log-spaced levels, same as your inline construction
+    # log-spaced levels
     levels = 10 ** np.linspace(np.log10(vmin), np.log10(vmax), n)
 
     return levels
@@ -4358,7 +4358,7 @@ def plot_uncertainty_vs_events(
     save_dir=None,
     Q2_slices=None,
     fixed_x_values=None,
-    nx=30,  # histogram x bins (matches your other function)
+    nx=30,  # histogram x bins
     nQ2=20,  # histogram Q2 bins
 ):
     """
@@ -4427,11 +4427,11 @@ def plot_uncertainty_vs_events(
     pointnet_model.eval()
     true_params = true_params.to(device)
 
-    # Helper copied exactly from your earlier code to build reco/stat histograms
+    # Helper copied exactly from earlier code to build reco/stat histograms
     def get_reco_stat(evts, mceg):
         """
         Input: evts is a CPU tensor or array with columns [x, Q2, ...]
-        mceg: the simulator.mceg object used only for scaling by total_xsec (same as your code)
+        mceg: the simulator.mceg object used only for scaling by total_xsec
         Output: reco [nx,nQ2], stat [nx,nQ2], hist (numpy histogram tuple)
         """
         if isinstance(evts, torch.Tensor):
@@ -5740,7 +5740,7 @@ def plot_function_error_histogram_mceg(
     # Posterior sampling wrapper used if laplace_model is provided
     def posterior_sampler(feats, pointnet, model_, laplace_, n_samples=100):
         # Default fallback: sample MAP (repeat) if a real sampler isn't available
-        # If user has a specialized sampler (like the one used in your plotting func),
+        # If user has a specialized sampler,
         # their code should override this name in the module or we will use MAP repeats.
         try:
             # if there's a helper in user's namespace, use it

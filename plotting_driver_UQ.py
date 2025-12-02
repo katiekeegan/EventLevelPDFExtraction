@@ -320,12 +320,6 @@ def load_laplace(
     print(f"⚠️  Unrecognized Laplace checkpoint format: {ckpt_path}")
     return None
 
-
-def _get_checkpoint_arg(args):
-    # Works even if old scripts forget to add --checkpoint
-    return getattr(args, "checkpoint", "") or ""
-
-
 def load_laplace_if_available(experiment_dir, arch, device, args):
     # try several filenames in order
     for name in filter(None, LAPLACE_CANDIDATES(arch)):
