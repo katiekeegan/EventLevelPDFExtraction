@@ -89,28 +89,6 @@ def sample_skewed_uniform(low, high, size, alpha=0.5, beta_param=1.0):
     raw = beta.rvs(alpha, beta_param, size=size)
     return low + (high - low) * raw
 
-
-def generate_gaussian2d_dataset(n_samples, n_events, device=None):
-    """
-    Generate a dataset of n_samples parameter vectors and n_events events each.
-    Parameter vector: [mu_x, mu_y, sigma_x, sigma_y, rho]
-    """
-    device = device or torch.device("cpu")
-    # Example: fixed ranges for parameters, can be changed as needed
-    mus = torch.empty((n_samples, 2)).uniform_(-2, 2)
-    sigmas = torch.empty((n_samples, 2)).uniform_(0.5, 2.0)
-    rhos = torch.empty((n_samples, 1)).uniform_(-0.8, 0.8)
-    thetas = torch.cat([mus, sigmas, rhos], dim=1).to(device)
-
-    simulator = Gaussian2DSimulator(device=device)
-    xs = []
-    for i in range(n_samples):
-        x = simulator.sample(thetas[i], nevents=n_events)
-        xs.append(x)
-    xs = torch.stack(xs, dim=0)  # (n_samples, n_events, 2)
-    return thetas, xs
-
-
 class Gaussian2DDataset(IterableDataset):
     def __init__(
         self,
@@ -170,97 +148,6 @@ class Gaussian2DDataset(IterableDataset):
                     x = self.feature_engineering(x)
                 xs.append(x.cpu())
             yield theta.cpu(), torch.stack(xs)  # shape: [n_repeat, num_events, 2]
-
-
-class H5Dataset(Dataset):
-    def __init__(self, latent_path):
-        self.latent_file = h5py.File(latent_path, "r")
-        self.latents = self.latent_file["latents"]
-        self.thetas = self.latent_file["thetas"]
-        self.indices = np.arange(len(self.latents), dtype=np.int64)  # correct indexing
-
-    def __len__(self):
-        return len(self.indices)
-
-    def __getitem__(self, idx):
-        # PyTorch sometimes gives batched index arrays → ensure scalar access
-        if isinstance(idx, (list, tuple, np.ndarray)):
-            idx = idx[
-                0
-            ]  # Only support 1-sample fetches (because we're using collate_fn)
-        real_idx = self.indices[int(idx)]
-        latent = torch.from_numpy(self.latents[real_idx])
-        theta = torch.from_numpy(self.thetas[real_idx])
-        return latent, theta
-
-    def __del__(self):
-        try:
-            self.latent_file.close()
-        except Exception:
-            pass
-
-
-class EventDataset(Dataset):
-    def __init__(self, event_data, param_data, latent_fn):
-        self.event_data = event_data
-        self.param_data = param_data
-        self.latent_fn = latent_fn
-
-    def __len__(self):
-        return len(self.param_data)
-
-    def __getitem__(self, idx):
-        latent = self.latent_fn(
-            self.event_data[idx].unsqueeze(0)
-        )  # compute on-the-fly in main process
-        return latent, self.param_data[idx]
-
-    @staticmethod
-    def collate_fn(batch):
-        latents, params = zip(*batch)
-        return torch.stack(latents), torch.stack(params)
-
-
-# Data Generation with improved stability
-# def generate_data(num_samples, num_events, problem, theta_dim=4, x_dim=2, device=torch.device("cpu")):
-#     if problem == 'simplified_dis':
-#         simulator = SimplifiedDIS(device)
-#         theta_dim = 4 # [au, bu, ad, bd]
-#         ranges = [(0.0, 5), (0.0, 5), (0.0, 5), (0.0, 5)]  # Example ranges
-#     elif problem == 'realistic_dis':
-#         simulator = RealisticDIS(device)
-#         theta_dim = 6
-#         ranges = [
-#                 (-2.0, 2.0),   # logA0
-#                 (-1.0, 1.0),   # delta
-#                 (0.0, 5.0),    # a
-#                 (0.0, 10.0),   # b
-#                 (-5.0, 5.0),   # c
-#                 (-5.0, 5.0),   # d
-#         ]
-#     elif problem == 'mceg':
-#         simulator = MCEGSimulator(device)
-#         theta_dim = 4
-#         ranges = [
-#                 (-1.0, 10.0),
-#                 (0.0, 10.0),
-#                 (-10.0, 10.0),
-#                 (-10.0, 10.0),
-#             ]
-#     # thetas = np.column_stack([np.random.uniform(low, high, size=num_samples) for low, high in ranges])
-#     thetas = np.column_stack([
-#     sample_skewed_uniform(low, high, num_samples, alpha=1.0, beta_param=2.0)
-#     for low, high in ranges
-#     ])
-#     if problem == 'mceg':
-#         xs = np.array([simulator.sample(theta, num_events+1000)[:, :num_events, ...].cpu().numpy() for theta in thetas]) + 1e-8
-#         # xs = x # Ensure we only take the first num_events events
-#     else:
-#         xs = np.array([simulator.sample(theta, num_events).cpu().numpy() for theta in thetas]) + 1e-8
-#     thetas_tensor = torch.tensor(thetas, dtype=torch.float32, device=device)
-#     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-#     return thetas_tensor, xs_tensor
-
 
 def generate_data(
     num_samples,
