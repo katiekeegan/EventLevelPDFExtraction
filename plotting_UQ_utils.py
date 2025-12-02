@@ -158,50 +158,6 @@ def get_advanced_feature_engineering():
         return lambda x: x  # fallback identity function
 
 
-def get_plotting_driver_UQ():
-    try:
-        from plotting_driver_UQ import reload_pointnet
-
-        return reload_pointnet
-    except ImportError:
-        return None
-
-
-def setup_publication_axes(ax, xlabel="", ylabel="", title="", legend=True, grid=True):
-    """
-    Apply consistent publication-ready styling to matplotlib axes.
-    """
-    if xlabel:
-        ax.set_xlabel(xlabel, fontsize=20)
-    if ylabel:
-        ax.set_ylabel(ylabel, fontsize=20)
-    if title:
-        ax.set_title(title, fontsize=20, pad=15, fontweight="bold")
-
-    # Enhanced tick styling
-    ax.tick_params(which="both", direction="in", labelsize=20)
-    ax.tick_params(which="major", length=6)
-    ax.tick_params(which="minor", length=3)
-
-    # Grid styling
-    if grid:
-        ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
-
-    # Legend styling
-    if legend and ax.get_legend():
-        leg = ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=20)
-        leg.get_frame().set_alpha(0.9)
-
-
-def get_datasets():
-    try:
-        import datasets
-
-        return datasets
-    except ImportError:
-        return None
-
-
 # ===========================
 # Robust Precomputed Data Loading
 # ========
@@ -332,31 +288,6 @@ def generate_precomputed_data_if_needed(
         print(f"❌ Error generating precomputed data: {e}")
         print("⚠️  Falling back to simulation-based plotting (less reproducible)")
         raise RuntimeError(f"Failed to generate precomputed data: {e}")
-
-
-def get_robust_validation_data(args, problem, device, num_samples=1000):
-    """
-    Get validation data using robust precomputed data loading.
-
-    This is a convenience wrapper around load_validation_dataset_batch that provides
-    a simpler interface for getting validation data with automatic precomputed data
-    generation if needed.
-
-    Args:
-        args: Argument namespace with validation parameters (val_samples, num_events, etc.)
-        problem: Problem type string
-        device: PyTorch device
-        num_samples: Number of validation samples to load
-
-    Returns:
-        tuple: (thetas, xs) where both are already on the specified device
-               xs is already feature engineered and ready for PointNet input
-
-    Raises:
-        RuntimeError: If validation data cannot be loaded or generated
-    """
-    return load_validation_dataset_batch(args, problem, device, num_samples)
-
 
 """
 MAJOR UPDATE: Function-Level Uncertainty Quantification
@@ -2102,28 +2033,6 @@ def plot_loss_curves(
     if show_plot:
         plt.show()
     plt.close()
-
-
-def plot_latents(
-    latents, params, method="umap", param_idx=0, title=None, save_path=None
-):
-    if method == "tsne":
-        reducer = TSNE(n_components=2, random_state=42)
-    else:
-        reducer = umap.UMAP(n_components=2, random_state=42)
-    emb = reducer.fit_transform(latents)
-    plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(
-        emb[:, 0], emb[:, 1], c=params[:, param_idx], cmap="viridis", s=30
-    )
-    plt.xlabel(f"{method.upper()} dim 1")
-    plt.ylabel(f"{method.upper()} dim 2")
-    plt.title(title or f"Latent space ({method.upper()}) colored by param {param_idx}")
-    plt.colorbar(scatter, label=f"Parameter {param_idx}")
-    if save_path:
-        plt.savefig(save_path, bbox_inches="tight")
-    plt.show()
-
 
 def load_validation_dataset_batch(args, problem, device, num_samples=1000):
     """
