@@ -2,12 +2,13 @@
 
 This repository implements the full, end-to-end pipeline from the paper “Event-Level ML-Driven Extraction of Parton Distribution Functions with Uncertainty Quantification.”
 
-It is a simulation-based inference (SBI) framework that directly consumes whole sets of Deep Inelastic Scattering (DIS) events—without histogramming—to infer parameters of a chosen Parton Distribution Function (PDF) parametrization. The pipeline includes full uncertainty quantification (UQ) with Laplace approximation and bootstrap-based data uncertainty, multi-GPU training, on-the-fly simulation or precomputed datasets, and comprehensive evaluation against standard SBI baselines.
+It is a scalable, amortized, simulation-based inference (SBI) framework that directly consumes whole sets of Deep Inelastic Scattering (DIS) events—without histogramming—to infer parameters of a chosen Parton Distribution Function (PDF) parametrization. PDFs are a specific class of Quantum Correlation Functions (QCFs) characterizing hadronic structure; our method targets PDF extraction while remaining conceptually applicable to event-level inference of related QCFs. The pipeline includes full uncertainty quantification (UQ) with Laplace approximation and bootstrap-based data uncertainty, multi-GPU training, on-the-fly simulation or precomputed datasets, and comprehensive evaluation against standard SBI baselines.
 
 
 ## Overview
 
 - Problem: Infer PDF parameters describing momentum-fraction distributions of partons (quarks, gluons) from DIS events.
+- Problem: Infer PDF parameters describing momentum-fraction distributions of partons (quarks, gluons) from DIS events. PDFs belong to the broader family of QCFs (Quantum Correlation Functions) used to encode fundamental properties of hadronic systems.
 - Limitation of prior approaches: Event-level data are reduced to histograms/cross-sections; classical SBI often requires per-observation conditioning and retraining, limiting scalability.
 - Core idea: Amortized, event-level ML. Treat each event set X(θ) of size ~10^4 as a permutation-invariant set. Embed sets with a PointNet-PMA encoder, then predict θ with a simple MLP head. Avoids histogramming entirely.
 - Uncertainty: Epistemic via Laplace approximation around the last layer; data uncertainty via parametric bootstrap (re-simulation at the same θ). Combine via the law of total variance.
