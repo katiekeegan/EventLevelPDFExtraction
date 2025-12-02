@@ -2187,11 +2187,34 @@ def plot_latents_umap(
     Plot latent vectors (n_samples x latent_dim) reduced to 2D via UMAP or t-SNE,
     colored by parameters (n_samples x param_dim).
     """
-    # Reduce latents to 2D
-    if method == "tsne":
-        reducer = TSNE(n_components=2, random_state=42)
+    # Reduce latents to 2D with robust fallbacks
+    method = (method or "umap").lower()
+    reducer = None
+    if method == "umap":
+        if umap is not None:
+            reducer = umap.UMAP(n_components=2, random_state=42)
+        else:
+            # Fallback to TSNE if UMAP isn't available
+            if TSNE is not None:
+                print("[plot_latents_umap] UMAP not available; falling back to t-SNE.")
+                reducer = TSNE(n_components=2, random_state=42)
+            else:
+                raise ImportError(
+                    "Neither UMAP nor TSNE is available. Please install 'umap-learn' or 'scikit-learn'."
+                )
+    elif method == "tsne":
+        if TSNE is not None:
+            reducer = TSNE(n_components=2, random_state=42)
+        else:
+            if umap is not None:
+                print("[plot_latents_umap] TSNE not available; falling back to UMAP.")
+                reducer = umap.UMAP(n_components=2, random_state=42)
+            else:
+                raise ImportError(
+                    "Neither TSNE nor UMAP is available. Please install 'scikit-learn' or 'umap-learn'."
+                )
     else:
-        reducer = umap.UMAP(n_components=2, random_state=42)
+        raise ValueError("method must be 'umap' or 'tsne'")
     emb = reducer.fit_transform(latents)
 
     # Determine coloring
@@ -2202,6 +2225,8 @@ def plot_latents_umap(
         color = np.mean(params, axis=1)
         label = "Mean parameter"
     elif color_mode == "pca":
+        if PCA is None:
+            raise ImportError("PCA not available (scikit-learn missing)")
         pca = PCA(n_components=1)
         color = pca.fit_transform(params).flatten()
         label = "First principal component of parameters"
@@ -2228,11 +2253,33 @@ def plot_latents_all_params(
     Plot latent vectors (n_samples x latent_dim) reduced to 2D via UMAP or t-SNE,
     with one subplot per parameter dimension and a unique colormap for each.
     """
-    # Reduce latents to 2D
-    if method == "tsne":
-        reducer = TSNE(n_components=2, random_state=42)
+    # Reduce latents to 2D with robust fallbacks
+    method = (method or "umap").lower()
+    reducer = None
+    if method == "umap":
+        if umap is not None:
+            reducer = umap.UMAP(n_components=2, random_state=42)
+        else:
+            if TSNE is not None:
+                print("[plot_latents_all_params] UMAP not available; falling back to t-SNE.")
+                reducer = TSNE(n_components=2, random_state=42)
+            else:
+                raise ImportError(
+                    "Neither UMAP nor TSNE is available. Please install 'umap-learn' or 'scikit-learn'."
+                )
+    elif method == "tsne":
+        if TSNE is not None:
+            reducer = TSNE(n_components=2, random_state=42)
+        else:
+            if umap is not None:
+                print("[plot_latents_all_params] TSNE not available; falling back to UMAP.")
+                reducer = umap.UMAP(n_components=2, random_state=42)
+            else:
+                raise ImportError(
+                    "Neither TSNE nor UMAP is available. Please install 'scikit-learn' or 'umap-learn'."
+                )
     else:
-        reducer = umap.UMAP(n_components=2, random_state=42)
+        raise ValueError("method must be 'umap' or 'tsne'")
     emb = reducer.fit_transform(latents)
 
     # distinct colormaps (extend or cycle automatically)
@@ -3110,267 +3157,6 @@ def plot_PDF_distribution_single_same_plot_mceg(
     print(
         f"✅ [MCEG4DIS] Generated: 2D histograms + Q² slices with log-scaled axes and error bars"
     )
-
-
-#     # 2) Compute histogram once, vectorize the density (no per-bin loop needed)
-#     hist = np.histogram2d(np.log(evts_reco[:,0]), np.log(evts_reco[:,1]), bins=(50,50))
-#     H = hist[0]                    # (nx, nQ2)
-#     logx_edges = hist[1]
-#     logQ2_edges = hist[2]
-#     dx  = np.diff(np.exp(logx_edges))    # (nx,)
-#     dQ2 = np.diff(np.exp(logQ2_edges))    # (nQ2,)
-#     # avoid division by zero
-#     dx  = np.where(dx  > 0, dx,  np.nan)
-#     dQ2 = np.where(dQ2 > 0, dQ2, np.nan)
-#     reco = H / (dx[:,None] * dQ2[None,:])
-
-#     # scale (guard sum==0)
-#     Hsum = H.sum()
-#     if Hsum > 0:
-#         reco *= (mceg_true.total_xsec / Hsum)
-
-#     gen_hist = np.histogram2d(np.log(evts_pred[:,0]), np.log(evts_pred[:,1]), bins=(logx_edges, logQ2_edges))
-#     gen = gen_hist[0]                    # (nx, nQ2)
-#     gen_Hsum = gen.sum()
-#     gen = gen / (dx[:,None] * dQ2[None,:])
-#     if gen_Hsum > 0:
-#         gen *= (mceg.total_xsec / gen_Hsum)
-
-
-#     # 3) Fill "true" and "gen" safely; define x,Q2 for every bin center
-#     true = np.zeros_like(reco, dtype=float)
-#     xc   = np.exp(0.5*(logx_edges[:-1] + logx_edges[1:]))   # (nx,)
-#     Q2c  = np.exp(0.5*(logQ2_edges[:-1] + logQ2_edges[1:])) # (nQ2,)
-
-#     for i in range(len(xc)):
-#         for j in range(len(Q2c)):
-#             x  = float(xc[i]); Q2 = float(Q2c[j])
-#             # Evaluate theory everywhere, but guard exceptions/negatives
-#             try:
-#                 tval, _ = idis_true.get_diff_xsec(x, Q2, mceg_true.rs, mceg_true.tar, 'xQ2')
-#             except Exception:
-#                 tval = np.nan
-#             true[i,j] = tval if np.isfinite(tval) and tval >= 0 else np.nan
-
-#     # 4) Safe levels + consistent LogNorm bounds
-#     levels = safe_log_levels(reco, n=60)
-
-#     # --- Pseudocolor plots (with explicit vmin/vmax) ---
-#     fig = py.figure(figsize=(18,5)); AX=[]
-#     ax=py.subplot(1,3,1); AX.append(ax)
-#     c=ax.pcolor(logx_edges, logQ2_edges, np.where(reco>0, reco, np.nan).T,
-#                 norm=colors.LogNorm())
-#     ax=py.subplot(1,3,2); AX.append(ax)
-#     c=ax.pcolor(logx_edges, logQ2_edges, np.where(true>0, true, np.nan).T,
-#                 norm=colors.LogNorm())
-#     ax=py.subplot(1,3,3); AX.append(ax)
-#     c=ax.pcolor(logx_edges, logQ2_edges, np.where(gen>0, gen, np.nan).T,
-#                norm=colors.LogNorm())
-
-
-#     if save_dir:
-#         os.makedirs(save_dir, exist_ok=True)
-#         py.savefig(os.path.join(save_dir, 'PDF_2D_distribution_mceg_pcolor.png'), dpi=300)
-# # --- Panels: Gen / Reco / True, styled like your target snippet ---
-#     nrows, ncols = 1, 3
-#     fig = py.figure(figsize=(ncols*6, nrows*5))
-#     AX = []
-#     cmap = 'gist_rainbow'
-
-#     # Use your log-binned edges (swap to hist[1], hist[2] if that's what you actually have)
-#     x_edges = logx_edges     # or: hist[1]
-#     y_edges = logQ2_edges    # or: hist[2]
-
-#     # Robust log-spaced levels from reco (fallback if helper isn't defined)
-#     try:
-#         levels = safe_log_levels(reco, n=60, lo_pct=1.0, hi_pct=99.0, default=(1e-6, 1.0))
-#     except NameError:
-#         reco_pos = reco[np.isfinite(reco) & (reco > 0)]
-#         if reco_pos.size == 0:
-#             # harmless default if reco has no positives
-#             levels = 10.0 ** np.linspace(-6, 0, 60)
-#         else:
-#             vmin = np.percentile(reco_pos, 1.0)
-#             vmax = np.percentile(reco_pos, 99.0)
-#             vmin = max(vmin, 1e-12)
-#             vmax = max(vmax, vmin * 10)
-#             levels = 10.0 ** np.linspace(np.log10(vmin), np.log10(vmax), 60)
-
-#     def _contour_panel(ax, Z, title):
-#         Zp = np.where(np.isfinite(Z) & (Z > 0), Z, np.nan)
-#         if np.isfinite(Zp).any():
-#             cs = ax.contour(x_edges[:-1], y_edges[:-1], Zp.T,
-#                             levels=levels, cmap=cmap, norm=colors.LogNorm())
-#             ax.set_title(title, fontsize=18)
-#             return cs
-#         else:
-#             ax.text(0.5, 0.5, f'No positive data for {title}',
-#                     ha='center', va='center', transform=ax.transAxes)
-#             return None
-
-#     # Create panels (keep "Generated (Ours)")
-#     ax = py.subplot(nrows, ncols, 1); AX.append(ax); cs_gen  = _contour_panel(ax, gen,  'Generated (Ours)')
-#     ax = py.subplot(nrows, ncols, 2); AX.append(ax); cs_reco = _contour_panel(ax, reco, 'Reco')
-#     ax = py.subplot(nrows, ncols, 3); AX.append(ax); cs_true = _contour_panel(ax, true, 'True')
-
-#     # Shared styling like your example
-#     for ax in AX:
-#         ax.tick_params(axis='both', which='major', labelsize=20, direction='in')
-#         ax.set_xlabel(r'$x$',  size=30)
-#         ax.set_ylabel(r'$Q^2$', size=30)
-#         ax.set_xticks(np.log([1e-4, 1e-3, 1e-2, 1e-1]))
-#         ax.set_xticklabels([r'$0.0001$', r'$0.001$', r'$0.01$', r'$0.1$'])
-#         ax.set_yticks(np.log([10, 100, 1000]))
-#         ax.set_yticklabels([r'$10$', r'$100$', r'$1000$'])
-
-#     # One colorbar for whichever panel rendered last successfully
-#     for cs in (cs_true, cs_reco, cs_gen):
-#         if cs is not None:
-#             cbar = fig.colorbar(cs, ax=AX, fraction=0.02, pad=0.02)
-#             cbar.ax.tick_params(labelsize=16)
-#             break
-
-#     py.tight_layout()
-#     # 6) Shared cosmetics
-#     for ax in AX:
-#         ax.tick_params(axis='both', which='major', labelsize=20, direction='in')
-#         ax.set_ylabel(r'$Q^2$', size=30)
-#         ax.set_xlabel(r'$x$', size=30)
-#         ax.set_xticks(np.log([1e-4,1e-3,1e-2,1e-1]))
-#         ax.set_xticklabels([r'$0.0001$',r'$0.001$',r'$0.01$',r'$0.1$'])
-#         ax.set_yticks(np.log([10,100,1000]))
-#         ax.set_yticklabels([r'$10$',r'$100$',r'$1000$'])
-#     py.tight_layout()
-#     if save_dir:
-#         os.makedirs(save_dir, exist_ok=True)
-#         py.savefig(os.path.join(save_dir, 'PDF_2D_distribution_mceg.png'), dpi=300)
-
-
-# HERE
-
-
-# H_reco, xedges, q2edges = np.histogram2d(np.log(evts_reco[:,0]), np.log(evts_reco[:,1]),
-#                                         bins=(logx_edges, logQ2_edges))
-# H_reco*=mceg.total_xsec/np.sum(H_reco)  # scale to total xsec
-# true_density = _theory_grid_masked(idis_true, xedges, q2edges, mceg_true.rs, mceg_true.tar,
-#                                 'xQ2', occupancy_counts=H_reco.astype(int))
-
-# # Predicted θ̂ events (right)
-# pred_density, _ = _hist2d_density_log(
-#     evts_pred, logx_edges, logQ2_edges,
-#     total_xsec=mceg_pred.total_xsec if 'mceg_pred' in globals() else None
-# )
-
-# # ---------- Plot: top row pcolor, bottom row contour ----------
-# # Order: True (left), Reco (middle), Pred (right)
-# panels = [
-#     ("True", true_density),
-#     ("Reco", reco_density),
-#     ("Pred", pred_density),
-# ]
-
-# # Compute shared contour levels (log-spaced) over all three, ignoring zeros
-# all_vals = np.concatenate([p[1].ravel() for p in panels])
-# all_vals = all_vals[all_vals > 0]
-# vmin = np.percentile(all_vals, 5) if all_vals.size else 1e-20
-# vmax = np.percentile(all_vals, 99.5) if all_vals.size else 1.0
-# # levels = np.geomspace(max(vmin, 1e-30), vmax, 12)
-# levels=10**np.linspace( np.log10(np.amin(H_reco[H_reco>0])),np.log10(np.amax(H_reco)),60)
-
-# fig = plt.figure(figsize=(18, 10))
-# AX = []
-# for col, (title, D) in enumerate(panels, start=1):
-#     # Top: heatmap
-#     ax = plt.subplot(2, 3, col); AX.append(ax)
-#     c = ax.pcolor(xedges, q2edges, D.T, norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax))
-#     ax.set_title(title, fontsize=18)
-#     # Bottom: contours
-#     ax2 = plt.subplot(2, 3, 3+col); AX.append(ax2)
-#     cs = ax2.contour(xedges[:-1], q2edges[:-1], D.T, levels=levels, norm=matplotlib.colors.LogNorm())
-#     ax2.clabel(cs, inline=True, fontsize=8)
-#     ax2.set_title(f"{title} (contours)", fontsize=16)
-
-# # Shared axis cosmetics
-# for ax in AX:
-#     ax.tick_params(axis='both', which='major', labelsize=12, direction='in')
-#     ax.set_xlabel(r'$x$', size=14)
-#     ax.set_ylabel(r'$Q^2$', size=14)
-#     ax.set_xticks(np.log([1e-4, 1e-3, 1e-2, 1e-1]))
-#     ax.set_xticklabels([r'$0.0001$', r'$0.001$', r'$0.01$', r'$0.1$'])
-#     ax.set_yticks(np.log([10, 100, 1000]))
-#     ax.set_yticklabels([r'$10$', r'$100$', r'$1000$'])
-
-# # Colorbar for the heatmaps (top row)
-# cbar_ax = fig.add_axes([0.92, 0.56, 0.015, 0.32])
-# fig.colorbar(matplotlib.cm.ScalarMappable(norm=matplotlib.colors.LogNorm(vmin=vmin, vmax=vmax),
-#                                         cmap=plt.get_cmap()),
-#             cax=cbar_ax, label=r'd$\sigma$/d$x$d$Q^2$')
-# plt.tight_layout(rect=[0,0,0.9,1])
-# plt.show()
-# plt.savefig(save_path, dpi=300)
-
-from typing import Callable, Dict, List, Optional, Tuple, Union
-
-
-# ---------------------------
-# Latent extraction from events
-# ---------------------------
-@torch.no_grad()
-def make_latent_from_true_params(
-    simulator,
-    pointnet_model,
-    true_params: torch.Tensor,
-    num_events: int,
-    device: torch.device,
-    feature_fn: Callable,  # e.g., advanced_feature_engineering
-) -> torch.Tensor:
-    """
-    Simulate events at θ*, featurize, embed with PointNet -> latent [1, L].
-    """
-    xs = simulator.sample(true_params.detach().cpu(), num_events)
-    xs = torch.tensor(xs, dtype=torch.float32, device=device)
-    xs_feat = feature_fn(xs)  # your advanced_feature_engineering
-    pointnet_model.eval()
-    latent = pointnet_model(xs_feat.unsqueeze(0))  # [1, L]
-    return latent
-
-
-# ---------------------------
-# Utility: compute bands over f(x | θ) by sampling θ
-# ---------------------------
-@torch.no_grad()
-def function_bands_over_theta_samples(
-    eval_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
-    # eval_fn(x_grid, theta) -> [|x|]  ; theta shape [D]
-    theta_samples: torch.Tensor,  # [S, D]
-    x_grid: torch.Tensor,  # [X]
-    q_low: float = 0.25,
-    q_high: float = 0.75,
-    q_mid: float = 0.50,
-    device: Optional[torch.device] = None,
-    chunk: int = 256,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """
-    Returns (low, median, high) each of shape [X].
-    eval_fn must set the simulator to θ and return f(x|θ) at x_grid.
-    """
-    device = device or x_grid.device
-    S = theta_samples.shape[0]
-    outs = []
-
-    for s0 in range(0, S, chunk):
-        s1 = min(S, s0 + chunk)
-        thetas = theta_samples[s0:s1].to(device)
-        vals = []
-        for t in thetas:
-            vals.append(eval_fn(x_grid, t).unsqueeze(0))  # [1, X]
-        outs.append(torch.cat(vals, dim=0))  # [s1-s0, X]
-    stack = torch.cat(outs, dim=0)  # [S, X]
-
-    low = torch.quantile(stack, q_low, dim=0)
-    mid = torch.quantile(stack, q_mid, dim=0)
-    high = torch.quantile(stack, q_high, dim=0)
-    return low, mid, high
 
 
 # ---------------------------

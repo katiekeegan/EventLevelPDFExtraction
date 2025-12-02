@@ -692,9 +692,6 @@ def plot_function_uncertainty_mceg(
             stat *= scale
         return reco, stat, hist
 
-    # -------------------------
-    # Compute TRUE exactly as your collaborator did (VERBATIM logic)
-    # -------------------------
     sim.init(true_params)
     evts_true = sim.sample(true_params, num_events).cpu()
     # Build histogram on log-variables
