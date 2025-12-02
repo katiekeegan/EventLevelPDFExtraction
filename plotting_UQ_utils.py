@@ -420,24 +420,27 @@ def get_analytic_uncertainty(model, latent_embedding, laplace_model=None):
 
 def get_gaussian_samples(model, latent_embedding, n_samples=100, laplace_model=None):
     """
-    DEPRECATED: Use get_analytic_uncertainty for improved speed and accuracy.
+    Generate parameter samples from an approximate Gaussian posterior.
 
-    Legacy function for generating parameter samples from model uncertainty.
-    When laplace_model is provided, converts analytic uncertainty to samples
-    for backward compatibility. This function is maintained for compatibility
-    but should be replaced with analytic methods in new code.
+    This helper produces θ samples for workflows that compute quantiles,
+    histograms, or Monte Carlo-based function bands. When a Laplace model is
+    provided, it first obtains analytic mean/std via `get_analytic_uncertainty`
+    and then draws samples from N(mean, std^2); otherwise it falls back to the
+    model head's outputs.
 
     Args:
         model: Neural network model (head)
         latent_embedding: Input latent embedding tensor
-        n_samples: Number of samples to generate (for backward compatibility)
-        laplace_model: Fitted Laplace approximation object
+        n_samples: Number of parameter samples to draw
+        laplace_model: Fitted Laplace approximation object (optional)
 
     Returns:
         torch.Tensor: Generated samples [n_samples, param_dim]
 
-    Note: This function now uses analytic uncertainty internally and converts
-    to samples, providing the same interface but with improved accuracy.
+    Note:
+        Prefer `get_analytic_uncertainty` when you only need mean/std without
+        sampling overhead. Keep using this function when your code expects
+        explicit samples for visualization or quantile computation.
     """
     # For backward compatibility, convert analytic uncertainty to samples
     mean_params, std_params = get_analytic_uncertainty(
