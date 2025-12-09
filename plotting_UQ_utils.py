@@ -4,14 +4,13 @@ Enhanced Plotting Utilities for Uncertainty Quantification in PDF Parameter Infe
 
 This module provides publication-ready plotting functions for visualizing uncertainty
 in PDF parameter inference, supporting multiple problem types including simplified_dis,
-realistic_dis, and mceg4dis. All plots are designed to be beautiful, clear, and suitable
+and mceg4dis. All plots are designed to be beautiful, clear, and suitable
 for publication.
 
 Problem Type Support:
 ====================
 
 - simplified_dis: 1D PDF inputs (x only) with up/down quark distributions
-- realistic_dis: 2D PDF inputs (x, Q2) with realistic DIS structure functions
 - mceg4dis: 2D PDF inputs (x, Q2) using Monte Carlo Event Generator for DIS
   * Full 2D support for visualizing PDF uncertainty over both x and Q2 dimensions
   * Enhanced plotting functions handle the 2D nature of mceg4dis inputs
@@ -65,12 +64,10 @@ from laplace.laplace import Laplace
 from datasets import *
 from models import *
 from plotting_UQ_utils import *
-# from PDF_learning import *
 from simulator import *
 
-# from PDF_learning_UQ import *
-
-
+np.random.seed(42)
+torch.manual_seed(42)
 
 # Set up matplotlib for high-quality plots
 plt.style.use("default")
@@ -142,18 +139,18 @@ except ImportError:
 # Import simulator and other modules only when needed
 def get_simulator_module():
     try:
-        from simulator import MCEGSimulator, RealisticDIS, SimplifiedDIS
+        from simulator import MCEGSimulator,  SimplifiedDIS
 
-        return SimplifiedDIS, RealisticDIS, MCEGSimulator
+        return SimplifiedDIS, MCEGSimulator
     except ImportError:
         return None, None, None
 
 
-def get_advanced_feature_engineering():
+def get_log_feature_engineering():
     try:
-        from utils import advanced_feature_engineering
+        from utils import log_feature_engineering
 
-        return advanced_feature_engineering
+        return log_feature_engineering
     except ImportError:
         return lambda x: x  # fallback identity function
 
@@ -179,7 +176,7 @@ def generate_precomputed_data_if_needed(
     matching files exist it picks the one with the largest nr.
 
     Args:
-        problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
+        problem: Problem type ('simplified_dis', 'mceg')
         num_samples: Number of theta parameter samples
         num_events: Number of events per simulation
         n_repeat: Number of repeated simulations per theta (used for generation when needed)
@@ -505,7 +502,7 @@ def plot_params_distribution_single(
     save_path : str
         Path to save the plot
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'mceg4dis')
+        Problem type ('simplified_dis', 'mceg', 'mceg4dis')
 
     Returns:
     --------
@@ -527,21 +524,19 @@ def plot_params_distribution_single(
     pointnet_model.eval()
 
     # Get simulators with fallback
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
-    if problem == "realistic_dis":
-        simulator = RealisticDIS(torch.device("cpu"))
-    elif problem in ["mceg", "mceg4dis"]:
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
+    if problem in ["mceg", "mceg4dis"]:
         simulator = MCEGSimulator(torch.device("cpu"))
     else:
         simulator = SimplifiedDIS(torch.device("cpu"))
 
-    advanced_feature_engineering = get_advanced_feature_engineering()
+    log_feature_engineering = get_log_feature_engineering()
 
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = advanced_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
 
@@ -576,8 +571,6 @@ def plot_params_distribution_single(
     # Set parameter names with proper mathematical notation
     if problem == "simplified_dis":
         param_names = [r"$a_u$", r"$b_u$", r"$a_d$", r"$b_d$"]
-    elif problem == "realistic_dis":
-        param_names = [r"$\log A_0$", r"$\delta$", r"$a$", r"$b$", r"$c$", r"$d$"]
     elif problem in ["mceg", "mceg4dis"]:
         param_names = [r"$\mu_1$", r"$\mu_2$", r"$\sigma_1$", r"$\sigma_2$"]
     else:
@@ -634,8 +627,8 @@ def plot_params_distribution_single(
         # Larger per-axes font defaults for publication
         title_fs = 20
         label_fs = 18
-        tick_fs = 14
-        legend_fs = 14
+        tick_fs = 18
+        legend_fs = 18
 
         # Choose the main sample set to plot for "our" approach.
         # If Combined_LOTV (lotv_param_samples) is provided, prefer that as the main histogram.
@@ -834,7 +827,7 @@ def plot_PDF_distribution_single(
     laplace_model : object, optional
         Fitted Laplace approximation object for analytic uncertainty
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        Problem type ('simplified_dis', 'mceg')
     Q2_slices : list of float, optional
         Q² values for realistic_dis problem (ignored for simplified_dis)
     save_dir : str, optional
@@ -870,21 +863,19 @@ def plot_PDF_distribution_single(
     print(f"🎲 Simulating events from true parameters for latent extraction")
 
     # Get simulators with fallback
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
-    if problem == "realistic_dis":
-        simulator = RealisticDIS(torch.device("cpu"))
-    elif problem in ["mceg", "mceg4dis"]:
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
+    if problem in ["mceg", "mceg4dis"]:
         simulator = MCEGSimulator(torch.device("cpu"))
     else:
         simulator = SimplifiedDIS(torch.device("cpu"))
 
-    advanced_feature_engineering = get_advanced_feature_engineering()
+    log_feature_engineering = get_log_feature_engineering()
 
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = advanced_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
 
@@ -1033,100 +1024,6 @@ def plot_PDF_distribution_single(
             plt.savefig(out_path, dpi=300, bbox_inches="tight")
             plt.close(fig)
 
-    elif problem == "realistic_dis":
-        x_range = (1e-3, 0.9)
-        x_vals = torch.linspace(x_range[0], x_range[1], 500).to(device)
-        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
-        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
-
-        for i, Q2_fixed in enumerate(Q2_slices):
-            Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
-
-            if use_analytic:
-                # Compute PDF using analytic uncertainty
-                simulator.init(mean_params)
-                mean_q = simulator.q(x_vals, Q2_vals).detach().cpu()
-
-                # Approximate uncertainty bounds
-                param_std_norm = torch.norm(std_params).item()
-                uncertainty_factor = 2.0 * param_std_norm
-
-                lower_q = mean_q * (1 - uncertainty_factor)
-                upper_q = mean_q * (1 + uncertainty_factor)
-                lower_q = torch.clamp(lower_q, min=0.0)
-
-            else:
-                # MC sampling approach (legacy)
-                q_vals_all = []
-                for j in range(n_mc):
-                    simulator.init(samples[j])
-                    q_vals = simulator.q(x_vals, Q2_vals)
-                    q_vals_all.append(q_vals.unsqueeze(0))
-                q_stack = torch.cat(q_vals_all, dim=0)
-                mean_q = torch.median(q_stack, dim=0).values.detach().cpu()
-                lower_q = torch.quantile(q_stack, 0.25, dim=0).detach().cpu()
-                upper_q = torch.quantile(q_stack, 0.75, dim=0).detach().cpu()
-
-            # Compute true values
-            simulator.init(true_params.squeeze())
-            true_q = simulator.q(x_vals, Q2_vals).detach().cpu()
-
-            # Create plot
-            fig, ax = plt.subplots(figsize=(7, 5))
-            ax.plot(
-                x_vals.detach().cpu(),
-                true_q,
-                color=color_palette[i],
-                linewidth=2.5,
-                label=rf"True $q(x,\ Q^2={Q2_fixed})$",
-            )
-
-            if use_analytic:
-                ax.plot(
-                    x_vals.detach().cpu(),
-                    mean_q,
-                    linestyle="--",
-                    color="crimson",
-                    linewidth=2,
-                    label=rf"MAP $\hat{{q}}(x,\ Q^2={Q2_fixed})$ (Analytic)",
-                )
-                ax.fill_between(
-                    x_vals.detach().cpu(),
-                    lower_q,
-                    upper_q,
-                    color="crimson",
-                    alpha=0.2,
-                    label="95% Analytic CI",
-                )
-            else:
-                ax.plot(
-                    x_vals.detach().cpu(),
-                    mean_q,
-                    linestyle="--",
-                    color="crimson",
-                    linewidth=2,
-                    label=rf"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$ (MC)",
-                )
-                ax.fill_between(
-                    x_vals.detach().cpu(), lower_q, upper_q, color="crimson", alpha=0.2
-                )
-
-            ax.set_xlabel(r"$x$")
-            ax.set_ylabel(r"$q(x,\ Q^2)$")
-            ax.set_xlim(x_range)
-            ax.set_xscale("log")
-            ax.set_title(rf"$q(x)$ at $Q^2 = {Q2_fixed}\ \mathrm{{GeV}}^2$")
-            ax.legend(frameon=False)
-            ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-            plt.tight_layout()
-            path = (
-                f"{save_dir}/q_Q2_{int(Q2_fixed)}.png"
-                if save_dir
-                else f"q_Q2_{int(Q2_fixed)}.png"
-            )
-            plt.savefig(path, dpi=300)
-            plt.close(fig)
-
 
 def plot_PDF_distribution_single_same_plot(
     model,
@@ -1148,17 +1045,14 @@ def plot_PDF_distribution_single_same_plot(
     """
     model.eval()
     pointnet_model.eval()
-    simulator = (
-        RealisticDIS(torch.device("cpu"))
-        if problem == "realistic_dis"
-        else SimplifiedDIS(torch.device("cpu"))
-    )
+    simulator = SimplifiedDIS(torch.device("cpu"))
 
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
     if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = advanced_feature_engineering(xs_tensor)
+        from utils import log_feature_engineering
+        xs_tensor = log_feature_engineering(xs_tensor)
     else:
         # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
@@ -1189,98 +1083,6 @@ def plot_PDF_distribution_single_same_plot(
         ).cpu()
         use_analytic = False
 
-    if problem == "realistic_dis":
-        x_range = (1e-3, 0.9)
-        x_vals = torch.linspace(*x_range, 500).to(device)
-        Q2_slices = Q2_slices or [1.0, 1.5, 2.0, 10.0, 50.0]
-        fig, ax = plt.subplots(figsize=(8, 6))
-        color_palette = plt.cm.plasma(np.linspace(0.1, 0.9, len(Q2_slices)))
-
-        for i, Q2_fixed in enumerate(Q2_slices):
-            Q2_vals = torch.full_like(x_vals, Q2_fixed).to(device)
-
-            if use_analytic:
-                # Compute PDF using analytic uncertainty
-                simulator.init(mean_params)
-                mean_q = simulator.q(x_vals, Q2_vals).detach().cpu()
-
-                # Approximate uncertainty bounds
-                param_std_norm = torch.norm(std_params).item()
-                uncertainty_factor = 2.0 * param_std_norm
-
-                lower_q = mean_q * (1 - uncertainty_factor)
-                upper_q = mean_q * (1 + uncertainty_factor)
-                lower_q = torch.clamp(lower_q, min=0.0)
-
-            else:
-                # MC sampling approach (legacy)
-                q_vals_all = []
-                for j in range(n_mc):
-                    simulator.init(samples[j])
-                    q_vals = simulator.q(x_vals, Q2_vals)
-                    q_vals_all.append(q_vals.unsqueeze(0))
-                q_stack = torch.cat(q_vals_all, dim=0)
-                mean_q = q_stack.median(dim=0).values.detach().cpu()
-                lower_q = torch.quantile(q_stack, 0.25, dim=0).detach().cpu()
-                upper_q = torch.quantile(q_stack, 0.75, dim=0).detach().cpu()
-
-            # Compute true values
-            simulator.init(true_params.squeeze())
-            true_q = simulator.q(x_vals, Q2_vals).detach().cpu()
-
-            # Plot true and predicted values
-            ax.plot(
-                x_vals.detach().cpu(),
-                true_q,
-                color=color_palette[i],
-                linewidth=2,
-                label=rf"True $q(x,\ Q^2={Q2_fixed})$",
-            )
-
-            if use_analytic:
-                ax.plot(
-                    x_vals.detach().cpu(),
-                    mean_q,
-                    linestyle="--",
-                    color=color_palette[i],
-                    linewidth=1.8,
-                    label=rf"MAP $\hat{{q}}(x,\ Q^2={Q2_fixed})$ (Analytic)",
-                )
-            else:
-                ax.plot(
-                    x_vals.detach().cpu(),
-                    mean_q,
-                    linestyle="--",
-                    color=color_palette[i],
-                    linewidth=1.8,
-                    label=rf"Median $\hat{{q}}(x,\ Q^2={Q2_fixed})$ (MC)",
-                )
-
-            # Add uncertainty bands if requested
-            if plot_IQR or use_analytic:
-                label_suffix = "95% Analytic CI" if use_analytic else "IQR"
-                ax.fill_between(
-                    x_vals.detach().cpu(),
-                    lower_q,
-                    upper_q,
-                    color=color_palette[i],
-                    alpha=0.2,
-                )
-
-        ax.set_xlabel(r"$x$")
-        ax.set_ylabel(r"$q(x,\ Q^2)$")
-        uncertainty_type = "Analytic Laplace" if use_analytic else "MC Sampling"
-        ax.set_title(
-            rf"Posterior over $q(x, Q^2)$ at Multiple $Q^2$ Slices ({uncertainty_type})"
-        )
-        ax.set_xscale("log")
-        ax.set_xlim(x_range)
-        ax.grid(True, which="both", linestyle=":", linewidth=0.6)
-        ax.legend(loc="best", frameon=False, ncol=2)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=300)
-        plt.close(fig)
-
 
 def plot_parameter_error_histogram(
     true_params_list,
@@ -1303,7 +1105,7 @@ def plot_parameter_error_histogram(
     save_path : str
         Path to save the histogram plot
     problem : str
-        Problem type ('simplified_dis' or 'realistic_dis') for default param names
+        Problem type ('simplified_dis') for default param names
 
     Returns:
     --------
@@ -1331,8 +1133,6 @@ def plot_parameter_error_histogram(
     if param_names is None:
         if problem == "simplified_dis":
             param_names = [r"$a_u$", r"$b_u$", r"$a_d$", r"$b_d$"]
-        elif problem == "realistic_dis":
-            param_names = [r"$\log A_0$", r"$\delta$", r"$a$", r"$b$", r"$c$", r"$d$"]
         else:
             param_names = [r"$a$", r"$b$", r"$c$", r"$d$"]
 
@@ -1420,6 +1220,283 @@ def plot_parameter_error_histogram(
     plt.close(fig)
 
 
+def plot_function_error_histogram_simplified_dis(
+    true_params_list,
+    predicted_params_list,
+    param_names=None,
+    save_path="function_error_histogram_simplified_dis.png",
+    device="cpu",
+    nx=100,
+    n_bins_hist=40,
+    seed=None,
+):
+    """
+    Plot separate histograms of function errors (simplified_dis) for up and down functions.
+
+    For each (true_params, predicted_params) pair:
+    1. Evaluate u(x) and d(x) at true parameters
+    2. Evaluate u(x) and d(x) at predicted parameters
+    3. Compute entrywise absolute errors: |f_true(x) - f_pred(x)|
+    4. Average over x for each function separately
+    5. Create two side-by-side histograms (one for up, one for down)
+
+    Parameters:
+    -----------
+    true_params_list : list of numpy arrays or torch tensors
+        List of true parameter sets, each array/tensor of shape (n_params,)
+    predicted_params_list : list of numpy arrays or torch tensors
+        List of predicted parameter sets, each array/tensor of shape (n_params,)
+    param_names : list of str, optional
+        Parameter names (unused, kept for consistency with other functions)
+    save_path : str
+        Path to save the histogram plot
+    device : str or torch.device
+        Device for simulation
+    nx : int
+        Number of x evaluation points
+    n_bins_hist : int
+        Number of bins for histogram
+    seed : int, optional
+        Random seed for reproducibility
+
+    Returns:
+    --------
+    dict
+        Dictionary with keys 'up' and 'down', each containing arrays of errors for that function
+    """
+    # Ensure reproducibility when requested
+    if seed is not None:
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+
+    # Convert inputs to numpy lists
+    def to_numpy_list(lst):
+        if len(lst) == 0:
+            return []
+        first = lst[0]
+        if isinstance(first, torch.Tensor):
+            return [p.detach().cpu().numpy() for p in lst]
+        return [np.asarray(p) for p in lst]
+
+    true_params_list = to_numpy_list(true_params_list)
+    predicted_params_list = to_numpy_list(predicted_params_list)
+
+    if len(true_params_list) != len(predicted_params_list):
+        raise ValueError(
+            "true_params_list and predicted_params_list must have same length."
+        )
+
+    n_samples = len(true_params_list)
+
+    # Get simulator
+    SimplifiedDIS, _ = get_simulator_module()
+    if SimplifiedDIS is None:
+        raise ImportError("SimplifiedDIS simulator not available.")
+
+    sim = SimplifiedDIS(device=torch.device("cpu"))
+    x_grid = torch.linspace(0.001, 0.99, nx)
+
+    # Separate arrays for up and down errors
+    errors_up = np.zeros(n_samples, dtype=float)
+    errors_down = np.zeros(n_samples, dtype=float)
+
+    for idx in range(n_samples):
+        true_theta = torch.tensor(true_params_list[idx], dtype=torch.float32)
+        pred_theta = torch.tensor(predicted_params_list[idx], dtype=torch.float32)
+
+        # Evaluate both u and d functions
+        for fn_idx, fn_name in enumerate(["up", "down"]):
+            try:
+                # True function
+                sim.init(true_theta)
+                fn_true = getattr(sim, fn_name)(x_grid).detach().cpu().numpy()
+            except Exception:
+                fn_true = np.full(nx, np.nan)
+
+            try:
+                # Predicted function
+                sim.init(pred_theta)
+                fn_pred = getattr(sim, fn_name)(x_grid).detach().cpu().numpy()
+            except Exception:
+                fn_pred = np.full(nx, np.nan)
+
+            # Compute absolute errors
+            diff = np.abs(fn_true - fn_pred)
+            mask = np.isfinite(diff)
+            avg_error = float(np.nanmean(diff[mask])) if np.any(mask) else 0.0
+            
+            # Store in appropriate array
+            if fn_idx == 0:
+                errors_up[idx] = avg_error
+            else:
+                errors_down[idx] = avg_error
+
+    # Create side-by-side histograms
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+    # Function names and properties
+    func_data = [
+        (errors_up, "up", r"$u(x)$", COLORBLIND_COLORS["blue"]),
+        (errors_down, "down", r"$d(x)$", COLORBLIND_COLORS["orange"]),
+    ]
+
+    for ax, (errors, fn_name, fn_label, color) in zip(axes, func_data):
+        ax.hist(
+            errors,
+            bins=n_bins_hist,
+            alpha=0.8,
+            color=color,
+            edgecolor="white",
+            linewidth=0.8,
+        )
+
+        mean_err = np.mean(errors)
+        std_err = np.std(errors)
+        median_err = np.median(errors)
+
+        # Add vertical lines for mean and median
+        ax.axvline(
+            mean_err,
+            color=COLORBLIND_COLORS["red"],
+            linestyle="--",
+            linewidth=2.5,
+            label=f"Mean = {mean_err:.4g}",
+            alpha=0.9,
+        )
+        ax.axvline(
+            median_err,
+            color=COLORBLIND_COLORS["dark_green"],
+            linestyle=":",
+            linewidth=2,
+            label=f"Median = {median_err:.4g}",
+            alpha=0.9,
+        )
+
+        # Statistics text box
+        ax.text(
+            0.98,
+            0.97,
+            f"μ = {mean_err:.4g}\nσ = {std_err:.4g}",
+            transform=ax.transAxes,
+            verticalalignment="top",
+            horizontalalignment="right",
+            fontsize=18,
+            bbox=dict(
+                boxstyle="round,pad=0.5",
+                facecolor="white",
+                alpha=0.95,
+                edgecolor="gray",
+            ),
+        )
+
+        # Axis labels and styling
+        ax.set_xlabel(
+            f"Function Errors",
+            fontsize=16,
+        )
+        ax.set_ylabel("Frequency", fontsize=16)
+        # ax.set_title(
+        #     f"Function Error Distribution: {fn_label}",
+        #     fontsize=18,
+        #     fontweight="bold",
+        # )
+        ax.tick_params(which="both", direction="in", labelsize=14)
+        ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
+        ax.legend(fontsize=16, loc="upper left", frameon=True, fancybox=True, shadow=True)
+
+        # Sparse x-ticks to avoid overlap
+        xmin, xmax = ax.get_xlim()
+        xticks = np.linspace(xmin, xmax, num=6)
+        ax.set_xticks(xticks)
+        ax.set_xticklabels([f"{t:.2g}" for t in xticks], fontsize=14)
+
+    # fig.suptitle(
+    #     "Function Error Analysis: Simplified DIS (up and down separately)",
+    #     fontsize=20,
+    #     fontweight="bold",
+    #     y=1.00,
+    # )
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return {"up": errors_up, "down": errors_down}
+
+
+    # Plot histogram
+    fig, ax = plt.subplots(figsize=(10, 7))
+    ax.hist(
+        final_errors,
+        bins=n_bins_hist,
+        alpha=0.8,
+        color=COLORBLIND_COLORS["blue"],
+        edgecolor="white",
+        linewidth=0.8,
+    )
+
+    mean_final = np.mean(final_errors)
+    std_final = np.std(final_errors)
+    median_final = np.median(final_errors)
+
+    # Add vertical lines for mean and median
+    ax.axvline(
+        mean_final,
+        color=COLORBLIND_COLORS["red"],
+        linestyle="--",
+        linewidth=2.5,
+        label=f"Mean = {mean_final:.4g}",
+        alpha=0.9,
+    )
+    ax.axvline(
+        median_final,
+        color=COLORBLIND_COLORS["dark_green"],
+        linestyle=":",
+        linewidth=2,
+        label=f"Median = {median_final:.4g}",
+        alpha=0.9,
+    )
+
+    # Statistics text box
+    ax.text(
+        0.98,
+        0.97,
+        f"μ = {mean_final:.4g}\nσ = {std_final:.4g}\nn = {n_samples}",
+        transform=ax.transAxes,
+        verticalalignment="top",
+        horizontalalignment="right",
+        fontsize=18,
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.95, edgecolor="gray"),
+    )
+
+    # Axis labels and styling
+    ax.set_xlabel(
+        "Average Function Error: mean |u(x,true) - u(x,pred)| and |d(x,true) - d(x,pred)|",
+        fontsize=16,
+    )
+    ax.set_ylabel("Frequency", fontsize=16)
+    ax.set_title(
+        "Histogram of Average Function Errors (Simplified DIS)",
+        fontsize=18,
+        fontweight="bold",
+    )
+    ax.tick_params(which="both", direction="in", labelsize=14)
+    ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
+    ax.legend(fontsize=16, loc="upper left", frameon=True, fancybox=True, shadow=True)
+
+    # Sparse x-ticks to avoid overlap
+    xmin, xmax = ax.get_xlim()
+    xticks = np.linspace(xmin, xmax, num=6)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels([f"{t:.2g}" for t in xticks])
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    return final_errors
+
+
 def plot_function_error_histogram_mceg(
     true_params_list,
     predicted_params_list,
@@ -1497,15 +1574,6 @@ def plot_function_error_histogram_mceg(
         if param_names is None:
             if problem == "simplified_dis":
                 param_names = [r"$a_u$", r"$b_u$", r"$a_d$", r"$b_d$"][:n_params]
-            elif problem == "realistic_dis":
-                param_names = [
-                    r"$\\log A_0$",
-                    r"$\\delta$",
-                    r"$a$",
-                    r"$b$",
-                    r"$c$",
-                    r"$d$",
-                ][:n_params]
             else:
                 param_names = [f"$\\theta_{{{i}}}$" for i in range(n_params)]
 
@@ -1775,7 +1843,7 @@ def plot_event_histogram_simplified_DIS(
     save_path : str
         Path to save the plot
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        Problem type ('simplified_dis', 'mceg')
     plot_type : str
         Type of plot: 'scatter', 'histogram', or 'both'
     bins : int or array-like
@@ -1795,22 +1863,20 @@ def plot_event_histogram_simplified_DIS(
     print(f"🎲 Simulating {num_events} events for histogram analysis")
 
     # Get the appropriate simulator
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
     if problem in ["mceg", "mceg4dis"]:
         simulator = MCEGSimulator(torch.device("cpu"))
-    elif problem == "realistic_dis":
-        simulator = RealisticDIS(torch.device("cpu"))
     else:
         simulator = SimplifiedDIS(torch.device("cpu"))
 
-    advanced_feature_engineering = get_advanced_feature_engineering()
+    log_feature_engineering = get_log_feature_engineering()
 
     true_params = true_params.to(device)
     xs = simulator.sample(true_params.detach().cpu(), num_events).to(device)
     xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
 
     if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = advanced_feature_engineering(xs_tensor)
+        xs_tensor = log_feature_engineering(xs_tensor)
     else:
         from utils import log_feature_engineering
 
@@ -1981,61 +2047,6 @@ def plot_event_histogram_simplified_DIS(
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-
-def plot_loss_curves(
-    loss_dir=".", save_path="loss_plot.png", show_plot=False, nll_loss=False
-):
-    contrastive_path = os.path.join(loss_dir, "loss_contrastive.npy")
-    regression_path = os.path.join(loss_dir, "loss_regression.npy")
-    total_path = os.path.join(loss_dir, "loss_total.npy")
-    contrastive_loss = np.load(contrastive_path)
-    regression_loss = np.load(regression_path)
-    total_loss = np.load(total_path)
-    epochs = np.arange(1, len(contrastive_loss) + 1)
-    loss_type = "NLL" if nll_loss else "MSE"
-    regression_label = f"Regression Loss ({loss_type}, scaled)"
-    title = f"Training Loss Components Over Epochs ({loss_type} Regression)"
-    plt.figure(figsize=(8, 6))
-    plt.plot(epochs, contrastive_loss, label="Contrastive Loss", linewidth=2)
-    plt.plot(epochs, regression_loss, label=regression_label, linewidth=2)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    if show_plot:
-        plt.show()
-    plt.close()
-    epochs = np.arange(1, len(total_loss) + 1)
-    total_title = f"Training Loss Over Epochs ({loss_type} Regression)"
-    plt.figure(figsize=(8, 6))
-    plt.plot(epochs, total_loss, label="Loss", linewidth=2)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title(total_title)
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("loss_PDF_learning.png", dpi=300)
-    if show_plot:
-        plt.show()
-    plt.close()
-    plt.figure(figsize=(8, 6))
-    plt.plot(epochs, total_loss, label="Loss", linewidth=2)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.xscale("log")
-    plt.yscale("log")
-    plt.title(f"Training Loss Over Epochs (Log Scale, {loss_type} Regression)")
-    plt.legend()
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("log_loss_PDF_learning.png", dpi=300)
-    if show_plot:
-        plt.show()
-    plt.close()
 
 def load_validation_dataset_batch(args, problem, device, num_samples=1000):
     """
@@ -2469,157 +2480,6 @@ def safe_log_levels(A, n=60, lo_pct=1.0, hi_pct=99.0, default=(1e-6, 1.0)):
 from typing import Optional, Tuple
 
 
-@torch.no_grad()
-def _simulate_pdf_curve_from_theta(
-    simulator,
-    theta: torch.Tensor,
-    num_events: int,
-    x_range: Tuple[float, float],
-    bins: int,
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Simulate events under `theta` and return a density curve over x via a shared histogram.
-    Returns (x_centers [B], pdf_values [B]).
-    """
-    xs = simulator.sample(
-        theta.detach().cpu().float(), num_events
-    )  # shape (N, 2) or (N, ...)
-    x = np.asarray(xs)[:, 0]  # assume x is first column
-    H, edges = np.histogram(x, bins=bins, range=x_range, density=True)
-    centers = 0.5 * (edges[:-1] + edges[1:])
-    return centers, H
-
-
-def _to_SD(theta_samples: torch.Tensor) -> Tuple[int, int]:
-    """Return (S, D). Accepts [S,D] or [B,S,D] -> flattens across B."""
-    if theta_samples.dim() == 3:
-        B, S, D = theta_samples.shape
-        return B * S, D
-    elif theta_samples.dim() == 2:
-        S, D = theta_samples.shape
-        return S, D
-    else:
-        raise ValueError(
-            f"theta_samples must be [S,D] or [B,S,D], got {tuple(theta_samples.shape)}"
-        )
-
-
-@torch.no_grad()
-def plot_PDF_distribution_single_same_plot_from_theta_samples(
-    simulator,
-    theta_samples: torch.Tensor,  # [S,D] or [B,S,D] on any device
-    true_params: Optional[torch.Tensor],
-    device: torch.device,
-    num_events_per_theta: int = 5000,
-    x_range: Tuple[float, float] = (0.0, 1.0),
-    bins: int = 100,
-    quantiles=(5, 25, 50, 75, 95),
-    overlay_point_estimate: bool = True,
-    point_estimate: str = "mean",  # "mean" or "median"
-    save_path: str = "pdf_overlay_flow.png",
-    title: Optional[str] = None,
-):
-    """
-    Builds posterior bands over the induced PDF(x) using simulator + theta_samples.
-    - Posterior bands: 5–95% and 25–75% + median curve.
-    - Optional overlays: truth curve (true_params) and a point-estimate curve (mean/median θ).
-    """
-    import numpy as np
-
-    # Sanitize shapes
-    if theta_samples.dim() == 3:
-        B, S, D = theta_samples.shape
-        thetas = theta_samples.reshape(B * S, D)
-    else:
-        thetas = theta_samples
-        S, D = thetas.shape
-
-    # Precompute a common x-grid (by simulating once with the first theta)
-    x_centers_ref, _ = _simulate_pdf_curve_from_theta(
-        simulator,
-        thetas[0].to(device),
-        max(2000, num_events_per_theta // 5),
-        x_range,
-        bins,
-    )
-    # Simulate all θ-samples → stack PDFs
-    pdf_mat = []
-    for s in range(thetas.shape[0]):
-        _, H = _simulate_pdf_curve_from_theta(
-            simulator, thetas[s].to(device), num_events_per_theta, x_range, bins
-        )
-        pdf_mat.append(H)
-    import numpy as np
-
-    pdf_mat = np.stack(pdf_mat, axis=0)  # [S_total, BINS]
-
-    # Quantile bands
-    qdict = {q: np.quantile(pdf_mat, q / 100.0, axis=0) for q in quantiles}
-
-    # Optional truth curve
-    truth_curve = None
-    if true_params is not None:
-        x_t, H_t = _simulate_pdf_curve_from_theta(
-            simulator, true_params.to(device), num_events_per_theta * 5, x_range, bins
-        )
-        truth_curve = (x_t, H_t)
-
-    # Optional point-estimate curve
-    pe_curve = None
-    if overlay_point_estimate:
-        if point_estimate == "mean":
-            theta_pe = thetas.mean(dim=0)
-        elif point_estimate == "median":
-            theta_pe = thetas.median(dim=0).values
-        else:
-            raise ValueError("point_estimate must be 'mean' or 'median'")
-        x_pe, H_pe = _simulate_pdf_curve_from_theta(
-            simulator, theta_pe.to(device), num_events_per_theta * 2, x_range, bins
-        )
-        pe_curve = (x_pe, H_pe)
-
-    # Plot
-    fig = plt.figure(figsize=(7, 4.5))
-    ax = plt.gca()
-
-    # Shaded bands
-    if 95 in qdict and 5 in qdict:
-        ax.fill_between(
-            x_centers_ref, qdict[5], qdict[95], alpha=0.20, label="90% band"
-        )
-    if 75 in qdict and 25 in qdict:
-        ax.fill_between(
-            x_centers_ref, qdict[25], qdict[75], alpha=0.35, label="50% band"
-        )
-
-    # Median curve
-    if 50 in qdict:
-        ax.plot(x_centers_ref, qdict[50], linewidth=2.0, label="Posterior median")
-
-    # Point estimate curve
-    if pe_curve is not None:
-        ax.plot(
-            pe_curve[0],
-            pe_curve[1],
-            linestyle="--",
-            linewidth=1.8,
-            label=f"Posterior {point_estimate}",
-        )
-
-    # Truth
-    if truth_curve is not None:
-        ax.plot(truth_curve[0], truth_curve[1], linewidth=2.0, label="Truth")
-
-    ax.set_xlabel("x")
-    ax.set_ylabel("PDF(x)")
-    if title:
-        ax.set_title(title)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    plt.savefig(save_path, dpi=200)
-    plt.close(fig)
-
-
 def plot_PDF_distribution_single_same_plot_mceg(
     model,
     pointnet_model,
@@ -2659,20 +2519,17 @@ def plot_PDF_distribution_single_same_plot_mceg(
     pointnet_model.eval()
     # Ensure simulator classes are available in this scope
     try:
-        from simulator import MCEGSimulator, RealisticDIS, SimplifiedDIS
+        from simulator import MCEGSimulator, SimplifiedDIS
     except Exception:
-        SimplifiedDIS = RealisticDIS = MCEGSimulator = None
+        SimplifiedDIS = MCEGSimulator = None
     if problem in ["mceg", "mceg4dis"]:
         if MCEGSimulator is None:
             raise RuntimeError(
                 "MCEGSimulator not available; ensure simulator.py and mceg deps are installed"
             )
         simulator = MCEGSimulator(torch.device("cpu"))
-    elif problem == "realistic_dis":
-        simulator = RealisticDIS(torch.device("cpu"))
     elif problem == "simplified_dis":
         simulator = SimplifiedDIS(torch.device("cpu"))
-    # simulator = RealisticDIS(torch.device('cpu')) if problem == 'realistic_dis' else SimplifiedDIS(torch.device('cpu'))
 
     # Make sure params live on correct device
     true_params = true_params.to(device)
@@ -2699,8 +2556,8 @@ def plot_PDF_distribution_single_same_plot_mceg(
     # print(f"🔧 [FIX] Raw events shape: {xs_tensor.shape}")
 
     if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = advanced_feature_engineering(xs_tensor)
-        # print(f"🔧 [FIX] After advanced_feature_engineering: {xs_tensor.shape}")
+        xs_tensor = log_feature_engineering(xs_tensor)
+        # print(f"🔧 [FIX] After log_feature_engineering: {xs_tensor.shape}")
     else:
         # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
         from utils import log_feature_engineering
@@ -3170,7 +3027,6 @@ def plot_bootstrap_PDF_distribution(
     n_bootstrap,
     problem="simplified_dis",
     save_dir=None,
-    Q2_slices=None,
 ):
     """
     Bootstrap uncertainty visualization with function-level uncertainty focus.
@@ -3203,9 +3059,8 @@ def plot_bootstrap_PDF_distribution(
         device: Device to run computations on
         num_events: Number of events per bootstrap sample
         n_bootstrap: Number of bootstrap samples to generate
-        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        problem: Problem type ('simplified_dis', 'mceg')
         save_dir: Directory to save plots (required)
-        Q2_slices: List of Q2 values for realistic_dis problem
 
     Returns:
         None (saves plots to save_dir)
@@ -3228,19 +3083,6 @@ def plot_bootstrap_PDF_distribution(
             problem='simplified_dis',
             save_dir='./plots/bootstrap'
         )
-
-        # For realistic DIS with custom Q2 slices
-        plot_bootstrap_PDF_distribution(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=torch.tensor([1.0, 0.1, 0.7, 3.0, 0.0, 0.0]),
-            device=device,
-            num_events=50000,
-            n_bootstrap=30,
-            problem='realistic_dis',
-            save_dir='./plots/bootstrap',
-            Q2_slices=[2.0, 10.0, 50.0]
-        )
     """
     if save_dir is None:
         raise ValueError("save_dir must be specified for saving bootstrap plots")
@@ -3256,16 +3098,9 @@ def plot_bootstrap_PDF_distribution(
     )
 
     # Initialize simulator based on problem type
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
 
-    if problem == "realistic_dis":
-        if RealisticDIS is None:
-            raise ImportError(
-                "RealisticDIS not available - please install required dependencies"
-            )
-        simulator = RealisticDIS(device=torch.device("cpu"))
-        param_names = [r"$\log A_0$", r"$\delta$", r"$a$", r"$b$", r"$c$", r"$d$"]
-    elif problem == "simplified_dis":
+    if problem == "simplified_dis":
         if SimplifiedDIS is None:
             raise ImportError(
                 "SimplifiedDIS not available - please install required dependencies"
@@ -3281,7 +3116,7 @@ def plot_bootstrap_PDF_distribution(
         param_names = [f"Param {i+1}" for i in range(len(true_params))]
     else:
         raise ValueError(
-            f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'realistic_dis', 'mceg', 'mceg4dis'"
+            f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'mceg', 'mceg4dis'"
         )
 
     model.eval()
@@ -3307,9 +3142,9 @@ def plot_bootstrap_PDF_distribution(
             xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
 
             # Apply feature engineering based on problem type
-            advanced_feature_engineering = get_advanced_feature_engineering()
+            log_feature_engineering = get_log_feature_engineering()
             if problem not in ["mceg", "mceg4dis"]:
-                xs_tensor = advanced_feature_engineering(xs_tensor)
+                xs_tensor = log_feature_engineering(xs_tensor)
             else:
                 # For mceg/mceg4dis, apply log feature engineering as used in training
                 from utils import log_feature_engineering
@@ -3337,20 +3172,6 @@ def plot_bootstrap_PDF_distribution(
                     if fn_name not in bootstrap_pdfs:
                         bootstrap_pdfs[fn_name] = []
                     bootstrap_pdfs[fn_name].append(pdf_vals.detach().cpu())
-
-            elif problem == "realistic_dis":
-                # Compute PDFs at different Q2 slices
-                Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
-                x_vals = torch.linspace(1e-3, 0.9, 500)
-
-                for Q2_fixed in Q2_slices:
-                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                    q_vals = simulator.q(x_vals, Q2_vals)
-
-                    q_key = f"q_Q2_{Q2_fixed}"
-                    if q_key not in bootstrap_pdfs:
-                        bootstrap_pdfs[q_key] = []
-                    bootstrap_pdfs[q_key].append(q_vals.detach().cpu())
 
     # Convert to tensors for easier manipulation
     bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
@@ -3479,74 +3300,6 @@ def plot_bootstrap_PDF_distribution(
                 )
                 plt.close(fig)
 
-    elif problem == "realistic_dis":
-        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
-        x_vals = torch.linspace(1e-3, 0.9, 500)
-        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
-
-        for i, Q2_fixed in enumerate(Q2_slices):
-            q_key = f"q_Q2_{Q2_fixed}"
-            if q_key in bootstrap_pdfs:
-                pdf_stack = bootstrap_pdfs[q_key]  # [n_bootstrap, n_points]
-
-                # Compute statistics
-                median_vals = torch.median(pdf_stack, dim=0).values
-                std_vals = torch.std(pdf_stack, dim=0)
-                lower_bounds = median_vals - std_vals
-                upper_bounds = median_vals + std_vals
-
-                # Compute true PDF
-                simulator.init(true_params.squeeze().cpu())
-                Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                true_vals = simulator.q(x_vals, Q2_vals)
-
-                # Create plot
-                fig, ax = plt.subplots(figsize=(8, 6))
-
-                # Plot true PDF
-                ax.plot(
-                    x_vals.numpy(),
-                    true_vals.numpy(),
-                    color=color_palette[i],
-                    linewidth=2.5,
-                    label=rf"True $q(x,\ Q^2={Q2_fixed})$",
-                )
-
-                # Plot bootstrap median and uncertainty
-                ax.plot(
-                    x_vals.numpy(),
-                    median_vals.numpy(),
-                    linestyle="--",
-                    label=rf"Bootstrap Median $q(x)$",
-                    color="crimson",
-                    linewidth=2,
-                )
-
-                ax.fill_between(
-                    x_vals.numpy(),
-                    lower_bounds.numpy(),
-                    upper_bounds.numpy(),
-                    color="crimson",
-                    alpha=0.3,
-                    label=rf"±1STD Function Uncertainty (Bootstrap)",
-                )
-
-                ax.set_xlabel(r"$x$")
-                ax.set_ylabel(rf"$q(x, Q^2={Q2_fixed})$")
-                ax.set_xlim(1e-3, 0.9)
-                ax.set_xscale("log")
-                ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-                ax.legend(frameon=False)
-                ax.set_title(
-                    f"Function-Level Bootstrap Uncertainty: $Q^2={Q2_fixed}$ GeV²\n({n_bootstrap} bootstrap samples)"
-                )
-
-                plt.tight_layout()
-                plt.savefig(
-                    os.path.join(save_dir, f"bootstrap_pdf_Q2_{Q2_fixed}.png"), dpi=300
-                )
-                plt.close(fig)
-
     print(f"✅ Bootstrap analysis complete! Results saved to {save_dir}")
     print(f"   - Generated {n_bootstrap} bootstrap samples")
     print(f"   - Parameter histograms: bootstrap_param_histograms.png")
@@ -3554,8 +3307,6 @@ def plot_bootstrap_PDF_distribution(
         print(
             f"   - PDF plots: bootstrap_pdf_median_up.png, bootstrap_pdf_median_down.png"
         )
-    elif problem == "realistic_dis":
-        print(f"   - PDF plots: bootstrap_pdf_Q2_{{value}}.png for each Q² slice")
 
 
 def plot_combined_uncertainty_PDF_distribution(
@@ -3568,7 +3319,6 @@ def plot_combined_uncertainty_PDF_distribution(
     laplace_model=None,
     problem="simplified_dis",
     save_dir=None,
-    Q2_slices=None,
 ):
     """
     Plot PDF distributions with function-level uncertainty quantification combining
@@ -3604,9 +3354,8 @@ def plot_combined_uncertainty_PDF_distribution(
         num_events: Number of events per bootstrap sample
         n_bootstrap: Number of bootstrap samples to generate
         laplace_model: Fitted Laplace approximation for model uncertainty (optional)
-        problem: Problem type ('simplified_dis', 'realistic_dis', 'mceg')
+        problem: Problem type ('simplified_dis', 'mceg')
         save_dir: Directory to save plots (required)
-        Q2_slices: List of Q2 values for realistic_dis problem (optional)
 
     Returns:
         None (saves plots and analysis to save_dir)
@@ -3617,10 +3366,6 @@ def plot_combined_uncertainty_PDF_distribution(
             - function_uncertainty_pdf_down.png: d(x) with function-level uncertainty bands
             - function_uncertainty_breakdown_up.txt: Pointwise uncertainty breakdown for u(x)
             - function_uncertainty_breakdown_down.txt: Pointwise uncertainty breakdown for d(x)
-
-        For realistic_dis:
-            - function_uncertainty_pdf_Q2_{value}.png: q(x) at fixed Q2 with uncertainty
-            - function_uncertainty_breakdown_Q2_{value}.txt: Pointwise uncertainty breakdown
 
         Common saves:
             - function_uncertainty_summary.png: Average uncertainty statistics across x
@@ -3689,16 +3434,9 @@ def plot_combined_uncertainty_PDF_distribution(
         )
 
     # Initialize simulator based on problem type
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
 
-    if problem == "realistic_dis":
-        if RealisticDIS is None:
-            raise ImportError(
-                "RealisticDIS not available - please install required dependencies"
-            )
-        simulator = RealisticDIS(device=torch.device("cpu"))
-        param_names = [r"$\log A_0$", r"$\delta$", r"$a$", r"$b$", r"$c$", r"$d$"]
-    elif problem == "simplified_dis":
+    if problem == "simplified_dis":
         if SimplifiedDIS is None:
             raise ImportError(
                 "SimplifiedDIS not available - please install required dependencies"
@@ -3716,553 +3454,242 @@ def plot_combined_uncertainty_PDF_distribution(
         raise ValueError(f"Unknown problem type: {problem}")
 
     # Get feature engineering function
-    advanced_feature_engineering = get_advanced_feature_engineering()
+    log_feature_engineering = get_log_feature_engineering()
 
     model.eval()
     pointnet_model.eval()
     true_params = true_params.to(device)
     n_params = len(true_params)
 
-    # **NEW APPROACH**: Storage for function-level uncertainty
-    # We collect ALL function evaluations f(x|θ) from both bootstrap + Laplace sampling
-    function_samples = {}  # Will store all f(x) samples for each function/Q2 slice
+    # Implement rigorous per-x Law-of-Total-Variance (LoTV) decomposition
+    # using the dedicated helper from plotting_UQ_helpers for simplified_dis.
 
-    # Number of parameter samples per bootstrap iteration (for model uncertainty)
-    n_laplace_samples = (
-        20  # Sample multiple θ from each Laplace posterior for each bootstrap
-    )
+    if problem != "simplified_dis":
+        raise NotImplementedError(
+            "LoTV plotting is currently implemented for simplified_dis only"
+        )
 
-    print("Generating bootstrap samples and evaluating functions at each x...")
-    for i in tqdm(range(n_bootstrap), desc="Bootstrap samples"):
-        # Generate independent event set from true parameters
-        with torch.no_grad():
-            # Simulate events using true parameters
-            xs = simulator.sample(true_params.detach().cpu(), num_events)
-            xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+    # Build a callable that produces posterior parameter samples per bootstrap
+    # by drawing Gaussian samples from the Laplace predictive at the latent of
+    # a bootstrap-generated dataset. This keeps the semantics: within-boot = posterior; between-boot = data.
+    def posterior_sampler_callable_factory(max_boot: int):
+        def sampler(bootstrap_index: int):
+            # Stop after the requested number of bootstraps
+            if bootstrap_index >= max_boot:
+                return None
+            try:
+                xs = simulator.sample(true_params.detach().cpu(), num_events)
+                xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+                xs_tensor = log_feature_engineering(xs_tensor)
+                latent = pointnet_model(xs_tensor.unsqueeze(0))
 
-            # Apply feature engineering based on problem type
-            if problem not in ["mceg", "mceg4dis"]:
-                xs_tensor = advanced_feature_engineering(xs_tensor)
-            else:
-                # FIXED: Apply log_feature_engineering for mceg/mceg4dis to match training
-                from utils import log_feature_engineering
-
-                original_shape = xs_tensor.shape
-                xs_tensor = log_feature_engineering(xs_tensor).float()
-                print(
-                    f"✅ [SAFETY CHECK] mceg/mceg4dis log feature engineering: {original_shape} -> {xs_tensor.shape}"
-                )
-
-            # Extract latent embedding using PointNet
-            latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
-
-            # Get parameter distribution from model + Laplace
-            if laplace_model is not None:
-                # Use analytic uncertainty (model uncertainty via Laplace)
+                # Obtain mean/std with Laplace; fallback to Gaussian head if needed
                 mean_params, std_params = get_analytic_uncertainty(
-                    model, latent_embedding, laplace_model
+                    model, latent, laplace_model
                 )
-                mean_params = mean_params.cpu().squeeze(0)  # [param_dim]
-                std_params = std_params.cpu().squeeze(0)  # [param_dim]
+                mean_params = mean_params.cpu().squeeze(0)
+                std_params = std_params.cpu().squeeze(0)
 
-                # Sample multiple parameter sets from the Laplace posterior for this bootstrap
-                param_samples = []
-                for _ in range(n_laplace_samples):
-                    # Sample θ ~ N(mean_params, diag(std_params²))
-                    theta_sample = mean_params + std_params * torch.randn_like(
-                        mean_params
+                n_theta = 20
+                samples = []
+                for _ in range(n_theta):
+                    samples.append(
+                        (mean_params + std_params * torch.randn_like(mean_params))
+                        .cpu()
+                        .numpy()
                     )
-                    param_samples.append(theta_sample)
-                param_samples = torch.stack(
-                    param_samples
-                )  # [n_laplace_samples, param_dim]
+                return np.stack(samples)
+            except Exception:
+                return None
 
-            else:
-                # Fallback: use deterministic prediction, still create "samples" for consistent processing
-                with torch.no_grad():
-                    output = model(latent_embedding)
-                if isinstance(output, tuple) and len(output) == 2:  # Gaussian head
-                    mean_params, logvars = output
-                    std_params = torch.exp(0.5 * logvars)
-                    mean_params = mean_params.cpu().squeeze(0)
-                    std_params = std_params.cpu().squeeze(0)
+        return sampler
 
-                    # Sample from model's intrinsic uncertainty
-                    param_samples = []
-                    for _ in range(n_laplace_samples):
-                        theta_sample = mean_params + std_params * torch.randn_like(
-                            mean_params
-                        )
-                        param_samples.append(theta_sample)
-                    param_samples = torch.stack(param_samples)
-                else:  # Deterministic
-                    mean_params = output.cpu().squeeze(0)
-                    # Create identical "samples" for consistent processing
-                    param_samples = mean_params.unsqueeze(0).repeat(
-                        n_laplace_samples, 1
-                    )
+    # Prepare simulator and x-grid
+    from plotting_UQ_helpers import compute_function_lotv_for_simplified_dis
+    x_grid = torch.linspace(1e-3, 1, 500).to(device)
 
-            # **CORE CHANGE**: Evaluate functions f(x|θ) for all θ samples
-            if problem == "simplified_dis":
-                # Set up x-grid for evaluation
-                x_vals = torch.linspace(1e-3, 1, 500)
-
-                for fn_name in ["up", "down"]:
-                    if fn_name not in function_samples:
-                        function_samples[fn_name] = {
-                            "x_vals": x_vals,
-                            "all_samples": [],
-                        }
-
-                    # Evaluate f(x|θ) for each θ sample from this bootstrap iteration
-                    for theta in param_samples:
-                        simulator.init(theta.detach().cpu())
-                        fn = getattr(simulator, fn_name)
-                        pdf_vals = fn(x_vals).detach().cpu()  # [n_x_points]
-                        function_samples[fn_name]["all_samples"].append(pdf_vals)
-
-            elif problem == "realistic_dis":
-                # Set up x-grid and Q2 slices for evaluation
-                Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
-                x_vals = torch.linspace(1e-3, 0.9, 500)
-
-                for Q2_fixed in Q2_slices:
-                    q_key = f"q_Q2_{Q2_fixed}"
-                    if q_key not in function_samples:
-                        function_samples[q_key] = {
-                            "x_vals": x_vals,
-                            "Q2": Q2_fixed,
-                            "all_samples": [],
-                        }
-
-                    Q2_vals = torch.full_like(x_vals, Q2_fixed)
-
-                    # Evaluate q(x|θ) for each θ sample from this bootstrap iteration
-                    for theta in param_samples:
-                        simulator.init(theta.detach().cpu())
-                        q_vals = (
-                            simulator.q(x_vals, Q2_vals).detach().cpu()
-                        )  # [n_x_points]
-                        function_samples[q_key]["all_samples"].append(q_vals)
-
-    # Convert function samples to tensors for pointwise statistics
-    print("Computing pointwise function uncertainty statistics...")
-    for key in function_samples:
-        # Stack all function evaluations: [n_bootstrap * n_laplace_samples, n_x_points]
-        function_samples[key]["all_samples"] = torch.stack(
-            function_samples[key]["all_samples"]
-        )
-
-        n_total_samples, n_x_points = function_samples[key]["all_samples"].shape
-        print(
-            f"  Function {key}: {n_total_samples} total samples across {n_x_points} x-points"
-        )
-
-    # **NEW APPROACH**: Pointwise uncertainty decomposition
-    # For each x-point, we now have n_bootstrap * n_laplace_samples function values
-    # We can compute mean, std, and decompose uncertainty sources pointwise
-
-    # Save methodology documentation
-    methodology_path = os.path.join(save_dir, "function_uncertainty_methodology.txt")
-    with open(methodology_path, "w") as f:
-        f.write("Function-Level Uncertainty Quantification Methodology\n")
-        f.write("=" * 60 + "\n\n")
-        f.write(
-            "KEY CHANGE: This analysis computes uncertainty over the predicted FUNCTIONS f(x),\n"
-        )
-        f.write(
-            "not over the model parameters θ. This provides more interpretable uncertainty\n"
-        )
-        f.write("for PDF predictions and physics applications.\n\n")
-        f.write("Method:\n")
-        f.write("1. For each bootstrap iteration:\n")
-        f.write(f"   - Generate {num_events} events from true parameters\n")
-        f.write("   - Extract latent representation via PointNet\n")
-        f.write(
-            "   - Predict parameter distribution θ ~ N(mean, STD²) via model + Laplace\n"
-        )
-        f.write(
-            f"   - Sample {n_laplace_samples} parameter sets from θ ~ N(mean, STD²)\n"
-        )
-        f.write("   - Evaluate f(x|θ) for each θ sample at each x-point\n\n")
-        f.write("2. Aggregate uncertainty pointwise:\n")
-        f.write(
-            "   - Collect all f(x) values at each x from all bootstrap + Laplace samples\n"
-        )
-        f.write("   - Compute mean and standard deviation of f(x) at each x\n")
-        f.write(
-            "   - Uncertainty bands reflect variation in predicted function, not parameters\n\n"
-        )
-        f.write("3. Uncertainty sources:\n")
-        f.write(
-            "   - Data uncertainty: variation due to finite event samples (bootstrap)\n"
-        )
-        f.write(
-            "   - Model uncertainty: variation due to parameter posterior (Laplace)\n"
-        )
-        f.write(
-            "   - Combined pointwise: total_variance(x) = var_bootstrap(x) + var_laplace(x)\n\n"
-        )
-        f.write(f"Configuration:\n")
-        f.write(f"Problem: {problem}\n")
-        f.write(f"True parameters: {true_params.cpu().numpy()}\n")
-        f.write(f"Bootstrap samples: {n_bootstrap}\n")
-        f.write(f"Events per sample: {num_events}\n")
-        f.write(f"Laplace samples per bootstrap: {n_laplace_samples}\n")
-        f.write(f"Total function evaluations: {n_bootstrap * n_laplace_samples}\n")
-        f.write(
-            f"Laplace model: {'Available' if laplace_model is not None else 'Not available'}\n\n"
-        )
-
-    print("Computing function-level uncertainty statistics and creating plots...")
-
-    # Create plots for each function with pointwise uncertainty bands
-    if problem == "simplified_dis":
-        for fn_name, fn_label, color in [
-            ("up", "u", "royalblue"),
-            ("down", "d", "darkorange"),
-        ]:
-            if fn_name in function_samples:
-                data = function_samples[fn_name]
-                x_vals = data["x_vals"]
-                all_samples = data["all_samples"]  # [n_total_samples, n_x_points]
-
-                # **POINTWISE UNCERTAINTY COMPUTATION**
-                mean_pdf = all_samples.mean(dim=0)  # Mean f(x) at each x [n_x_points]
-                std_pdf = all_samples.std(dim=0)  # Std f(x) at each x [n_x_points]
-
-                # Uncertainty bands (±1 standard deviation)
-                lower_bound = mean_pdf - std_pdf
-                upper_bound = mean_pdf + std_pdf
-
-                # Compute true PDF for comparison
-                simulator.init(true_params.squeeze().cpu())
-                true_pdf = getattr(simulator, fn_name)(x_vals).detach().cpu()
-
-                # Create main plot with function-level uncertainty
-                fig, ax = plt.subplots(figsize=(10, 6))
-
-                # Plot true PDF
-                ax.plot(
-                    x_vals.numpy(),
-                    true_pdf.numpy(),
-                    label=rf"True ${fn_label}(x|\theta^*)$",
-                    color=color,
-                    linewidth=2.5,
-                )
-
-                # Plot mean prediction
-                ax.plot(
-                    x_vals.numpy(),
-                    mean_pdf.numpy(),
-                    linestyle="--",
-                    label=rf"Mean Prediction ${fn_label}(x)$",
-                    color="crimson",
-                    linewidth=2,
-                )
-
-                # Function-level uncertainty band
-                ax.fill_between(
-                    x_vals.numpy(),
-                    lower_bound.numpy(),
-                    upper_bound.numpy(),
-                    color="crimson",
-                    alpha=0.3,
-                    label=rf"±1STD Function Uncertainty",
-                )
-
-                ax.set_xlabel(r"$x$")
-                ax.set_ylabel(rf"${fn_label}(x|\theta)$")
-                ax.set_xlim(1e-3, 1)
-                ax.set_xscale("log")
-                ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-                ax.legend(frameon=False)
-                ax.set_title(
-                    f"Function-Level Uncertainty: {fn_name.title()} PDF\n"
-                    f"({n_bootstrap} bootstrap × {n_laplace_samples} Laplace samples)"
-                )
-
-                plt.tight_layout()
-                plt.savefig(
-                    os.path.join(save_dir, f"function_uncertainty_pdf_{fn_name}.png"),
-                    dpi=300,
-                    bbox_inches="tight",
-                )
-                plt.close(fig)
-
-                # Save pointwise uncertainty breakdown
-                breakdown_path = os.path.join(
-                    save_dir, f"function_uncertainty_breakdown_{fn_name}.txt"
-                )
-                with open(breakdown_path, "w") as f:
-                    f.write(f"Pointwise Function Uncertainty Breakdown: {fn_name}(x)\n")
-                    f.write("=" * 50 + "\n\n")
-                    f.write(
-                        "This file contains pointwise uncertainty statistics for the predicted\n"
-                    )
-                    f.write(
-                        f"function {fn_name}(x) at each x-point in the evaluation grid.\n\n"
-                    )
-                    f.write("Columns:\n")
-                    f.write("x: x-coordinate\n")
-                    f.write("true_f(x): true function value\n")
-                    f.write(
-                        "mean_f(x): mean predicted function value across all samples\n"
-                    )
-                    f.write(
-                        "std_f(x): standard deviation of predicted function value\n"
-                    )
-                    f.write("bias_f(x): mean_f(x) - true_f(x)\n")
-                    f.write("rel_uncertainty: std_f(x) / |mean_f(x)|\n\n")
-                    f.write(
-                        f"{'x':>12s} {'true_f(x)':>12s} {'mean_f(x)':>12s} {'std_f(x)':>12s} {'bias_f(x)':>12s} {'rel_unc':>12s}\n"
-                    )
-                    f.write("-" * 80 + "\n")
-
-                    for i, x_val in enumerate(x_vals):
-                        true_val = true_pdf[i].item()
-                        mean_val = mean_pdf[i].item()
-                        std_val = std_pdf[i].item()
-                        bias_val = mean_val - true_val
-                        rel_unc = (
-                            std_val / abs(mean_val)
-                            if abs(mean_val) > 1e-10
-                            else float("inf")
-                        )
-
-                        f.write(
-                            f"{x_val.item():12.6e} {true_val:12.6e} {mean_val:12.6e} "
-                            f"{std_val:12.6e} {bias_val:12.6e} {rel_unc:12.6f}\n"
-                        )
-
-                print(f"  ✅ Function uncertainty analysis saved for {fn_name}(x)")
-
-    elif problem == "realistic_dis":
-        Q2_slices = Q2_slices or [2.0, 10.0, 50.0, 200.0]
-        color_palette = plt.cm.viridis_r(np.linspace(0, 1, len(Q2_slices)))
-
-        for i, Q2_fixed in enumerate(Q2_slices):
-            q_key = f"q_Q2_{Q2_fixed}"
-            if q_key in function_samples:
-                data = function_samples[q_key]
-                x_vals = data["x_vals"]
-                all_samples = data["all_samples"]  # [n_total_samples, n_x_points]
-
-                # **POINTWISE UNCERTAINTY COMPUTATION**
-                mean_pdf = all_samples.mean(dim=0)  # Mean q(x) at each x [n_x_points]
-                std_pdf = all_samples.std(dim=0)  # Std q(x) at each x [n_x_points]
-
-                # Uncertainty bands (±1 standard deviation)
-                lower_bound = mean_pdf - std_pdf
-                upper_bound = mean_pdf + std_pdf
-
-                # Compute true PDF for comparison
-                simulator.init(true_params.squeeze().cpu())
-                Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                true_pdf = simulator.q(x_vals, Q2_vals).detach().cpu()
-
-                # Create main plot with function-level uncertainty
-                fig, ax = plt.subplots(figsize=(10, 6))
-
-                # Plot true PDF
-                ax.plot(
-                    x_vals.numpy(),
-                    true_pdf.numpy(),
-                    color=color_palette[i],
-                    linewidth=2.5,
-                    label=rf"True $q(x,\ Q^2={Q2_fixed})$",
-                )
-
-                # Plot mean prediction
-                ax.plot(
-                    x_vals.numpy(),
-                    mean_pdf.numpy(),
-                    linestyle="--",
-                    label=rf"Mean Prediction $q(x)$",
-                    color="crimson",
-                    linewidth=2,
-                )
-
-                # Function-level uncertainty band
-                ax.fill_between(
-                    x_vals.numpy(),
-                    lower_bound.numpy(),
-                    upper_bound.numpy(),
-                    color="crimson",
-                    alpha=0.3,
-                    label=rf"±1STD Function Uncertainty",
-                )
-
-                ax.set_xlabel(r"$x$")
-                ax.set_ylabel(rf"$q(x, Q^2={Q2_fixed})$")
-                ax.set_xlim(1e-3, 0.9)
-                ax.set_xscale("log")
-                ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-                ax.legend(frameon=False)
-                ax.set_title(
-                    f"Function-Level Uncertainty: PDF at $Q^2={Q2_fixed}$ GeV²\n"
-                    f"({n_bootstrap} bootstrap × {n_laplace_samples} Laplace samples)"
-                )
-
-                plt.tight_layout()
-                plt.savefig(
-                    os.path.join(
-                        save_dir, f"function_uncertainty_pdf_Q2_{Q2_fixed}.png"
-                    ),
-                    dpi=300,
-                    bbox_inches="tight",
-                )
-                plt.close(fig)
-
-                # Save pointwise uncertainty breakdown
-                breakdown_path = os.path.join(
-                    save_dir, f"function_uncertainty_breakdown_Q2_{Q2_fixed}.txt"
-                )
-                with open(breakdown_path, "w") as f:
-                    f.write(
-                        f"Pointwise Function Uncertainty Breakdown: q(x, Q²={Q2_fixed})\n"
-                    )
-                    f.write("=" * 60 + "\n\n")
-                    f.write(
-                        "This file contains pointwise uncertainty statistics for the predicted\n"
-                    )
-                    f.write(
-                        f"function q(x, Q²={Q2_fixed}) at each x-point in the evaluation grid.\n\n"
-                    )
-                    f.write("Columns:\n")
-                    f.write("x: x-coordinate\n")
-                    f.write("true_q(x): true function value\n")
-                    f.write(
-                        "mean_q(x): mean predicted function value across all samples\n"
-                    )
-                    f.write(
-                        "std_q(x): standard deviation of predicted function value\n"
-                    )
-                    f.write("bias_q(x): mean_q(x) - true_q(x)\n")
-                    f.write("rel_uncertainty: std_q(x) / |mean_q(x)|\n\n")
-                    f.write(
-                        f"{'x':>12s} {'true_q(x)':>12s} {'mean_q(x)':>12s} {'std_q(x)':>12s} {'bias_q(x)':>12s} {'rel_unc':>12s}\n"
-                    )
-                    f.write("-" * 80 + "\n")
-
-                    for j, x_val in enumerate(x_vals):
-                        true_val = true_pdf[j].item()
-                        mean_val = mean_pdf[j].item()
-                        std_val = std_pdf[j].item()
-                        bias_val = mean_val - true_val
-                        rel_unc = (
-                            std_val / abs(mean_val)
-                            if abs(mean_val) > 1e-10
-                            else float("inf")
-                        )
-
-                        f.write(
-                            f"{x_val.item():12.6e} {true_val:12.6e} {mean_val:12.6e} "
-                            f"{std_val:12.6e} {bias_val:12.6e} {rel_unc:12.6f}\n"
-                        )
-
-                print(f"  ✅ Function uncertainty analysis saved for Q²={Q2_fixed}")
-
-    # Create summary statistics plot across all x-points
-    print("Creating summary uncertainty analysis...")
-
-    # Compute average statistics across all functions/x-points
-    all_relative_uncertainties = []
-    all_absolute_uncertainties = []
-    function_names = []
-
-    for key in function_samples:
-        data = function_samples[key]
-        all_samples = data["all_samples"]
-        mean_vals = all_samples.mean(dim=0)
-        std_vals = all_samples.std(dim=0)
-
-        # Compute relative uncertainties (avoiding division by zero)
-        rel_unc = std_vals / torch.clamp(torch.abs(mean_vals), min=1e-10)
-
-        all_relative_uncertainties.append(rel_unc.mean().item())  # Average over x
-        all_absolute_uncertainties.append(std_vals.mean().item())  # Average over x
-        function_names.append(key)
-
-    # Summary plot
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Relative uncertainty
-    ax1.bar(
-        range(len(function_names)),
-        all_relative_uncertainties,
-        color="lightcoral",
-        alpha=0.7,
-        edgecolor="black",
+    lotv_results = compute_function_lotv_for_simplified_dis(
+        simulator,
+        x_grid,
+        posterior_sampler_callable=posterior_sampler_callable_factory(n_bootstrap),
+        n_theta_per_boot=100,
+        device=device,
     )
-    ax1.set_xlabel("Function")
-    ax1.set_ylabel("Average Relative Uncertainty")
-    ax1.set_title("Average Relative Function Uncertainty")
-    ax1.set_xticks(range(len(function_names)))
-    ax1.set_xticklabels(function_names, rotation=45, ha="right")
-    ax1.grid(True, alpha=0.3, axis="y")
 
-    # Absolute uncertainty
-    ax2.bar(
-        range(len(function_names)),
-        all_absolute_uncertainties,
-        color="lightblue",
-        alpha=0.7,
-        edgecolor="black",
-    )
-    ax2.set_xlabel("Function")
-    ax2.set_ylabel("Average Absolute Uncertainty")
-    ax2.set_title("Average Absolute Function Uncertainty")
-    ax2.set_xticks(range(len(function_names)))
-    ax2.set_xticklabels(function_names, rotation=45, ha="right")
-    ax2.grid(True, alpha=0.3, axis="y")
+    # Build empirical ensembles f(x; theta^{(b,s)}) to compute percentile bands as in the methodology
+    # We reuse the same posterior sampler to aggregate all draws across bootstraps.
+    f_up_all = []
+    f_down_all = []
+    b_idx = 0
+    sampler = posterior_sampler_callable_factory(n_bootstrap)
+    while True:
+        samples = sampler(b_idx)
+        if samples is None:
+            break
+        samples = np.array(samples)
+        if samples.size == 0:
+            break
+        # Evaluate f for each theta sample at this bootstrap
+        for i in range(samples.shape[0]):
+            theta = torch.tensor(samples[i], dtype=torch.float32, device=device)
+            pdf = simulator.f(x_grid, theta)
+            f_up_all.append(pdf["up"].detach().cpu().numpy().ravel())
+            f_down_all.append(pdf["down"].detach().cpu().numpy().ravel())
+        b_idx += 1
+    f_up_all = np.array(f_up_all)  # (N, n_x)
+    f_down_all = np.array(f_down_all)
 
-    plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "function_uncertainty_summary.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close(fig)
+    # Plot mean ± sqrt(total_var) per x for up/down
+    for fn_name, fn_label, color in [
+        ("up", "u", "royalblue"),
+        ("down", "d", "darkorange"),
+    ]:
+        mean_key = f"mean_{fn_name}"
+        total_key = f"total_var_{fn_name}"
+        between_key = f"between_var_{fn_name}"
+        within_key = f"avg_within_var_{fn_name}"
 
-    print(
-        f"✅ Function-level uncertainty analysis complete! Results saved to {save_dir}"
-    )
-    print(
-        f"   📊 MAJOR CHANGE: Uncertainty now computed over predicted FUNCTIONS f(x), not parameters θ"
-    )
-    print(
-        f"   📈 Generated {n_bootstrap * n_laplace_samples} total function evaluations"
-    )
-    print(f"   📄 Methodology documentation: function_uncertainty_methodology.txt")
-    print(f"   📋 Summary statistics: function_uncertainty_summary.png")
-    if problem == "simplified_dis":
-        print(
-            f"   📊 Function plots: function_uncertainty_pdf_up.png, function_uncertainty_pdf_down.png"
+        mean_vals = torch.tensor(lotv_results[mean_key], dtype=torch.float32)
+        std_total = torch.tensor(lotv_results[total_key], dtype=torch.float32).sqrt()
+        std_between = torch.tensor(lotv_results[between_key], dtype=torch.float32).sqrt()
+        std_within = torch.tensor(lotv_results[within_key], dtype=torch.float32).sqrt()
+
+        # True curve for reference
+        simulator.init(true_params.squeeze().cpu())
+        true_curve = getattr(simulator, fn_name)(x_grid).detach().cpu().numpy()
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        ax.plot(
+            x_grid.detach().cpu().numpy(),
+            true_curve,
+            label=rf"True ${fn_label}(x|\theta^*)$",
+            color=color,
+            linewidth=2.5,
         )
-        print(
-            f"   📝 Pointwise breakdowns: function_uncertainty_breakdown_up.txt, function_uncertainty_breakdown_down.txt"
-        )
-    elif problem == "realistic_dis":
-        print(
-            f"   📊 Function plots: function_uncertainty_pdf_Q2_{{value}}.png for each Q² slice"
-        )
-        print(
-            f"   📝 Pointwise breakdowns: function_uncertainty_breakdown_Q2_{{value}}.txt for each Q² slice"
+        ax.plot(
+            x_grid.detach().cpu().numpy(),
+            mean_vals.detach().cpu().numpy(),
+            linestyle="--",
+            label=rf"Mean ${fn_label}(x)$",
+            color="crimson",
+            linewidth=2,
         )
 
-    # Return summary statistics for potential programmatic use
-    return {
-        "problem": problem,
-        "n_bootstrap": n_bootstrap,
-        "n_laplace_samples": n_laplace_samples,
-        "total_function_evaluations": n_bootstrap * n_laplace_samples,
-        "function_names": function_names,
-        "average_relative_uncertainties": all_relative_uncertainties,
-        "average_absolute_uncertainties": all_absolute_uncertainties,
-        "true_params": true_params,
-        "methodology": "function_level_uncertainty",
-    }
+        # Prepare x and mean arrays
+        x_np = x_grid.detach().cpu().numpy()
+        mean_np = mean_vals.detach().cpu().numpy()
+        # Percentile bands from empirical ensembles (5–95% and 25–75%)
+        if fn_name == "up" and f_up_all.size > 0:
+            p5 = np.nanpercentile(f_up_all, 5, axis=0)
+            p25 = np.nanpercentile(f_up_all, 25, axis=0)
+            p75 = np.nanpercentile(f_up_all, 75, axis=0)
+            p95 = np.nanpercentile(f_up_all, 95, axis=0)
+            ax.fill_between(
+                x_np, p5, p95, color="gray", alpha=0.15, label="5–95% (empirical)"
+            )
+            ax.fill_between(
+                x_np, p25, p75, color="gray", alpha=0.25, label="25–75% (empirical)"
+            )
+        if fn_name == "down" and f_down_all.size > 0:
+            p5 = np.nanpercentile(f_down_all, 5, axis=0)
+            p25 = np.nanpercentile(f_down_all, 25, axis=0)
+            p75 = np.nanpercentile(f_down_all, 75, axis=0)
+            p95 = np.nanpercentile(f_down_all, 95, axis=0)
+            ax.fill_between(
+                x_np, p5, p95, color="gray", alpha=0.15, label="5–95% (empirical)"
+            )
+            ax.fill_between(
+                x_np, p25, p75, color="gray", alpha=0.25, label="25–75% (empirical)"
+            )
+
+        # Combined bands: mean ± k * sqrt(total variance) for k=1,2,3 (LoTV total variance)
+        std_np = std_total.detach().cpu().numpy()
+
+        # Plot ±1σ, ±2σ, ±3σ with fading alpha
+        band_specs = [
+            (1.0, 0.30, r"$\pm\,1\sigma$"),
+            (2.0, 0.20, r"$\pm\,2\sigma$"),
+            (3.0, 0.10, r"$\pm\,3\sigma$"),
+        ]
+        for k, alpha, lbl in band_specs:
+            ax.fill_between(
+                x_np,
+                mean_np - k * std_np,
+                mean_np + k * std_np,
+                color="crimson",
+                alpha=alpha,
+                label=lbl,
+            )
+
+        ax.set_xlabel(r"$x$")
+        ax.set_ylabel(rf"${fn_label}(x|\theta)$")
+        ax.set_xlim(1e-3, 1)
+        ax.set_xscale("log")
+        ax.grid(True, which="both", linestyle=":", linewidth=0.5)
+        ax.legend(frameon=False)
+        ax.set_title("Function-Space Combined Uncertainty (LoTV)")
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(save_dir, f"function_uncertainty_lotv_{fn_name}.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+        # Save per-x breakdown file
+        breakdown_path = os.path.join(
+            save_dir, f"function_uncertainty_lotv_breakdown_{fn_name}.txt"
+        )
+        with open(breakdown_path, "w") as f:
+            f.write(f"LoTV per-x breakdown for {fn_name}(x)\n")
+            f.write("=" * 60 + "\n")
+            f.write(
+                "Columns: x, mean(x), sqrt(total_var), sqrt(between_var), sqrt(avg_within_var)\n"
+            )
+            for i in range(x_grid.numel()):
+                f.write(
+                    f"{x_grid[i].item():.6e} "
+                    f"{mean_vals[i].item():.6e} "
+                    f"{std_total[i].item():.6e} "
+                    f"{std_between[i].item():.6e} "
+                    f"{std_within[i].item():.6e}\n"
+                )
+
+    # Summary plot of decomposition curves and scalar uncertainty (mean_x std)
+    try:
+        fig, ax = plt.subplots(1, 2, figsize=(14, 5))
+        for j, fn_name in enumerate(["up", "down"]):
+            mean_key = f"mean_{fn_name}"
+            total_key = f"total_var_{fn_name}"
+            between_key = f"between_var_{fn_name}"
+            within_key = f"avg_within_var_{fn_name}"
+            std_total = np.sqrt(np.array(lotv_results[total_key]))
+            std_between = np.sqrt(np.array(lotv_results[between_key]))
+            std_within = np.sqrt(np.array(lotv_results[within_key]))
+            ax[j].plot(x_np, std_total, label="Total std (LoTV)", color="crimson")
+            ax[j].plot(x_np, std_between, label="Between std (boot)", color="teal")
+            ax[j].plot(x_np, std_within, label="AvgWithin std (LA)", color="purple")
+            scalar_unc = float(np.mean(std_total))
+            ax[j].set_title(f"{fn_name}: mean std = {scalar_unc:.3e}")
+            ax[j].set_xscale("log")
+            ax[j].set_xlim(1e-3, 1)
+            ax[j].set_xlabel("x")
+            ax[j].set_ylabel("std over f(x)")
+            ax[j].grid(True, linestyle=":")
+            ax[j].legend(frameon=False)
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(save_dir, "function_uncertainty_lotv_summary.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+    except Exception:
+        pass
+
+    print(f"✅ Combined LoTV function-space uncertainty saved to {save_dir}")
+    return lotv_results
 
 
 def validate_combined_uncertainty_inputs(
@@ -4323,7 +3750,7 @@ def validate_combined_uncertainty_inputs(
         )
 
     # Validate problem type
-    valid_problems = ["simplified_dis", "realistic_dis", "mceg"]
+    valid_problems = ["simplified_dis", "mceg"]
     if problem not in valid_problems:
         raise ValueError(f"problem must be one of {valid_problems}, got '{problem}'")
 
@@ -4334,7 +3761,7 @@ def validate_combined_uncertainty_inputs(
         raise ValueError("save_dir must be a string")
 
     # Check parameter dimensions match problem expectations
-    expected_dims = {"simplified_dis": 4, "realistic_dis": 6, "mceg": None}  # Variable
+    expected_dims = {"simplified_dis": 4, "mceg": None}  # Variable
 
     if problem in expected_dims and expected_dims[problem] is not None:
         if len(true_params) != expected_dims[problem]:
@@ -4344,937 +3771,6 @@ def validate_combined_uncertainty_inputs(
 
     return True
 
-
-def plot_uncertainty_vs_events(
-    model,
-    pointnet_model,
-    true_params,
-    device,
-    event_counts=None,
-    n_bootstrap=20,
-    laplace_model=None,
-    n_mc=None,
-    problem="simplified_dis",
-    save_dir=None,
-    Q2_slices=None,
-    fixed_x_values=None,
-    nx=30,  # histogram x bins
-    nQ2=20,  # histogram Q2 bins
-):
-    """
-    Compute and plot how uncertainties (bootstrap and optional Laplace) scale with number of events.
-    This version uses the exact MCEG histogram-based approach for function uncertainties (matching
-    plot_function_uncertainty_mceg) and ensures `simulator` variable is defined for all problem types.
-    """
-    if save_dir is None:
-        raise ValueError(
-            "save_dir must be specified for saving uncertainty scaling plots"
-        )
-
-    import os
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-    import torch
-    from tqdm import tqdm
-
-    os.makedirs(save_dir, exist_ok=True)
-
-    # Default event counts spanning realistic range
-    if event_counts is None:
-        event_counts = [1000, 5000, 10000, 50000, 100000, 500000, 1000000]
-
-    print(f"🔄 Testing uncertainty scaling across {len(event_counts)} event counts...")
-    print(f"   Event counts: {event_counts}")
-    print(f"   Bootstrap samples per count: {n_bootstrap}")
-    if laplace_model is not None:
-        print("   Using Laplace approximation for model uncertainty")
-    else:
-        print("   Using bootstrap-only uncertainty (no Laplace)")
-
-    # Initialize simulator factories (user's helper)
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
-
-    if problem == "realistic_dis":
-        if RealisticDIS is None:
-            raise ImportError(
-                "RealisticDIS not available - please install required dependencies"
-            )
-        simulator = RealisticDIS(device=torch.device("cpu"))
-        param_names = [r"$\log A_0$", r"$\delta$", r"$a$", r"$b$", r"$c$", r"$d$"]
-    elif problem == "simplified_dis":
-        if SimplifiedDIS is None:
-            raise ImportError(
-                "SimplifiedDIS not available - please install required dependencies"
-            )
-        simulator = SimplifiedDIS(device=torch.device("cpu"))
-        param_names = [r"$a_u$", r"$b_u$", r"$a_d$", r"$b_d$"]
-    elif problem in ["mceg", "mceg4dis"]:
-        if MCEGSimulator is None:
-            raise ImportError(
-                "MCEGSimulator not available - please install required dependencies"
-            )
-        # IMPORTANT: assign to `simulator` so later code uses same name
-        simulator = MCEGSimulator(device=torch.device("cpu"))
-        param_names = [f"Param {i+1}" for i in range(len(true_params))]
-    else:
-        raise ValueError(f"Unknown problem type: {problem}")
-
-    # Get feature engineering function
-    advanced_feature_engineering = get_advanced_feature_engineering()
-
-    model.eval()
-    pointnet_model.eval()
-    true_params = true_params.to(device)
-
-    # Helper copied exactly from earlier code to build reco/stat histograms
-    def get_reco_stat(evts, mceg):
-        """
-        Input: evts is a CPU tensor or array with columns [x, Q2, ...]
-        mceg: the simulator.mceg object used only for scaling by total_xsec
-        Output: reco [nx,nQ2], stat [nx,nQ2], hist (numpy histogram tuple)
-        """
-        if isinstance(evts, torch.Tensor):
-            evts_np = evts.detach().cpu().numpy()
-        else:
-            evts_np = np.asarray(evts)
-        if evts_np.size == 0:
-            hist = np.histogram2d(np.array([]), np.array([]), bins=(nx, nQ2))
-            return np.zeros(hist[0].shape), np.zeros(hist[0].shape), hist
-        log_x = np.log(evts_np[:, 0])
-        log_Q2 = np.log(evts_np[:, 1])
-        hist = np.histogram2d(log_x, log_Q2, bins=(nx, nQ2))
-        counts = hist[0].astype(float)
-        reco = np.zeros_like(counts)
-        stat = np.zeros_like(counts)
-        x_edges = hist[1]
-        Q2_edges = hist[2]
-        for i in range(x_edges.shape[0] - 1):
-            for j in range(Q2_edges.shape[0] - 1):
-                c = counts[i, j]
-                if c > 0:
-                    xmin = np.exp(x_edges[i])
-                    xmax = np.exp(x_edges[i + 1])
-                    Q2min = np.exp(Q2_edges[j])
-                    Q2max = np.exp(Q2_edges[j + 1])
-                    dx = xmax - xmin
-                    dQ2 = Q2max - Q2min
-                    reco[i, j] = c / (dx * dQ2)
-                    stat[i, j] = np.sqrt(c) / (dx * dQ2)
-        if np.sum(counts) > 0:
-            try:
-                scale = float(mceg.total_xsec) / np.sum(counts)
-            except Exception:
-                scale = 1.0
-            reco *= scale
-            stat *= scale
-        return reco, stat, hist
-
-    # Storage for scaling analysis results
-    scaling_results = {
-        "event_counts": event_counts,
-        "problem": problem,
-        "n_bootstrap": n_bootstrap,
-        "true_params": true_params.cpu().numpy(),
-        "param_names": param_names,
-        "function_uncertainties": {},  # {function_name: [avg_uncertainty_per_event_count]}
-        "function_uncertainties_per_Q2": {},  # {function_key: [avg_unc_per_count]}
-        "parameter_uncertainties": [],  # [param_uncertainties_per_event_count]
-        "fixed_x_uncertainties": {},  # {x_value: {function: [uncertainties_per_event_count]}}
-        "laplace_available": laplace_model is not None,
-    }
-
-    # Set up fixed x values for tracking
-    if fixed_x_values is None:
-        fixed_x_values = (
-            [0.01, 0.1, 0.5] if problem == "simplified_dis" else [0.01, 0.1, 0.5]
-        )
-    for x_val in fixed_x_values:
-        scaling_results["fixed_x_uncertainties"][x_val] = {}
-
-    # Ensure Q2_slices is a list when provided; if not provided, set sensible defaults
-    if Q2_slices is None:
-        if problem == "realistic_dis":
-            Q2_slices = [2.0, 10.0, 50.0, 200.0]
-        elif problem in ["mceg", "mceg4dis"]:
-            Q2_slices = [2.0, 10.0, 50.0]
-        else:
-            Q2_slices = []
-    Q2_slices = list(Q2_slices)
-
-    print("Running uncertainty analysis for each event count...")
-
-    for i, num_events in enumerate(tqdm(event_counts, desc="Event counts")):
-        print(f"\n  📊 Event count: {num_events:,}")
-
-        # For MCEG we need canonical histogram edges computed from the true sample (same as plotting function)
-        if problem in ["mceg", "mceg4dis"]:
-            # ensure simulator is initialized with true params and sample once to get canonical hist edges
-            simulator.init(true_params.detach().cpu())
-            evts_true = simulator.sample(
-                true_params.detach().cpu(), int(num_events)
-            ).cpu()
-            # Build histogram on log-variables to get edges (same as collaborator code)
-            hist_true = np.histogram2d(
-                np.log(evts_true[:, 0]), np.log(evts_true[:, 1]), bins=(nx, nQ2)
-            )
-            log_x_edges = hist_true[1]
-            log_Q2_edges = hist_true[2]
-            x_plot_log = log_x_edges[:-1]
-            Q2_centers = np.exp(0.5 * (log_Q2_edges[:-1] + log_Q2_edges[1:]))
-            # Map user-requested Q2_slices to closest Q2 bin indices (keep order)
-            Q2_indices = [int(np.argmin(np.abs(Q2_centers - q2))) for q2 in Q2_slices]
-        else:
-            # placeholders (not used)
-            log_x_edges = None
-            log_Q2_edges = None
-            x_plot_log = None
-            Q2_centers = None
-            Q2_indices = []
-
-        # Storage for this event count
-        function_uncertainties_this_count = {}
-        param_uncertainties_this_count = []
-        fixed_x_uncertainties_this_count = {x: {} for x in fixed_x_values}
-
-        # Run bootstrap analysis for this event count
-        bootstrap_params = []
-        bootstrap_pdfs = {}  # keys: 'up','down' or 'q_Q2_{val}' or 'mceg_Q2_{val}'
-
-        for j in tqdm(
-            range(n_bootstrap), desc=f"Bootstrap (N={num_events})", leave=False
-        ):
-            # Generate events with this count (for feature extraction)
-            with torch.no_grad():
-                xs = simulator.sample(true_params.detach().cpu(), int(num_events))
-                xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-
-                # Apply feature engineering based on problem type
-                if problem not in ["mceg", "mceg4dis"]:
-                    xs_tensor = advanced_feature_engineering(xs_tensor)
-                else:
-                    xs_tensor = log_feature_engineering(xs_tensor).float()
-
-                # Extract latent embedding
-                latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
-
-                # Get parameter prediction
-                if laplace_model is not None:
-                    mean_params, std_params = get_analytic_uncertainty(
-                        model, latent_embedding, laplace_model
-                    )
-                    predicted_params = mean_params.cpu().squeeze(0)  # [param_dim]
-                    param_std = std_params.cpu().squeeze(0)  # [param_dim]
-                else:
-                    with torch.no_grad():
-                        output = model(latent_embedding)
-                    if isinstance(output, tuple) and len(output) == 2:
-                        mean_params, logvars = output
-                        predicted_params = mean_params.cpu().squeeze(0)
-                        param_std = torch.exp(0.5 * logvars).cpu().squeeze(0)
-                    else:
-                        predicted_params = output.cpu().squeeze(0)
-                        param_std = torch.zeros_like(predicted_params)
-
-                bootstrap_params.append(predicted_params)
-
-                # --- simplified_dis & realistic_dis unchanged ---
-                if problem == "simplified_dis":
-                    x_vals = torch.linspace(1e-3, 1, 500)
-                    for fn_name in ["up", "down"]:
-                        fn = getattr(simulator, fn_name)
-                        # If Laplace analytic posterior is available and n_mc provided,
-                        # sample parameter posterior and form a median central curve per-bootstrap
-                        try:
-                            if laplace_model is not None and (
-                                n_mc is not None and int(n_mc) > 0
-                            ):
-                                # draw posterior samples using analytic conversion to Gaussian samples
-                                samples = get_gaussian_samples(
-                                    model,
-                                    latent_embedding,
-                                    n_samples=int(n_mc),
-                                    laplace_model=laplace_model,
-                                )
-                                # evaluate function for each sample and take median across theta
-                                fn_vals_list = []
-                                for si in range(samples.shape[0]):
-                                    theta_s = samples[si]
-                                    try:
-                                        simulator.init(theta_s.detach().cpu())
-                                    except Exception:
-                                        simulator.init(theta_s.detach().cpu().numpy())
-                                    vals = fn(x_vals).unsqueeze(0)
-                                    fn_vals_list.append(vals)
-                                if len(fn_vals_list) > 0:
-                                    fn_stack = torch.cat(
-                                        fn_vals_list, dim=0
-                                    )  # [n_mc, n_points]
-                                    central = (
-                                        torch.median(fn_stack, dim=0)
-                                        .values.detach()
-                                        .cpu()
-                                    )
-                                    bootstrap_pdfs.setdefault(fn_name, []).append(
-                                        central
-                                    )
-                                    continue
-                        except Exception:
-                            # fallback to MAP-style deterministic prediction below
-                            pass
-
-                        # Default (MAP / deterministic) behavior
-                        pdf_vals = fn(x_vals).detach().cpu()
-                        bootstrap_pdfs.setdefault(fn_name, []).append(pdf_vals)
-                        # fixed x storage
-                        for x_fixed in fixed_x_values:
-                            x_tensor = torch.tensor([x_fixed])
-                            pdf_at_x = fn(x_tensor).item()
-                            fixed_x_uncertainties_this_count[x_fixed].setdefault(
-                                fn_name, []
-                            ).append(pdf_at_x)
-
-                elif problem == "realistic_dis":
-                    x_vals = torch.linspace(1e-3, 0.9, 500)
-                    for Q2_fixed in Q2_slices:
-                        Q2_vals = torch.full_like(x_vals, Q2_fixed)
-                        q_vals = simulator.q(x_vals, Q2_vals).detach().cpu()
-                        q_key = f"q_Q2_{Q2_fixed}"
-                        bootstrap_pdfs.setdefault(q_key, []).append(q_vals)
-                        for x_fixed in fixed_x_values:
-                            x_tensor = torch.tensor([x_fixed])
-                            Q2_tensor = torch.tensor([Q2_fixed])
-                            q_at_x = simulator.q(x_tensor, Q2_tensor).item()
-                            fixed_x_uncertainties_this_count[x_fixed].setdefault(
-                                q_key, []
-                            ).append(q_at_x)
-
-                # --- MCEG: match earlier function's approach exactly (use sampling + hist)
-                elif problem in ["mceg", "mceg4dis"]:
-                    # initialize simulator to predicted params and sample predicted events
-                    simulator.init(predicted_params.detach().cpu())
-                    evts_pred = simulator.sample(
-                        predicted_params.detach().cpu(), int(num_events)
-                    ).cpu()
-                    reco_s, stat_s, hist_s = get_reco_stat(
-                        evts_pred, simulator.mceg
-                    )  # reco_s shape [nx, nQ2]
-                    # For each requested Q2 index, collect the reco curve across x
-                    for k_idx, q_idx in enumerate(Q2_indices):
-                        # skip if out of range
-                        if q_idx < 0 or q_idx >= reco_s.shape[1]:
-                            continue
-                        key = f"mceg_Q2_{Q2_slices[k_idx]}"
-                        curve = torch.tensor(reco_s[:, q_idx])  # length nx
-                        bootstrap_pdfs.setdefault(key, []).append(curve)
-                        # fixed-x: evaluate curve at nearest x bin to x_fixed
-                        x_centers = np.exp(
-                            0.5 * (hist_s[1][:-1] + hist_s[1][1:])
-                        )  # in x-space
-                        for x_fixed in fixed_x_values:
-                            ix = int(np.argmin(np.abs(x_centers - x_fixed)))
-                            val = float(reco_s[ix, q_idx])
-                            fixed_x_uncertainties_this_count[x_fixed].setdefault(
-                                key, []
-                            ).append(val)
-
-                else:
-                    raise ValueError(f"Unhandled problem type: {problem}")
-
-        # End bootstrap loop for this event count
-
-        # Convert bootstrap results to tensors and compute uncertainties
-        bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
-
-        # Parameter-level uncertainty
-        param_uncertainties_this_count = torch.std(bootstrap_params, dim=0).numpy()
-        scaling_results["parameter_uncertainties"].append(
-            param_uncertainties_this_count
-        )
-
-        # Function-level uncertainty: per-key -> std_at_x -> avg over x -> (if Q2-indexed) avg across requested Q2_slices
-        per_q2_aggregates = {}
-        for key, pdf_list in bootstrap_pdfs.items():
-            if len(pdf_list) == 0:
-                continue
-            # each pdf_list element is a 1D tensor (n_points)
-            pdf_stack = torch.stack(
-                [torch.as_tensor(p) for p in pdf_list]
-            )  # [n_bootstrap, n_points]
-            std_at_x = torch.std(pdf_stack, dim=0)  # std across bootstrap at each x
-            avg_std_over_x = float(std_at_x.mean().item())
-            scaling_results["function_uncertainties_per_Q2"].setdefault(key, []).append(
-                avg_std_over_x
-            )
-
-            # parse key
-            if key.startswith("q_Q2_") or key.startswith("mceg_Q2_"):
-                base = "q" if key.startswith("q_Q2_") else "mceg"
-                # extract Q2 value
-                Q2_val = float(key.split("_")[-1])
-                per_q2_aggregates.setdefault(base, {})[Q2_val] = avg_std_over_x
-            else:
-                # simplified functions
-                per_q2_aggregates.setdefault(key, {})[None] = avg_std_over_x
-
-        # Reduce per_q2_aggregates to canonical function uncertainties
-        for func_base, q2dict in per_q2_aggregates.items():
-            if any(k is not None for k in q2dict.keys()):
-                # Q2-indexed; average only over the requested Q2_slices that are present
-                collected = []
-                for qval in Q2_slices:
-                    if qval in q2dict:
-                        collected.append(q2dict[qval])
-                    else:
-                        # try approximate match
-                        for k in q2dict:
-                            if k is not None and abs(k - qval) < 1e-8:
-                                collected.append(q2dict[k])
-                                break
-                if len(collected) == 0:
-                    avg_across_q2 = float(np.mean(list(q2dict.values())))
-                else:
-                    avg_across_q2 = float(np.mean(collected))
-                name = f"{func_base}_avg_over_Q2"
-                scaling_results["function_uncertainties"].setdefault(name, []).append(
-                    avg_across_q2
-                )
-                function_uncertainties_this_count[name] = avg_across_q2
-            else:
-                # non-Q2 keyed functions (simplified_dis)
-                avg_std = list(q2dict.values())[0]
-                scaling_results["function_uncertainties"].setdefault(
-                    func_base, []
-                ).append(avg_std)
-                function_uncertainties_this_count[func_base] = avg_std
-
-        # Fixed x uncertainty
-        for x_val in fixed_x_values:
-            for func_key in fixed_x_uncertainties_this_count[x_val]:
-                values = fixed_x_uncertainties_this_count[x_val][func_key]
-                uncertainty = float(np.std(values))
-                scaling_results["fixed_x_uncertainties"][x_val].setdefault(
-                    func_key, []
-                ).append(uncertainty)
-
-        print(f"    Parameter uncertainties: {param_uncertainties_this_count}")
-        print(
-            f"    Function uncertainties (averaged over Q2 where relevant): {function_uncertainties_this_count}"
-        )
-
-    print("\n📈 Creating uncertainty scaling plots...")
-
-    # ---------- PLOTTING (kept consistent with previous function) ----------
-    # Plot 1: Overall uncertainty scaling (log-log)
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-
-    # Parameter uncertainty scaling
-    param_uncertainties_arr = np.array(
-        scaling_results["parameter_uncertainties"]
-    )  # [n_event_counts, n_params]
-
-    for i, param_name in enumerate(param_names):
-        uncertainties = param_uncertainties_arr[:, i]
-        ax1.loglog(
-            event_counts,
-            uncertainties,
-            "o-",
-            label=param_name,
-            linewidth=2,
-            markersize=6,
-        )
-
-    # Add theoretical 1/sqrt(N) scaling line using the first parameter as reference
-    ref_unc = param_uncertainties_arr[0, 0]
-    theoretical_scaling = ref_unc * np.sqrt(event_counts[0] / np.array(event_counts))
-    ax1.loglog(
-        event_counts,
-        theoretical_scaling,
-        "k--",
-        alpha=0.7,
-        linewidth=2,
-        label=r"$\propto 1/\sqrt{N}$ (theoretical)",
-    )
-
-    ax1.set_xlabel("Number of Events")
-    ax1.set_ylabel("Parameter Uncertainty (std)")
-    ax1.set_title("Parameter Uncertainty vs. Event Count")
-    ax1.grid(True, alpha=0.3)
-    ax1.legend()
-
-    # Function uncertainty scaling
-    # Sanitize uncertainties: remove non-finite entries and drop functions with no finite data
-    sanitized_funcs = {}
-    for fname, vals in scaling_results["function_uncertainties"].items():
-        arr = np.array(vals, dtype=float)
-        # replace inf with nan
-        arr[~np.isfinite(arr)] = np.nan
-        if np.any(np.isfinite(arr)):
-            sanitized_funcs[fname] = arr.tolist()
-        else:
-            print(
-                f"[debug] Dropping function '{fname}' from scaling plot (no finite uncertainties)"
-            )
-
-    func_names = list(sanitized_funcs.keys())
-    colors = plt.cm.tab10(np.linspace(0, 1, max(1, len(func_names))))
-    for idx, func_name in enumerate(func_names):
-        uncertainties = np.array(sanitized_funcs[func_name], dtype=float)
-        mask = np.isfinite(uncertainties)
-        if not np.any(mask):
-            continue
-        xvals = np.array(event_counts)[mask]
-        yvals = uncertainties[mask]
-        ax2.loglog(
-            xvals,
-            yvals,
-            "o-",
-            color=colors[idx % len(colors)],
-            label=func_name,
-            linewidth=2,
-            markersize=6,
-        )
-
-    # Add theoretical scaling line for functions if we have at least one function with entries
-    if func_names:
-        first_func_uncertainties = scaling_results["function_uncertainties"][
-            func_names[0]
-        ]
-        if len(first_func_uncertainties) > 0:
-            ref_f_unc = first_func_uncertainties[0]
-            theoretical_func_scaling = ref_f_unc * np.sqrt(
-                event_counts[0] / np.array(event_counts)
-            )
-            ax2.loglog(
-                event_counts,
-                theoretical_func_scaling,
-                "k--",
-                alpha=0.7,
-                linewidth=2,
-                label=r"$\propto 1/\sqrt{N}$ (theoretical)",
-            )
-
-    ax2.set_xlabel("Number of Events")
-    ax2.set_ylabel("Function Uncertainty (avg std)")
-    ax2.set_title("Function Uncertainty vs. Event Count")
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-
-    plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "uncertainty_vs_events_scaling.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close(fig)
-
-    # Plot 2: Uncertainty at fixed x values
-    if fixed_x_values and scaling_results["fixed_x_uncertainties"]:
-        n_x_vals = len(fixed_x_values)
-        fig, axes = plt.subplots(1, n_x_vals, figsize=(5 * n_x_vals, 5))
-        if n_x_vals == 1:
-            axes = [axes]
-
-        for i, x_val in enumerate(fixed_x_values):
-            ax = axes[i]
-
-            for func_name, uncertainties in scaling_results["fixed_x_uncertainties"][
-                x_val
-            ].items():
-                if uncertainties:  # Check if we have data
-                    xvals = event_counts[: len(uncertainties)]
-                    ax.loglog(
-                        xvals,
-                        uncertainties,
-                        "o-",
-                        label=func_name,
-                        linewidth=2,
-                        markersize=6,
-                    )
-
-            # Add theoretical scaling
-            all_unc_lists = list(
-                scaling_results["fixed_x_uncertainties"][x_val].values()
-            )
-            if all_unc_lists:
-                first_unc_list = next(
-                    (lst for lst in all_unc_lists if len(lst) > 0), None
-                )
-                if first_unc_list:
-                    ref_unc = first_unc_list[0]
-                    theoretical = ref_unc * np.sqrt(
-                        event_counts[0] / np.array(event_counts)
-                    )
-                    ax.loglog(
-                        event_counts,
-                        theoretical,
-                        "k--",
-                        alpha=0.7,
-                        linewidth=2,
-                        label=r"$\propto 1/\sqrt{N}$",
-                    )
-
-            ax.set_xlabel("Number of Events")
-            ax.set_ylabel("Uncertainty at x")
-            ax.set_title(f"Uncertainty at x = {x_val}")
-            ax.grid(True, alpha=0.3)
-            ax.legend()
-
-        plt.tight_layout()
-        plt.savefig(
-            os.path.join(save_dir, "uncertainty_vs_events_fixed_x.png"),
-            dpi=300,
-            bbox_inches="tight",
-        )
-        plt.close(fig)
-
-    # Save detailed analysis
-    analysis_path = os.path.join(save_dir, "uncertainty_scaling_analysis.txt")
-    with open(analysis_path, "w") as f:
-        f.write("Uncertainty Quantification Scaling Analysis\n")
-        f.write("=" * 50 + "\n\n")
-        f.write(
-            "This analysis demonstrates the consistency of uncertainty quantification\n"
-        )
-        f.write(
-            "by showing how uncertainty bands shrink as the number of events increases.\n\n"
-        )
-        f.write(
-            "THEORY: For well-behaved statistical estimators, uncertainty should scale\n"
-        )
-        f.write(
-            "approximately as 1/√N where N is the number of data points (events).\n\n"
-        )
-        f.write(f"Configuration:\n")
-        f.write(f"Problem: {problem}\n")
-        f.write(f"True parameters: {true_params.cpu().numpy()}\n")
-        f.write(f"Event counts tested: {event_counts}\n")
-        f.write(f"Bootstrap samples per count: {n_bootstrap}\n")
-        f.write(
-            f"Laplace uncertainty: {'Available' if laplace_model is not None else 'Not available'}\n\n"
-        )
-
-        f.write("Parameter Uncertainty Results:\n")
-        f.write("-" * 30 + "\n")
-        for i, param_name in enumerate(param_names):
-            f.write(f"{param_name}:\n")
-            uncertainties = (
-                param_uncertainties_arr[:, i]
-                if "param_uncertainties_arr" in locals()
-                else np.array(scaling_results["parameter_uncertainties"])[:, i]
-            )
-            for j, (count, unc) in enumerate(zip(event_counts, uncertainties)):
-                f.write(f"  {count:>8,} events: {unc:.6f}\n")
-            # fit only if enough points
-            if len(uncertainties) >= 2:
-                log_counts = np.log(event_counts)
-                log_uncertainties = np.log(uncertainties)
-                slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-                f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
-                f.write(
-                    f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n"
-                )
-            else:
-                f.write("  Not enough points to fit scaling exponent.\n\n")
-
-        f.write(
-            "Function Uncertainty Results (averaged over requested Q2 slices when applicable):\n"
-        )
-        f.write("-" * 30 + "\n")
-        for func_name, uncertainties in scaling_results[
-            "function_uncertainties"
-        ].items():
-            f.write(f"{func_name}:\n")
-            for count, unc in zip(event_counts[: len(uncertainties)], uncertainties):
-                f.write(f"  {count:>8,} events: {unc:.6f}\n")
-            if len(uncertainties) >= 2:
-                log_counts = np.log(event_counts[: len(uncertainties)])
-                log_uncertainties = np.log(uncertainties)
-                slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-                f.write(f"  Scaling exponent: {slope:.3f} (ideal: -0.5)\n")
-                f.write(
-                    f"  R² fit quality: {np.corrcoef(log_counts, log_uncertainties)[0,1]**2:.3f}\n\n"
-                )
-            else:
-                f.write("  Not enough points to fit scaling exponent.\n\n")
-
-        if fixed_x_values:
-            f.write("Fixed X-Value Uncertainty Results:\n")
-            f.write("-" * 35 + "\n")
-            for x_val in fixed_x_values:
-                f.write(f"At x = {x_val}:\n")
-                for func_name, uncertainties in scaling_results[
-                    "fixed_x_uncertainties"
-                ][x_val].items():
-                    if uncertainties:
-                        f.write(f"  {func_name}:\n")
-                        for count, unc in zip(
-                            event_counts[: len(uncertainties)], uncertainties
-                        ):
-                            f.write(f"    {count:>8,} events: {unc:.6f}\n")
-                        if len(uncertainties) >= 2:
-                            log_counts = np.log(event_counts[: len(uncertainties)])
-                            log_uncertainties = np.log(uncertainties)
-                            slope, intercept = np.polyfit(
-                                log_counts, log_uncertainties, 1
-                            )
-                            f.write(
-                                f"    Scaling exponent: {slope:.3f} (ideal: -0.5)\n\n"
-                            )
-                        else:
-                            f.write(
-                                "    Not enough points to fit scaling exponent.\n\n"
-                            )
-
-        f.write("INTERPRETATION:\n")
-        f.write(
-            "- Scaling exponents close to -0.5 indicate proper statistical behavior\n"
-        )
-        f.write("- R² values close to 1.0 indicate consistent power-law scaling\n")
-        f.write(
-            "- Deviations may indicate systematic effects or insufficient bootstrap samples\n"
-        )
-        f.write(
-            "- This analysis validates the consistency of the uncertainty quantification method\n"
-        )
-
-    print(f"✅ Uncertainty scaling analysis complete! Results saved to {save_dir}")
-    print(f"   📊 Main scaling plot: uncertainty_vs_events_scaling.png")
-    if fixed_x_values:
-        print(f"   📍 Fixed x analysis: uncertainty_vs_events_fixed_x.png")
-    print(f"   📄 Detailed analysis: uncertainty_scaling_analysis.txt")
-
-    return scaling_results
-
-
-def plot_uncertainty_at_fixed_x(
-    scaling_results, x_values=None, save_dir=None, comparison_functions=None
-):
-    """
-    Create detailed plots showing uncertainty at specific x values as a function
-    of the number of events.
-
-    This function takes the results from plot_uncertainty_vs_events and creates
-    focused visualizations of how uncertainty behaves at specific x-coordinates.
-    This is particularly useful for understanding if uncertainty scaling is
-    consistent across different regions of the PDF.
-
-    Args:
-        scaling_results: Results dictionary from plot_uncertainty_vs_events
-        x_values: List of x values to plot (uses those from scaling_results if None)
-        save_dir: Directory to save plots (uses scaling_results save_dir if None)
-        comparison_functions: List of function names to compare (optional)
-
-    Returns:
-        None (saves plots to save_dir)
-
-    Saves:
-        - uncertainty_fixed_x_comparison.png: Comparison across functions at each x
-        - uncertainty_fixed_x_scaling_quality.png: Quality metrics for scaling fits
-
-    Example Usage:
-        # After running plot_uncertainty_vs_events
-        scaling_results = plot_uncertainty_vs_events(...)
-
-        # Create detailed fixed-x analysis
-        plot_uncertainty_at_fixed_x(
-            scaling_results=scaling_results,
-            x_values=[0.01, 0.1, 0.5],
-            comparison_functions=['up', 'down']  # for simplified_dis
-        )
-    """
-    import os
-
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    if "fixed_x_uncertainties" not in scaling_results:
-        print("⚠️  No fixed x uncertainty data found in scaling_results")
-        return
-
-    if save_dir is None:
-        save_dir = "./plots/scaling_analysis"  # fallback
-    os.makedirs(save_dir, exist_ok=True)
-
-    event_counts = scaling_results["event_counts"]
-    fixed_x_data = scaling_results["fixed_x_uncertainties"]
-
-    if x_values is None:
-        x_values = list(fixed_x_data.keys())
-
-    if not x_values:
-        print("⚠️  No x values to plot")
-        return
-
-    # Determine functions to plot
-    all_functions = set()
-    for x_val in x_values:
-        if x_val in fixed_x_data:
-            all_functions.update(fixed_x_data[x_val].keys())
-
-    if comparison_functions is not None:
-        all_functions = [f for f in comparison_functions if f in all_functions]
-    else:
-        all_functions = sorted(list(all_functions))
-
-    print(f"📍 Creating fixed-x uncertainty plots for x = {x_values}")
-    print(f"   Functions: {all_functions}")
-
-    # Plot 1: Uncertainty comparison at each x value
-    n_x = len(x_values)
-    fig, axes = plt.subplots(1, n_x, figsize=(5 * n_x, 5))
-    if n_x == 1:
-        axes = [axes]
-
-    colors = plt.cm.tab10(np.linspace(0, 1, len(all_functions)))
-
-    for i, x_val in enumerate(x_values):
-        ax = axes[i]
-
-        if x_val in fixed_x_data:
-            for j, func_name in enumerate(all_functions):
-                if func_name in fixed_x_data[x_val]:
-                    uncertainties = fixed_x_data[x_val][func_name]
-                    if uncertainties:
-                        ax.loglog(
-                            event_counts,
-                            uncertainties,
-                            "o-",
-                            color=colors[j],
-                            label=func_name,
-                            linewidth=2,
-                            markersize=6,
-                        )
-
-            # Add theoretical 1/sqrt(N) line
-            if fixed_x_data[x_val] and all_functions:
-                first_func = all_functions[0]
-                if (
-                    first_func in fixed_x_data[x_val]
-                    and fixed_x_data[x_val][first_func]
-                ):
-                    first_uncertainties = fixed_x_data[x_val][first_func]
-                    theoretical = first_uncertainties[0] * np.sqrt(
-                        event_counts[0] / np.array(event_counts)
-                    )
-                    ax.loglog(
-                        event_counts,
-                        theoretical,
-                        "k--",
-                        alpha=0.7,
-                        linewidth=2,
-                        label=r"$\propto 1/\sqrt{N}$",
-                    )
-
-        ax.set_xlabel("Number of Events")
-        ax.set_ylabel("Uncertainty")
-        ax.set_title(f"Uncertainty at x = {x_val}")
-        ax.grid(True, alpha=0.3)
-        ax.legend()
-
-    plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "uncertainty_fixed_x_comparison.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close(fig)
-
-    # Plot 2: Scaling quality metrics
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
-
-    # Compute scaling exponents and R² values
-    scaling_exponents = {}
-    r_squared_values = {}
-
-    for x_val in x_values:
-        if x_val in fixed_x_data:
-            scaling_exponents[x_val] = {}
-            r_squared_values[x_val] = {}
-
-            for func_name in all_functions:
-                if func_name in fixed_x_data[x_val] and fixed_x_data[x_val][func_name]:
-                    uncertainties = fixed_x_data[x_val][func_name]
-
-                    # Linear regression in log space
-                    log_counts = np.log(event_counts)
-                    log_uncertainties = np.log(uncertainties)
-                    slope, intercept = np.polyfit(log_counts, log_uncertainties, 1)
-                    r_squared = np.corrcoef(log_counts, log_uncertainties)[0, 1] ** 2
-
-                    scaling_exponents[x_val][func_name] = slope
-                    r_squared_values[x_val][func_name] = r_squared
-
-    # Plot scaling exponents
-    x_positions = np.arange(len(x_values))
-    width = 0.8 / len(all_functions) if all_functions else 0.8
-
-    for j, func_name in enumerate(all_functions):
-        exponents = [
-            scaling_exponents.get(x_val, {}).get(func_name, np.nan)
-            for x_val in x_values
-        ]
-        offset = (j - len(all_functions) / 2 + 0.5) * width
-        ax1.bar(
-            x_positions + offset,
-            exponents,
-            width,
-            label=func_name,
-            color=colors[j],
-            alpha=0.7,
-        )
-
-    ax1.axhline(
-        -0.5, color="red", linestyle="--", alpha=0.7, linewidth=2, label="Ideal (-0.5)"
-    )
-    ax1.set_xlabel("x value")
-    ax1.set_ylabel("Scaling Exponent")
-    ax1.set_title("Uncertainty Scaling Exponents")
-    ax1.set_xticks(x_positions)
-    ax1.set_xticklabels([f"{x:.2f}" for x in x_values])
-    ax1.legend()
-    ax1.grid(True, alpha=0.3, axis="y")
-
-    # Plot R² values
-    for j, func_name in enumerate(all_functions):
-        r_squared_vals = [
-            r_squared_values.get(x_val, {}).get(func_name, np.nan) for x_val in x_values
-        ]
-        offset = (j - len(all_functions) / 2 + 0.5) * width
-        ax2.bar(
-            x_positions + offset,
-            r_squared_vals,
-            width,
-            label=func_name,
-            color=colors[j],
-            alpha=0.7,
-        )
-
-    ax2.axhline(
-        1.0, color="red", linestyle="--", alpha=0.7, linewidth=2, label="Perfect (1.0)"
-    )
-    ax2.set_xlabel("x value")
-    ax2.set_ylabel("R² (Fit Quality)")
-    ax2.set_title("Scaling Fit Quality")
-    ax2.set_xticks(x_positions)
-    ax2.set_xticklabels([f"{x:.2f}" for x in x_values])
-    ax2.set_ylim(0, 1.1)
-    ax2.legend()
-    ax2.grid(True, alpha=0.3, axis="y")
-
-    plt.tight_layout()
-    plt.savefig(
-        os.path.join(save_dir, "uncertainty_fixed_x_scaling_quality.png"),
-        dpi=300,
-        bbox_inches="tight",
-    )
-    plt.close(fig)
-
-    print(f"✅ Fixed-x uncertainty analysis complete!")
-    print(f"   📊 Comparison plot: uncertainty_fixed_x_comparison.png")
-    print(f"   📈 Quality metrics: uncertainty_fixed_x_scaling_quality.png")
-
-
 def get_parameter_bounds_for_problem(problem):
     """
     Get parameter bounds for different problem types based on Dataset class definitions.
@@ -5282,7 +3778,7 @@ def get_parameter_bounds_for_problem(problem):
     Parameters:
     -----------
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+        Problem type ('simplified_dis', 'mceg')
 
     Returns:
     --------
@@ -5293,18 +3789,6 @@ def get_parameter_bounds_for_problem(problem):
     if problem == "simplified_dis":
         # From DISDataset class: [[0.0, 5]] * theta_dim for theta_dim=4
         return torch.tensor([[0.0, 5.0]] * 4)
-    elif problem == "realistic_dis":
-        # From RealisticDISDataset class
-        return torch.tensor(
-            [
-                [-2.0, 2.0],  # logA0
-                [-1.0, 1.0],  # delta
-                [0.0, 5.0],  # a
-                [0.0, 10.0],  # b
-                [-5.0, 5.0],  # c
-                [-5.0, 5.0],  # d
-            ]
-        )
     elif problem in ["mceg", "mceg4dis"]:
         # From MCEGDISDataset class
         return torch.tensor(
@@ -5315,20 +3799,9 @@ def get_parameter_bounds_for_problem(problem):
                 [-10.0, 10.0],
             ]
         )
-    elif problem == "gaussian":
-        # From Gaussian2DDataset class
-        return torch.tensor(
-            [
-                [-2.0, 2.0],  # mu_x
-                [-2.0, 2.0],  # mu_y
-                [0.5, 2.0],  # sigma_x
-                [0.5, 2.0],  # sigma_y
-                [-0.8, 0.8],  # rho
-            ]
-        )
     else:
         raise ValueError(
-            f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'realistic_dis', 'mceg', 'gaussian'"
+            f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'mceg'"
         )
 
 
@@ -5339,7 +3812,7 @@ def get_simulator_for_problem(problem, device=None):
     Parameters:
     -----------
     problem : str
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+        Problem type ('simplified_dis', 'mceg')
     device : torch.device, optional
         Device to run the simulator on
 
@@ -5348,29 +3821,16 @@ def get_simulator_for_problem(problem, device=None):
     simulator
         The appropriate simulator instance
     """
-    SimplifiedDIS, RealisticDIS, MCEGSimulator = get_simulator_module()
+    SimplifiedDIS, MCEGSimulator = get_simulator_module()
 
     if problem == "simplified_dis":
         if SimplifiedDIS is None:
             raise ImportError("Could not import SimplifiedDIS from simulator module")
         return SimplifiedDIS(device=device)
-    elif problem == "realistic_dis":
-        if RealisticDIS is None:
-            raise ImportError("Could not import RealisticDIS from simulator module")
-        return RealisticDIS(device=device, smear=True, smear_std=0.05)
     elif problem in ["mceg", "mceg4dis"]:
         if MCEGSimulator is None:
             raise ImportError("Could not import MCEGSimulator from simulator module")
         return MCEGSimulator(device=device)
-    elif problem == "gaussian":
-        try:
-            from simulator import Gaussian2DSimulator
-
-            return Gaussian2DSimulator(device=device)
-        except ImportError:
-            raise ImportError(
-                "Could not import Gaussian2DSimulator from simulator module"
-            )
     else:
         raise ValueError(f"Unknown problem type: {problem}")
 
@@ -5404,7 +3864,7 @@ def generate_parameter_error_histogram(
     Parameters:
     -----------
     model : torch.nn.Module
-        Trained inference model (InferenceNet)
+        Trained inference model
     pointnet_model : torch.nn.Module
         Trained PointNet model for latent extraction
     device : torch.device
@@ -5414,7 +3874,7 @@ def generate_parameter_error_histogram(
     n_events : int, default=10000
         Number of events to generate per parameter set via simulation
     problem : str, default='simplified_dis'
-        Problem type ('simplified_dis', 'realistic_dis', 'mceg', 'gaussian')
+        Problem type ('simplified_dis', 'mceg')
     laplace_model : optional
         Laplace approximation model for uncertainty quantification
     save_path : str, default="parameter_error_histogram.png"
@@ -5447,14 +3907,6 @@ def generate_parameter_error_histogram(
     ...     problem='simplified_dis',
     ...     save_path='simplified_dis_errors.png'
     ... )
-
-    >>> # With Laplace uncertainty
-    >>> generate_parameter_error_histogram(
-    ...     model, pointnet_model, device,
-    ...     laplace_model=laplace_model,
-    ...     problem='realistic_dis',
-    ...     save_path='realistic_dis_errors.png'
-    ... )
     """
     print(f"🎯 Starting parameter error histogram generation...")
     print(f"📊 Problem: {problem}")
@@ -5478,12 +3930,12 @@ def generate_parameter_error_histogram(
 
     # Get feature engineering function
     try:
-        advanced_feature_engineering = get_advanced_feature_engineering()
+        log_feature_engineering = get_log_feature_engineering()
         print(f"   ✅ Feature engineering function loaded")
     except Exception as e:
-        print(f"   ⚠️  Warning: Could not load advanced_feature_engineering: {e}")
+        print(f"   ⚠️  Warning: Could not load log_feature_engineering: {e}")
         print(f"       Using identity function as fallback")
-        advanced_feature_engineering = lambda x: x
+        log_feature_engineering = lambda x: x
 
     # Storage for results
     true_params_list = []
@@ -5538,7 +3990,7 @@ def generate_parameter_error_histogram(
             # Apply feature engineering
             try:
                 if problem == "simplified_dis":
-                    xs_engineered = advanced_feature_engineering(xs).float()
+                    xs_engineered = log_feature_engineering(xs).float()
                 else:
                     xs_engineered = log_feature_engineering(xs).float()
                 if not isinstance(xs_engineered, torch.Tensor):

@@ -6,6 +6,9 @@ from sbi.inference import MCABC, SNPE, simulate_for_sbi
 from sbi.utils.torchutils import BoxUniform
 from scipy.stats import wasserstein_distance
 
+np.random.seed(42)
+torch.manual_seed(42)
+
 # Try to import MCEG simulator
 try:
     from simulator import MCEGSimulator

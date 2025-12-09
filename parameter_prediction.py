@@ -14,6 +14,9 @@ import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
 
+np.random.seed(42)
+torch.manual_seed(42)
+
 # =============================================================================
 # CUDA MULTIPROCESSING FIX: Set spawn method before any CUDA operations
 # This prevents "Cannot re-initialize CUDA in forked subprocess" errors
@@ -48,7 +51,7 @@ except Exception:
     wandb = None
 from datasets import *
 from models import *
-from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
+from simulator import (MCEGSimulator,
                        SimplifiedDIS)
 from utils import *
 
@@ -88,7 +91,7 @@ def generate_precomputed_data_if_needed(
     to files with different parameters is performed.
 
     Args:
-        problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
+        problem: Problem type ('gaussian', 'simplified_dis', 'mceg')
         num_samples: Number of theta parameter samples
         num_events: Number of events per simulation
         n_repeat: Number of repeated simulations per theta
@@ -661,25 +664,6 @@ def create_train_val_datasets(args, rank, world_size, device):
                 simulator, val_samples, args.num_events, rank, world_size
             )
             input_dim = 6
-        elif args.problem == "realistic_dis":
-            simulator = RealisticDIS(device=device, smear=True, smear_std=0.05)
-            train_dataset = RealisticDISDataset(
-                simulator,
-                args.num_samples,
-                args.num_events,
-                rank,
-                world_size,
-                feature_engineering=log_feature_engineering,
-            )
-            val_dataset = RealisticDISDataset(
-                simulator,
-                val_samples,
-                args.num_events,
-                rank,
-                world_size,
-                feature_engineering=log_feature_engineering,
-            )
-            input_dim = 6
         elif args.problem == "mceg":
             simulator = MCEGSimulator(device=device)
             train_dataset = MCEGDISDataset(
@@ -697,15 +681,6 @@ def create_train_val_datasets(args, rank, world_size, device):
                 rank,
                 world_size,
                 feature_engineering=improved_feature_engineering,
-            )
-            input_dim = 2
-        elif args.problem == "gaussian":
-            simulator = Gaussian2DSimulator(device=device)
-            train_dataset = Gaussian2DDataset(
-                simulator, args.num_samples, args.num_events, rank, world_size
-            )
-            val_dataset = Gaussian2DDataset(
-                simulator, val_samples, args.num_events, rank, world_size
             )
             input_dim = 2
 

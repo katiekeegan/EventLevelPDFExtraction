@@ -12,6 +12,8 @@ in that file.
 import numpy as np
 import torch
 
+np.random.seed(42)
+torch.manual_seed(42)
 
 def collect_predicted_pdfs_simplified_dis(param_samples, device):
     """

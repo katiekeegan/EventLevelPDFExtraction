@@ -15,6 +15,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
+np.random.seed(42)
+torch.manual_seed(42)
 
 def parse_filename_parameters(filename: str) -> Optional[Dict[str, int]]:
     """
@@ -163,7 +165,7 @@ class PrecomputedDataset(Dataset):
 
         Args:
             data_dir: Directory containing .npz files OR path to a single .npz file
-            problem: Problem type ('gaussian', 'simplified_dis', 'realistic_dis', 'mceg')
+            problem: Problem type ('simplified_dis', 'mceg')
             shuffle: Whether to shuffle the dataset indices
             exact_ns: If specified, only load files with this exact num_samples
             exact_ne: If specified, only load files with this exact num_events

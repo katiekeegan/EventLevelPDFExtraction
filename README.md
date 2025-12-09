@@ -77,7 +77,7 @@ Notes:
 Two settings are supported:
 
 1) Proxy 1-D problem (events contain x only): `SimplifiedDIS` with 4-parameter ansatz [au, bu, ad, bd], events transformed to features. 
-2) Realistic 2-D problem (events contain (x, Q^2)): `RealisticDIS` and optional `MCEGSimulator` producing (x, Q^2) samples under a 4-parameter PDF ansatz.
+2) Realistic 2-D problem (events contain (x, Q^2)): `MCEGSimulator` producing (x, Q^2) samples under a 4-parameter PDF ansatz.
 
 - On-the-fly simulation: datasets sample θ uniformly within bounds and simulate `num_events` per θ, possibly repeated (n_repeat) for bootstraps.
 - Precomputed datasets: exact-matching `.npz` files can be generated and reused; training and validation datasets are separated.
@@ -147,10 +147,10 @@ MCEG or realistic DIS:
 
 ```bash
 # Realistic DIS (x, Q^2)
-python parameter_prediction.py --problem realistic_dis --num_events 100000 --latent_dim 512 --single_gpu
+python parameter_prediction.py --latent_dim=64 --num_events=10000 --num_samples=10000 --wandb --batch_size=64 --num_epochs=1000 --problem='simplified_dis' --use_precomputed
 
 # MCEG-based DIS (requires mceg4dis deps)
-python parameter_prediction.py --problem mceg --num_events 100000 --latent_dim 1024 --single_gpu
+python parameter_prediction.py --latent_dim=512 --num_events=10000 --num_samples=10000 --wandb --batch_size=32 --num_epochs=10000 --problem='mceg' --use_precomputed
 ```
 
 W&B logging:
@@ -175,14 +175,14 @@ python plotting_driver_UQ.py \
 - For MCEG-like problems use `--problem mceg4dis` (2D inputs); driver handles Q^2 slices and SBI overlays.
 - The driver attempts to load saved Laplace objects; if missing, it can fit a Laplace approx on extracted latents.
 
-Specific examples:
+Specific examples needed to reproduce the results in the paper:
 
 ```bash
-# Simplified DIS with analytic UQ (Laplace), plus SBI comparisons
-python plotting_driver_UQ.py --arch mlp --latent_dim 512 --param_dim 4 --problem simplified_dis --num_events 100000
+# Simplified DIS
+python plotting_driver_UQ.py --latent_dim=64 --num_events=10000 --num_samples=10000 --problem='simplified_dis' --arch='mlp'
 
-# MCEG4DIS (2D inputs: x, Q^2) with combined uncertainty plots and SBI overlays
-python plotting_driver_UQ.py --arch transformer --latent_dim 1024 --param_dim 4 --problem mceg4dis --num_events 100000
+# MCEG4DIS (2D inputs: x, Q^2)
+python plotting_driver_UQ.py --latent_dim=512 --num_events=10000 --num_samples=10000 --problem='mceg' --arch='mlp'
 ```
 
 Input/Output contract for plotting driver:
@@ -250,7 +250,7 @@ Typical defaults (informed by the provided SLURM jobs):
 
 Hyperparameters (see `parameter_prediction.py`) and practical values:
 - Flags: `--num_samples`, `--val_samples`, `--num_events`, `--num_repeat`, `--batch_size`, `--num_epochs`, `--lr`, `--latent_dim`, `--dataloader_workers`, `--use_precomputed`, `--single_gpu`.
-- Problems: `simplified_dis`, `realistic_dis`, `mceg`, `gaussian`.
+- Problems: `simplified_dis`, `mceg`, `gaussian`.
 - Typical values (from the job scripts): see the list above; adapt to your hardware.
 
 

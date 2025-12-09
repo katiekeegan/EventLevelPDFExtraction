@@ -8,127 +8,10 @@ import torch.optim as optim
 import torch.utils.data as data
 from torch.nn import MultiheadAttention
 from torch.nn.utils import spectral_norm as sn
+import numpy as np
 
-class InferenceNet(nn.Module):
-    def __init__(self, embedding_dim, output_dim=6, hidden_dim=512, nll_mode=False):
-        super().__init__()
-        self.nll_mode = nll_mode
-        self.output_dim = output_dim
-
-        # Shared network layers
-        self.shared_net = nn.Sequential(
-            nn.Linear(embedding_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-        )
-
-        if nll_mode:
-            # Separate heads for mean and log-variance
-            self.mean_head = nn.Linear(hidden_dim // 2, output_dim)
-            self.log_var_head = nn.Linear(hidden_dim // 2, output_dim)
-        else:
-            # Original single output head
-            self.output_head = nn.Linear(hidden_dim // 2, output_dim)
-
-        self._init_weights()
-
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode="fan_in", nonlinearity="relu")
-                nn.init.constant_(m.bias, 0)
-
-    def forward(self, z):
-        # Get shared features
-        features = self.shared_net(z)
-
-        if self.nll_mode:
-            # Return both means and log-variances
-            means = self.mean_head(features)
-            log_vars = self.log_var_head(features)
-            # Clamp log-variances for numerical stability
-            log_vars = torch.clamp(log_vars, min=-10, max=10)
-            return means, log_vars
-        else:
-            # Original behavior - return raw parameters
-            params = self.output_head(features)
-            return params
-
-# class PointNetPMA(nn.Module):
-#     def __init__(self, input_dim=2, latent_dim=64, hidden_dim=32, num_heads=2, num_seeds=4, predict_theta=True):
-#         super().__init__()
-#         self.input_dim = input_dim
-#         self.latent_dim = latent_dim
-#         self.hidden_dim = hidden_dim
-#         self.predict_theta = predict_theta
-#         self.num_seeds = num_seeds
-
-#         # Point-wise MLP encoder with residual
-#         self.mlp1 = nn.Sequential(
-#             nn.Linear(input_dim, hidden_dim),
-#             nn.ReLU(),
-#             nn.Linear(hidden_dim, hidden_dim),
-#         )
-#         self.mlp1_bn = nn.BatchNorm1d(hidden_dim)
-
-#         # Optional deeper point-wise processing
-#         self.mlp2 = nn.Sequential(
-#             nn.Linear(hidden_dim, hidden_dim),
-#             nn.ReLU(),
-#             nn.Linear(hidden_dim, hidden_dim),
-#         )
-#         self.mlp2_bn = nn.BatchNorm1d(hidden_dim)
-
-#         # Learnable seed vectors
-#         self.seed_vectors = nn.Parameter(torch.randn(1, num_seeds, hidden_dim))
-
-#         # Multihead attention pooling
-#         self.pma = nn.MultiheadAttention(embed_dim=hidden_dim, num_heads=num_heads, batch_first=True)
-
-#         # Latent projection
-#         self.latent_proj = nn.Sequential(
-#             nn.Linear(hidden_dim * num_seeds, latent_dim),
-#             nn.ReLU(),
-#             nn.Linear(latent_dim, latent_dim)
-#         )
-
-#         if predict_theta:
-#             self.theta_regressor = nn.Sequential(
-#                 nn.Linear(latent_dim, 128),
-#                 nn.ReLU(),
-#                 nn.Linear(128, 4)
-#             )
-
-#     def forward(self, x):
-#         B, N, D = x.shape
-
-#         # Point-wise feature extraction
-#         x = self.mlp1(x)
-#         x = self.mlp1_bn(x.transpose(1, 2)).transpose(1, 2)
-#         x = x + self.mlp2_bn(self.mlp2(x).transpose(1, 2)).transpose(1, 2)  # Residual
-
-#         # Seed vectors broadcast
-#         seed = self.seed_vectors.expand(B, -1, -1)
-
-#         # PMA: Query from seed, Key/Value from points
-#         attended, _ = self.pma(query=seed, key=x, value=x)  # (B, num_seeds, hidden_dim)
-
-#         # Flatten pooled output
-#         latent = self.latent_proj(attended.reshape(B, -1))
-
-#         if self.predict_theta:
-#             theta_hat = self.theta_regressor(latent)
-#             return latent, theta_hat
-#         return latent
-
+np.random.seed(42)
+torch.manual_seed(42)
 
 class SmallPointEncoder(nn.Module):
     """
@@ -424,19 +307,6 @@ class LatentToParamsNN(nn.Module):
         variance = torch.exp(log_var)
         # log_var = torch.tanh(self.fc_logvar(x)) * 5  # Keep within a reasonable range
         return mean, variance
-
-
-# class TransformerHead(nn.Module):
-#     def __init__(self, embedding_dim, out_dim, nhead=4, num_layers=2, dropout=0.1):
-#         super().__init__()
-#         self.embedding = nn.Linear(embedding_dim, 128)
-#         encoder_layer = nn.TransformerEncoderLayer(d_model=128, nhead=nhead, dropout=dropout)
-#         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
-#         self.fc = nn.Linear(128, out_dim)
-#     def forward(self, x):
-#         x = self.embedding(x).unsqueeze(0)
-#         x = self.transformer(x).squeeze(0)
-#         return self.fc(x)
 
 import torch
 import torch.nn as nn

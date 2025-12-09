@@ -20,6 +20,7 @@ from tqdm import tqdm
 from simulator import *
 
 # Ensure reproducibility
+np.random.seed(42)
 torch.manual_seed(42)
 # Set default device
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

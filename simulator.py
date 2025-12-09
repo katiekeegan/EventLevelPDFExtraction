@@ -8,6 +8,10 @@ import torch
 from scipy.integrate import fixed_quad, quad
 from torch.distributions import Distribution, Uniform
 from tqdm import tqdm
+from utils import log_feature_engineering
+
+np.random.seed(42)
+torch.manual_seed(42)
 
 # Try to import optional dependencies for advanced simulators
 try:
@@ -33,41 +37,6 @@ try:
     HAS_MCEG_DEPS = True
 except ImportError:
     HAS_MCEG_DEPS = False
-
-
-class Gaussian2DSimulator:
-    """
-    Unimodal 2D Gaussian simulator with 1D parameter vector input.
-    Parameter vector: [mu_x, mu_y, sigma_x, sigma_y, rho]
-    """
-
-    def __init__(self, device=None):
-        self.device = device or torch.device("cpu")
-
-    def sample(self, theta, n_events=1000):
-        """
-        theta: torch.tensor of shape (5,) -- [mu_x, mu_y, sigma_x, sigma_y, rho]
-        Returns: torch.tensor of shape (n_events, 2)
-        """
-        mu_x, mu_y, sigma_x, sigma_y, rho = theta
-        mean = torch.tensor([mu_x, mu_y], device=self.device)
-        cov = torch.tensor(
-            [
-                [sigma_x**2, rho * sigma_x * sigma_y],
-                [rho * sigma_x * sigma_y, sigma_y**2],
-            ],
-            device=self.device,
-        )
-        samples = torch.distributions.MultivariateNormal(mean, cov).sample((n_events,))
-        return samples
-
-    def f(self, x, theta):
-        """Evaluate function f(x|theta) for 1D marginal."""
-        mu_x, mu_y, sigma_x, sigma_y, rho = theta
-        # Return 1D marginal PDF for plotting
-        return torch.exp(-0.5 * ((x - mu_x) / sigma_x) ** 2) / (
-            sigma_x * torch.sqrt(2 * torch.tensor(torch.pi))
-        )
 
 
 class SimplifiedDIS:
@@ -172,90 +141,3 @@ def up(x, params):
 
 def down(x, params):
     return (x ** params[2]) * ((1 - x) ** params[3])
-
-
-def advanced_feature_engineering(xs_tensor):
-    # Basic features with clamping for numerical stability
-    xs_clamped = torch.clamp(xs_tensor, min=1e-8, max=1e8)
-    del xs_tensor
-    log_features = torch.log1p(xs_clamped)
-    symlog_features = torch.sign(xs_clamped) * torch.log1p(xs_clamped.abs())
-
-    # Pairwise features with vectorized operations
-    n_features = xs_clamped.shape[-1]
-    # del xs_tensor
-    combinations = torch.combinations(torch.arange(n_features), r=2)
-    i, j = combinations[:, 0], combinations[:, 1]
-    del combinations
-    # Safe division with clamping
-    ratio = xs_clamped[..., i] / (xs_clamped[..., j] + 1e-8)
-    ratio_features = torch.log1p(ratio.abs())
-    del ratio
-
-    diff_features = torch.log1p(xs_clamped[..., i]) - torch.log1p(xs_clamped[..., j])
-    del xs_clamped
-    data = torch.cat(
-        [log_features, symlog_features, ratio_features, diff_features], dim=-1
-    )
-    return data
-
-
-class RealisticDIS:
-    def __init__(self, device=None, smear=True, smear_std=0.05):
-        self.device = device or torch.device("cpu")
-        self.smear = smear
-        self.smear_std = smear_std
-        self.Q0_squared = 1.0  # GeV^2 reference scale
-        self.params = None
-
-    def __call__(self, params, nevents=1000):
-        return self.sample(params, nevents)
-
-    def init(self, params):
-        # Accepts raw list or tensor of 6 params: [logA0, delta, a, b, c, d]
-        p = torch.tensor(params, dtype=torch.float32, device=self.device)
-        self.logA0 = p[0]
-        self.delta = p[1]
-        self.a = p[2]
-        self.b = p[3]
-        self.c = p[4]
-        self.d = p[5]
-
-    def q(self, x, Q2):
-        A0 = torch.exp(self.logA0)
-        scale_factor = (Q2 / self.Q0_squared).clamp(min=1e-6)
-        A_Q2 = A0 * scale_factor**self.delta
-        shape = (
-            x.clamp(min=1e-6, max=1.0) ** self.a
-            * (1 - x.clamp(min=0.0, max=1.0)) ** self.b
-        )
-        poly = 1 + self.c * x + self.d * x**2
-        shape = shape * poly.clamp(min=1e-6)  # avoid negative polynomial tail
-        return A_Q2 * shape
-
-    def F2(self, x, Q2):
-        return x * self.q(x, Q2)
-
-    def sample(
-        self, params, n_events=1000, x_range=(1e-3, 0.9), Q2_range=(1.0, 1000.0)
-    ):
-        self.init(params)
-
-        # Sample x ~ Uniform, Q2 ~ LogUniform
-        x = (
-            torch.rand(n_events, device=self.device) * (x_range[1] - x_range[0])
-            + x_range[0]
-        )
-        logQ2 = torch.rand(n_events, device=self.device) * (
-            np.log10(Q2_range[1]) - np.log10(Q2_range[0])
-        ) + np.log10(Q2_range[0])
-        Q2 = 10**logQ2
-
-        f2 = self.F2(x, Q2)
-
-        if self.smear:
-            noise = torch.randn_like(f2) * (self.smear_std * f2)
-            f2 = f2 + noise
-            f2f = f2.clamp(min=1e-6)
-
-        return torch.stack([x, Q2, f2], dim=1)  # shape: [n_events, 3]

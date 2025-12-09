@@ -12,6 +12,9 @@ import os
 import numpy as np
 import torch
 
+np.random.seed(42)
+torch.manual_seed(42)
+
 try:
     from tqdm import tqdm
 except ImportError:
@@ -24,8 +27,7 @@ import warnings
 
 # Handle the MCEG import issue gracefully
 try:
-    from datasets import advanced_feature_engineering
-    from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
+    from simulator import (MCEGSimulator,
                            SimplifiedDIS)
     from utils import improved_feature_engineering, log_feature_engineering
 
@@ -144,17 +146,13 @@ def atomic_savez_compressed(filepath, **kwargs):
             f"[atomic_savez_compressed] PID {process_id}: Renamed {actual_tmpfile} to {filepath}"
         )
 
-
 def get_simulators_and_utils():
     """Get simulators and utility functions, falling back to minimal versions if needed."""
     if FULL_SIMULATORS_AVAILABLE:
         return (
-            Gaussian2DSimulator,
             SimplifiedDIS,
-            RealisticDIS,
             MCEGSimulator,
             log_feature_engineering,
-            advanced_feature_engineering,
         )
     else:
         raise RuntimeError("Full simulators not availabl. Aborting precomputed data generation.")
@@ -187,20 +185,6 @@ def generate_theta_samples(problem, num_samples, device):
             device=device,
         )
         theta_dim = 4
-    elif problem == "realistic_dis":
-        # [logA0, delta, a, b, c, d]
-        theta_bounds = torch.tensor(
-            [
-                [-2.0, 2.0],  # logA0
-                [-1.0, 1.0],  # delta
-                [0.0, 5.0],  # a
-                [0.0, 10.0],  # b
-                [-5.0, 5.0],  # c
-                [-5.0, 5.0],  # d
-            ],
-            device=device,
-        )
-        theta_dim = 6
     elif problem == "mceg":
         # MCEG parameters
         theta_bounds = torch.tensor(
@@ -230,23 +214,14 @@ def generate_data_for_problem(
 
     # Get appropriate simulators and utilities
     (
-        Gaussian2DSim,
         SimplifiedDISSim,
-        RealisticDISSim,
         MCEGSim,
-        log_feat_eng,
-        adv_feat_eng,
+        log_feat_eng
     ) = get_simulators_and_utils()
 
     # Create simulator
-    if problem == "gaussian":
-        simulator = Gaussian2DSim(device=device)
-        feature_engineering = None
-    elif problem == "simplified_dis":
+    if problem == "simplified_dis":
         simulator = SimplifiedDISSim(device=device)
-        feature_engineering = adv_feat_eng
-    elif problem == "realistic_dis":
-        simulator = RealisticDISSim(device=device, smear=True, smear_std=0.05)
         feature_engineering = log_feat_eng
     elif problem == "mceg":
         simulator = MCEGSim(device=device)
@@ -343,8 +318,8 @@ def main():
     parser.add_argument(
         "--problems",
         nargs="+",
-        default=["gaussian", "simplified_dis"],
-        choices=["gaussian", "simplified_dis", "realistic_dis", "mceg"],
+        default=["simplified_dis"],
+        choices=["simplified_dis", "mceg"],
         help="Problems to generate data for",
     )
     parser.add_argument(

@@ -17,9 +17,12 @@ from torch.utils.data import (DataLoader, Dataset, IterableDataset,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-from simulator import (Gaussian2DSimulator, MCEGSimulator, RealisticDIS,
-                       SimplifiedDIS, advanced_feature_engineering, down, up)
+from simulator import (MCEGSimulator, 
+                       SimplifiedDIS, down, up)
 from utils import log_feature_engineering
+
+np.random.seed(42)
+torch.manual_seed(42)
 
 
 def _as_numpy(x):
@@ -83,72 +86,6 @@ def _coerce_sample(arr, num_events, x_dim=None):
 
     return a.astype(np.float32)
 
-
-def sample_skewed_uniform(low, high, size, alpha=0.5, beta_param=1.0):
-    # Sample from Beta(α, β), which is defined on [0,1]
-    raw = beta.rvs(alpha, beta_param, size=size)
-    return low + (high - low) * raw
-
-class Gaussian2DDataset(IterableDataset):
-    def __init__(
-        self,
-        simulator,
-        num_samples,
-        num_events,
-        rank,
-        world_size,
-        theta_dim=5,  # mu_x, mu_y, sigma_x, sigma_y, rho
-        theta_bounds=None,
-        n_repeat=2,
-        feature_engineering=None,
-    ):
-        self.simulator = simulator
-        self.num_samples = num_samples // world_size
-        self.num_events = num_events
-        self.rank = rank
-        self.world_size = world_size
-        self.theta_dim = theta_dim
-        self.n_repeat = n_repeat
-
-        if theta_bounds is None:
-            # [mu_x, mu_y, sigma_x, sigma_y, rho]
-            self.theta_bounds = torch.tensor(
-                [
-                    [-2.0, 2.0],  # mu_x
-                    [-2.0, 2.0],  # mu_y
-                    [0.5, 2.0],  # sigma_x
-                    [0.5, 2.0],  # sigma_y
-                    [-0.8, 0.8],  # rho
-                ]
-            )
-        else:
-            self.theta_bounds = torch.tensor(theta_bounds)
-
-        self.feature_engineering = feature_engineering
-
-    def __iter__(self):
-        device = torch.device(
-            f"cuda:{self.rank}" if torch.cuda.is_available() else "cpu"
-        )
-        self.simulator.device = device
-        theta_bounds = self.theta_bounds.to(device)
-
-        for _ in range(self.num_samples):
-            theta = torch.rand(self.theta_dim, device=device)
-            theta = (
-                theta * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0]
-            )
-
-            xs = []
-            for _ in range(self.n_repeat):
-                x = self.simulator.sample(
-                    theta, self.num_events
-                )  # shape: [num_events, 2]
-                if self.feature_engineering is not None:
-                    x = self.feature_engineering(x)
-                xs.append(x.cpu())
-            yield theta.cpu(), torch.stack(xs)  # shape: [n_repeat, num_events, 2]
-
 def generate_data(
     num_samples,
     num_events,
@@ -162,17 +99,6 @@ def generate_data(
         simulator = SimplifiedDIS(device)
         theta_dim = 4  # [au, bu, ad, bd]
         ranges = [(0.0, 5.0), (0.0, 5.0), (0.0, 5.0), (0.0, 5.0)]
-    elif problem == "realistic_dis":
-        simulator = RealisticDIS(device)
-        theta_dim = 6
-        ranges = [
-            (-2.0, 2.0),  # logA0
-            (-1.0, 1.0),  # delta
-            (0.0, 5.0),  # a
-            (0.0, 10.0),  # b
-            (-5.0, 5.0),  # c
-            (-5.0, 5.0),  # d
-        ]
     elif problem == "mceg":
         simulator = MCEGSimulator(device)
         theta_dim = 4
@@ -180,11 +106,6 @@ def generate_data(
     else:
         raise ValueError(f"Unknown problem: {problem}")
 
-    # 2) Sample thetas (floats)
-    # thetas = np.column_stack([
-    #     sample_skewed_uniform(float(low), float(high), num_samples, alpha=1.0, beta_param=2.0)
-    #     for (low, high) in ranges
-    # ]).astype(np.float32)
     thetas = np.column_stack(
         [
             np.random.uniform(float(low), float(high), size=num_samples)
@@ -245,7 +166,7 @@ class DISDataset(IterableDataset):
         self.theta_bounds = torch.tensor([[0.0, 5]] * theta_dim)
         self.n_repeat = n_repeat
         self.theta_dim = theta_dim
-        self.feature_engineering = advanced_feature_engineering
+        self.feature_engineering = log_feature_engineering
 
     def __len__(self):
         return self.samples_per_rank
@@ -290,74 +211,6 @@ class DISDataset(IterableDataset):
                     break  # accepted
                 else:
                     tries += 1
-
-
-class RealisticDISDataset(IterableDataset):
-    def __init__(
-        self,
-        simulator,
-        num_samples,
-        num_events,
-        rank,
-        world_size,
-        theta_dim=6,
-        theta_bounds=None,
-        n_repeat=2,
-        feature_engineering=None,
-    ):
-        self.simulator = simulator
-        self.total_samples = num_samples
-        self.samples_per_rank = num_samples // world_size
-        self.num_events = num_events
-        self.rank = rank
-        self.world_size = world_size
-        self.theta_dim = theta_dim
-        self.n_repeat = n_repeat
-
-        if theta_bounds is None:
-            self.theta_bounds = torch.tensor(
-                [
-                    [-2.0, 2.0],
-                    [-1.0, 1.0],
-                    [0.0, 5.0],
-                    [0.0, 10.0],
-                    [-5.0, 5.0],
-                    [-5.0, 5.0],
-                ]
-            )
-        else:
-            self.theta_bounds = torch.tensor(theta_bounds)
-
-        self.feature_engineering = feature_engineering
-
-    def __iter__(self):
-        device = torch.device(
-            f"cuda:{self.rank}" if torch.cuda.is_available() else "cpu"
-        )
-        torch.cuda.set_device(device)
-        self.simulator.device = device
-
-        worker_info = torch.utils.data.get_worker_info()
-        worker_id = worker_info.id if worker_info else 0
-        seed = self.rank * 10000 + worker_id
-        torch.manual_seed(seed)
-        np.random.seed(seed)
-
-        theta_bounds = self.theta_bounds.to(device)
-
-        for _ in range(self.samples_per_rank):
-            theta = torch.rand(self.theta_dim, device=device)
-            theta = (
-                theta * (theta_bounds[:, 1] - theta_bounds[:, 0]) + theta_bounds[:, 0]
-            )
-
-            xs = []
-            for _ in range(self.n_repeat):
-                x = self.simulator.sample(theta, self.num_events)
-                xs.append(self.feature_engineering(x).cpu())
-
-            yield theta.cpu(), torch.stack(xs).cpu()
-
 
 class MCEGDISDataset(IterableDataset):
     def __init__(

@@ -13,7 +13,6 @@ Key Features:
 
 Problem Types Supported:
 - simplified_dis: Simplified DIS problem with 1D PDF inputs (x only)
-- realistic_dis: Realistic DIS problem with 2D PDF inputs (x, Q2)
 - mceg4dis: Monte Carlo Event Generator for DIS with 2D PDF inputs (x, Q2)
   * mceg4dis handles 2-dimensional PDF inputs (x and Q2) unlike simplified_dis
   * Uses the same underlying MCEG simulator as 'mceg' but with enhanced plotting support
@@ -51,13 +50,11 @@ from laplace.laplace import Laplace
 from datasets import *
 from models import *
 from plotting_UQ_utils import *
-# from PDF_learning import *
 from simulator import *
+from utils import *
 
-# from PDF_learning_UQ import *
-# from cnf import *
-
-
+np.random.seed(42)
+torch.manual_seed(42)
 
 # Set up matplotlib for high-quality plots
 plt.style.use("default")
@@ -225,7 +222,8 @@ def reload_pointnet(
     if problem not in ["mceg", "mceg4dis"]:
         xs_dummy = np.random.randn(100, 2)
         xs_dummy_tensor = torch.tensor(xs_dummy, dtype=torch.float32)
-        input_dim = advanced_feature_engineering(xs_dummy_tensor).shape[-1]
+        from utils import log_feature_engineering
+        input_dim = log_feature_engineering(xs_dummy_tensor).shape[-1]
     else:
         # For mceg/mceg4dis, determine input_dim based on log feature engineering
         # Create dummy 2D data (x, Q2) and apply the same feature engineering used in training
@@ -384,13 +382,13 @@ def main():
         "--param_dim",
         type=int,
         default=4,
-        help="Parameter dimension (4 for simplified_dis/mceg4dis, 6 for realistic_dis)",
+        help="Parameter dimension (4 for simplified_dis/mceg4dis)",
     )
     parser.add_argument(
         "--problem",
         type=str,
         default="simplified_dis",
-        help="Problem type: simplified_dis, realistic_dis, or mceg4dis (2D PDF inputs: x and Q2)",
+        help="Problem type: simplified_dis or mceg4dis (2D PDF inputs: x and Q2)",
     )
     parser.add_argument(
         "--nmodes",
@@ -484,11 +482,7 @@ def main():
     if args.true_params is not None:
         true_params = torch.tensor(args.true_params, dtype=torch.float32)
     else:
-        if args.problem == "realistic_dis":
-            true_params = torch.tensor(
-                [1.0, 0.1, 0.7, 3.0, 0.0, 0.0], dtype=torch.float32
-            )
-        elif args.problem in ["mceg", "mceg4dis"]:
+        if args.problem in ["mceg", "mceg4dis"]:
             true_params = torch.tensor(
                 [-7.10000000e-01, 3.48000000e00, 1.34000000e00, 2.33000000],
                 dtype=torch.float32,
@@ -790,11 +784,11 @@ def main():
                     if laplace_model is not None:
                         # Lazy imports from heavy plotting utils
                         from plotting_UQ_utils import (
-                            get_advanced_feature_engineering,
+                            get_log_feature_engineering,
                             get_gaussian_samples, get_simulator_module)
 
                         # Build a representative latent embedding from many events (same as other plotting routines)
-                        SimplifiedDIS_cls, RealisticDIS_cls, MCEGSimulator_cls = (
+                        SimplifiedDIS_cls, MCEGSimulator_cls = (
                             get_simulator_module()
                         )
                         simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
@@ -804,7 +798,7 @@ def main():
                             true_params.detach().cpu(), n_latent_events
                         )
                         xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-                        advanced_fe = get_advanced_feature_engineering()
+                        advanced_fe = get_log_feature_engineering()
                         if advanced_fe is not None:
                             xs_tensor = advanced_fe(xs_tensor)
                         latent = pointnet_model(xs_tensor.unsqueeze(0))
@@ -835,14 +829,14 @@ def main():
                 try:
                     # We'll generate a smaller bootstrap ensemble (at most 50 samples) to keep table computation cheap
                     from plotting_UQ_utils import (
-                        get_advanced_feature_engineering, get_gaussian_samples,
+                        get_log_feature_engineering, get_gaussian_samples,
                         get_simulator_module)
 
-                    SimplifiedDIS_cls, RealisticDIS_cls, MCEGSimulator_cls = (
+                    SimplifiedDIS_cls, MCEGSimulator_cls = (
                         get_simulator_module()
                     )
                     simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
-                    advanced_fe = get_advanced_feature_engineering()
+                    advanced_fe = get_log_feature_engineering()
                     n_boot_for_table = min(50, max(10, args.n_bootstrap))
                     x_grid = torch.linspace(0.01, 0.99, 100)
                     bootstrap_up = []
@@ -893,7 +887,7 @@ def main():
                         from plotting_UQ_helpers import \
                             compute_function_lotv_for_simplified_dis
 
-                        SimplifiedDIS_cls, RealisticDIS_cls, MCEGSimulator_cls = (
+                        SimplifiedDIS_cls, MCEGSimulator_cls = (
                             get_simulator_module()
                         )
                         simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
@@ -957,7 +951,7 @@ def main():
                         try:
                             from plotting_UQ_utils import get_simulator_module
 
-                            SimplifiedDIS_cls, RealisticDIS_cls, MCEGSimulator_cls = (
+                            SimplifiedDIS_cls, MCEGSimulator_cls = (
                                 get_simulator_module()
                             )
                             simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
@@ -996,17 +990,30 @@ def main():
                     except Exception:
                         results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
 
-                # Save table
+                # Save table: include SBI methods (SNPE, MCABC, Wasserstein MCABC) and Combined_LOTV
                 table_path = os.path.join(plot_dir, "function_UQ_metrics_table.tex")
+                sbi_plus_lotv = {
+                    # SBI ensembles
+                    "SNPE": results_dict.get("SNPE", {"pdfs_up": [], "pdfs_down": []}),
+                    "MCABC": results_dict.get("MCABC", {"pdfs_up": [], "pdfs_down": []}),
+                    "Wasserstein MCABC": results_dict.get("Wasserstein MCABC", {"pdfs_up": [], "pdfs_down": []}),
+                    # Combined LoTV decomposition (mean functions + scalar uncertainties)
+                    "Combined_LOTV": results_dict.get(
+                        "Combined_LOTV",
+                        {"mean_up": [], "mean_down": [], "unc_up": 0.0, "unc_down": 0.0},
+                    ),
+                    # Optional pooled combined (if present)
+                    "Combined": results_dict.get("Combined", {"pdfs_up": [], "pdfs_down": []}),
+                }
                 save_function_UQ_metrics_table_simplified_dis(
                     table_path,
                     true_params,
                     device,
-                    results_dict,
+                    sbi_plus_lotv,
                     aggregation=args.aggregation,
                 )
                 print(
-                    f"✓ Saved SBI + analytic/bootstrap function UQ metrics table: {table_path}"
+                    f"✓ Saved function UQ metrics table with SBI + Combined_LOTV: {table_path}"
                 )
                 # Also generate combined SBI + our-approach function error summary (relative errors)
                 try:
@@ -1131,21 +1138,72 @@ def main():
                 problem=args.problem,
                 save_path=plot_dir + "/function_errors.png",
             )
+        elif args.problem == "simplified_dis":
+            # Function error histogram for simplified_dis (prior-based error analysis)
+            try:
+                from plotting_UQ_utils import plot_function_error_histogram_simplified_dis
 
-        # # Enhanced event visualization with both views
-        # plot_event_histogram_simplified_DIS(
-        #     model, pointnet_model, true_params, device,
-        #     plot_type='both',  # Shows both scatter and 2D histogram
-        #     save_path="events_enhanced.png"
-        # )
+                print("🎯 Generating function error histogram for simplified_dis...")
+                # Sample parameter pairs from the prior for function-space error analysis
+                param_bounds = get_parameter_bounds_for_problem(args.problem)
+                n_error_samples = 100
+                
+                # Sample true parameters from prior
+                true_params_samples = []
+                for _ in range(n_error_samples):
+                    theta_sample = torch.tensor(
+                        [
+                            torch.distributions.Uniform(
+                                param_bounds[i, 0], param_bounds[i, 1]
+                            ).sample().item()
+                            for i in range(len(param_bounds))
+                        ],
+                        dtype=torch.float32,
+                    )
+                    true_params_samples.append(theta_sample)
 
-        from uq_plotting_demo import (plot_bootstrap_uncertainty,
-                                      plot_combined_uncertainty_decomposition,
-                                      plot_function_uncertainty,
-                                      plot_function_uncertainty_mceg,
+                # Generate predicted parameters for each sample
+                predicted_params_samples = []
+                for theta_true in true_params_samples:
+                    # Generate events from true parameters
+                    xs = simulator.sample(theta_true.detach().cpu(), args.num_events).to(
+                        device
+                    )
+                    xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+                    xs_tensor = get_log_feature_engineering()(xs_tensor)
+                    latent = pointnet_model(xs_tensor.unsqueeze(0))
+
+                    # Predict parameters
+                    with torch.no_grad():
+                        if laplace_model is not None:
+                            theta_pred, _ = get_analytic_uncertainty(
+                                model, latent, laplace_model
+                            )
+                            theta_pred = theta_pred.cpu().squeeze(0)
+                        else:
+                            theta_pred = model(latent).cpu().squeeze(0)
+                    predicted_params_samples.append(theta_pred)
+
+                # Compute and plot function error histograms (separate for up and down)
+                error_dict = plot_function_error_histogram_simplified_dis(
+                    true_params_list=true_params_samples,
+                    predicted_params_list=predicted_params_samples,
+                    save_path=os.path.join(plot_dir, "function_error_histogram.png"),
+                    device=device,
+                    nx=100,
+                    n_bins_hist=40,
+                )
+                print(f"✅ Saved function error histograms (up and down) to {plot_dir}/function_error_histogram.png")
+                print(f"   Up function errors: μ={np.mean(error_dict['up']):.4g}, σ={np.std(error_dict['up']):.4g}")
+                print(f"   Down function errors: μ={np.mean(error_dict['down']):.4g}, σ={np.std(error_dict['down']):.4g}")
+            except Exception as e:
+                print(
+                    f"⚠️ Could not generate function error histogram for simplified_dis: {e}"
+                )
+
+        from uq_plotting_demo import (plot_function_uncertainty_mceg,
                                       plot_parameter_uncertainty,
-                                      plot_pdf_uncertainty_mceg,
-                                      plot_uncertainty_scaling)
+                                      plot_pdf_uncertainty_mceg)
 
         print(f"🎯 Generating demonstration events for uncertainty plotting...")
         simulator = SimplifiedDIS(device=device)
@@ -1196,17 +1254,7 @@ def main():
                 save_dir=plot_dir,
                 mode="posterior",
             )
-            # # Also create PDF uncertainty plots (mean ± std across parameter samples)
-            # plot_pdf_uncertainty_mceg(
-            #     model=model,
-            #     pointnet_model=pointnet_model,
-            #     laplace_model=laplace_model,
-            #     true_params=true_params,
-            #     device=device,
-            #     num_events=args.num_events,
-            #     save_dir=plot_dir,
-            #     mode='posterior'
-            # )
+            
             plot_function_uncertainty_mceg(
                 model=model,
                 pointnet_model=pointnet_model,
@@ -1217,16 +1265,7 @@ def main():
                 save_dir=plot_dir,
                 mode="bootstrap",
             )
-            # plot_pdf_uncertainty_mceg(
-            #     model=model,
-            #     pointnet_model=pointnet_model,
-            #     laplace_model=laplace_model,
-            #     true_params=true_params,
-            #     device=device,
-            #     num_events=args.num_events,
-            #     save_dir=plot_dir,
-            #     mode='bootstrap'
-            # )
+            
             plot_function_uncertainty_mceg(
                 model=model,
                 pointnet_model=pointnet_model,
@@ -1237,16 +1276,6 @@ def main():
                 save_dir=plot_dir,
                 mode="combined",
             )
-            # plot_pdf_uncertainty_mceg(
-            #     model=model,
-            #     pointnet_model=pointnet_model,
-            #     laplace_model=laplace_model,
-            #     true_params=true_params,
-            #     device=device,
-            #     num_events=args.num_events,
-            #     save_dir=plot_dir,
-            #     mode='combined'
-            # )
             # Single combined+SBI overlay: show our combined curve together with SBI methods
             try:
                 print(
@@ -1268,129 +1297,6 @@ def main():
                 )
             except Exception as e:
                 print(f"⚠️ Failed to generate combined+SBI overlay plot: {e}")
-            # Additionally, generate function posterior plots for each SBI method using the loaded samples
-            try:
-                # print("🔁 Generating SBI-based function posterior plots for MCEG")
-                # # Ensure samples_snpe, samples_wass, samples_mmd are available
-                # plot_function_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_SNPE',
-                #     sbi_samples_list=[samples_snpe],
-                #     sbi_labels=['SNPE']
-                # )
-                # # Also generate PDF uncertainty plots for the SBI samples
-                # plot_pdf_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_SNPE',
-                #     sbi_samples_list=[samples_snpe],
-                #     sbi_labels=['SNPE']
-                # )
-                pass
-            except Exception as e:
-                print(f"⚠️ Could not generate SBI SNPE mceg plot: {e}")
-            try:
-                # plot_function_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_Wasserstein',
-                #     sbi_samples_list=[samples_wass],
-                #     sbi_labels=['Wasserstein']
-                # )
-                # plot_pdf_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_Wasserstein',
-                #     sbi_samples_list=[samples_wass],
-                #     sbi_labels=['Wasserstein']
-                # )
-                pass
-            except Exception as e:
-                print(f"⚠️ Could not generate SBI Wasserstein mceg plot: {e}")
-            try:
-                # plot_function_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_MMD',
-                #     sbi_samples_list=[samples_mmd],
-                #     sbi_labels=['MMD']
-                # )
-                # plot_pdf_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='sbi_MMD',
-                #     sbi_samples_list=[samples_mmd],
-                #     sbi_labels=['MMD']
-                # )
-                pass
-            except Exception as e:
-                print(f"⚠️ Could not generate SBI MMD mceg plot: {e}")
-            # Generate combined modes overlay (posterior, bootstrap, combined) at Q2=10
-            try:
-                # plot_pdf_uncertainty_mceg(
-                #     model=model,
-                #     pointnet_model=pointnet_model,
-                #     laplace_model=laplace_model,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='combined',
-                #     combined_plot_modes=True
-                # )
-                pass
-            except Exception as e:
-                print(f"⚠️ Could not generate combined modes PDF plot: {e}")
-
-            # Generate combined SBI overlay (SNPE, MCABC, MCABC-W) at Q2=10
-            try:
-                # plot_pdf_uncertainty_mceg(
-                #     model=None,
-                #     pointnet_model=None,
-                #     laplace_model=None,
-                #     true_params=true_params,
-                #     device=device,
-                #     num_events=args.num_events,
-                #     save_dir=plot_dir,
-                #     mode='combined',
-                #     sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                #     sbi_labels=['SNPE', 'Wasserstein', 'MCABC'],
-                #     combined_plot_sbi=True
-                # )
-                pass
-            except Exception as e:
-                print(f"⚠️ Could not generate combined SBI PDF plot: {e}")
             # Single combined-overlay plot: Combined (our pooled posterior+bootstrap) + all SBI methods
             try:
                 plot_pdf_uncertainty_mceg(
@@ -1410,63 +1316,6 @@ def main():
                 print(f"⚠️ Could not generate combined+SBI overlay plot: {e}")
         else:
             pass
-        #     plot_function_uncertainty(
-        #         model=model,
-        #         pointnet_model=pointnet_model,
-        #         laplace_model=laplace_model,
-        #         true_params=true_params,
-        #         device=device,
-        #         num_events=args.num_events,
-        #         problem=args.problem,
-        #         save_dir=plot_dir,
-        #         mode='posterior'
-        #     )
-        #     plot_function_uncertainty(
-        #         model=model,
-        #         pointnet_model=pointnet_model,
-        #         laplace_model=laplace_model,
-        #         true_params=true_params,
-        #         device=device,
-        #         num_events=args.num_events,
-        #         problem=args.problem,
-        #         save_dir=plot_dir,
-        #         mode='bootstrap'
-        #     )
-        #     plot_function_uncertainty(
-        #         model=model,
-        #         pointnet_model=pointnet_model,
-        #         laplace_model=laplace_model,
-        #         true_params=true_params,
-        #         device=device,
-        #         num_events=args.num_events,
-        #         problem=args.problem,
-        #         save_dir=plot_dir,
-        #         mode='combined'
-        #     )
-
-        # plot_bootstrap_uncertainty(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     laplace_model=laplace_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     num_events=args.num_events,
-        #     n_bootstrap=20,
-        #     problem=args.problem,
-        #     save_dir=plot_dir
-        # )
-
-        # plot_combined_uncertainty_decomposition(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     laplace_model=laplace_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     num_events=args.num_events,
-        #     n_bootstrap=20,
-        #     problem=args.problem,
-        #     save_dir=plot_dir
-        # )
 
         if args.problem not in ["mceg", "mceg4dis"]:
             plot_PDF_distribution_single_same_plot(
@@ -1557,55 +1406,7 @@ def main():
             problem=args.problem,
             save_dir=plot_dir,
         )
-        # scaling_results = plot_uncertainty_vs_events(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     event_counts=[100, 1000, 5000, 10000, 50000, 100000],
-        #     n_bootstrap=args.n_bootstrap,
-        #     problem=args.problem,
-        #     save_dir=plot_dir,
-        #     n_mc=args.n_mc,
-        #     # rng_seed passed through to ensure deterministic subsampling where used
-        #     Q2_slices=None
-        # )
-        # plot_uncertainty_scaling(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     laplace_model=laplace_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     event_counts=[1000, 5000, 10000, 50000, 100000],
-        #     n_bootstrap=20,
-        #     problem=args.problem,
-        #     save_dir=plot_dir,
-        #     mode='bootstrap'
-        # )
-        # plot_uncertainty_scaling(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     laplace_model=laplace_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     event_counts=[1000, 5000, 10000, 50000, 100000],
-        #     n_bootstrap=20,
-        #     problem=args.problem,
-        #     save_dir=plot_dir,
-        #     mode='parameter'
-        # )
-        # plot_uncertainty_scaling(
-        #     model=model,
-        #     pointnet_model=pointnet_model,
-        #     laplace_model=laplace_model,
-        #     true_params=true_params,
-        #     device=device,
-        #     event_counts=[1000, 5000, 10000, 50000, 100000],
-        #     n_bootstrap=20,
-        #     problem=args.problem,
-        #     save_dir=plot_dir,
-        #     mode='combined'
-        # )
+
         print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
 
 
