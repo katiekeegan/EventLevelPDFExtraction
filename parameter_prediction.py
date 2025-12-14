@@ -3,6 +3,7 @@ import glob
 import os
 import subprocess
 import sys
+from datetime import timedelta
 
 import numpy as np
 import torch
@@ -223,8 +224,6 @@ def train_joint(
         lr=lr,
         weight_decay=1e-4,
     )
-    scaler = torch.cuda.amp.GradScaler()
-    scheduler = optim.lr_scheduler.StepLR(opt, step_size=100, gamma=0.5)
 
     model.train()
     param_prediction_model.train()
@@ -328,39 +327,30 @@ def train_joint(
 
             # ---- forward/backward with AMP ----
             # with torch.cuda.amp.autocast():   # default dtype (fp16 on CUDA)
-            # compute normalized target
-            theta_norm = normalize_theta(theta)  # (B, D)
 
             emb = model(x_sets)  # (B*n_repeat, latent)
 
             # get raw model output (original units) and normalize it for loss
             raw_pred = param_prediction_model(emb)  # (B, D)  <-- raw in original units
-            predicted_theta = normalize_theta(raw_pred)  # (B, D) normalized
 
             # Compute unnormalized MSE directly in original units for exact proportionality
             # raw_pred is the model output in original theta units (before normalization)
             # Use mean over batch and parameter dims to match F.mse_loss behavior
-            unnormalized_loss = F.mse_loss(raw_pred, theta)
-
-            # For numerical stability and clarity we use the true unnormalized MSE as the optimization loss
-            loss = unnormalized_loss
+            loss = F.mse_loss(raw_pred, theta)
 
             # basic NaN/Inf check
             if not torch.isfinite(loss):
                 raise RuntimeError(f"Non-finite training loss detected: {loss}")
 
-            # scale, backward, unscale, clip, step
-            scaler.scale(loss).backward()
+            # backward, clip gradients, optimizer step
+            loss.backward()
 
-            # Unscale before clipping
-            scaler.unscale_(opt)
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             torch.nn.utils.clip_grad_norm_(
                 param_prediction_model.parameters(), max_norm=1.0
             )
 
-            scaler.step(opt)
-            scaler.update()
+            opt.step()
 
             total_train_loss += loss.item()
             num_train_batches += 1
@@ -396,9 +386,6 @@ def train_joint(
                 theta = theta.to(device)
                 theta = theta.repeat_interleave(n_repeat, dim=0)
 
-                # compute normalized target
-                theta_norm = normalize_theta(theta)  # (B, D)
-
                 # No autocast here — evaluate in FP32 for stability
                 emb = model(x_sets)
 
@@ -406,12 +393,10 @@ def train_joint(
                 raw_pred = param_prediction_model(
                     emb
                 )  # (B, D)  <-- raw in original units
-                predicted_theta = normalize_theta(raw_pred)  # (B, D) normalized
 
                 # Compute unnormalized MSE directly in original units for exact proportionality
-                unnormalized_val_loss = F.mse_loss(raw_pred, theta)
+                val_loss = F.mse_loss(raw_pred, theta)
                 # Use the unnormalized MSE as validation loss as well
-                val_loss = unnormalized_val_loss
                 if not torch.isfinite(val_loss):
                     raise RuntimeError(f"Non-finite val loss detected: {val_loss}")
 
@@ -433,7 +418,7 @@ def train_joint(
 
         # Logging
         print(
-            f"Epoch {epoch:03d} train_loss={avg_train_loss:.6g} val_loss={avg_val_loss:.6g}, unnormalized_train_loss={unnormalized_loss.item():.6g}, unnormalized_val_loss={unnormalized_val_loss.item():.6g}"
+            f"Epoch {epoch:03d} train_loss={avg_train_loss:.6g} val_loss={avg_val_loss:.6g}"
         )
 
         # Logging and checkpointing (only on rank 0)
@@ -460,8 +445,6 @@ def train_joint(
                         "epoch": epoch + 1,
                         "train_mse_loss": avg_train_loss,
                         "val_mse_loss": avg_val_loss,
-                        "train_unnormalized_mse_loss": unnormalized_loss.item(),
-                        "val_unnormalized_mse_loss": unnormalized_val_loss.item(),
                     }
 
                     # add list-style per-dim entries for W&B (good for charting)
@@ -553,7 +536,9 @@ def train_joint(
 def setup(rank, world_size):
     os.environ["MASTER_ADDR"] = "localhost"
     os.environ["MASTER_PORT"] = "12355"
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    # Increase timeout for precomputed data generation (default is 10min, we need more)
+    timeout = timedelta(minutes=30)  # 30 minutes should be enough for data generation
+    dist.init_process_group("nccl", rank=rank, world_size=world_size, timeout=timeout)
     torch.cuda.set_device(rank)
     torch.set_num_threads(1)
 
@@ -702,7 +687,7 @@ def main_worker(rank, world_size, args):
         device = torch.device("cpu")
 
     if args.experiment_name is None:
-        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+        args.experiment_name = f"{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_prediction"
 
     output_dir = os.path.join("experiments", args.experiment_name)
     os.makedirs(output_dir, exist_ok=True)
@@ -936,7 +921,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dataloader_workers",
         type=int,
-        default=1,
+        default=0,
         help="Number of DataLoader worker processes (use 0 to avoid multiprocessing issues)",
     )
     args = parser.parse_args()

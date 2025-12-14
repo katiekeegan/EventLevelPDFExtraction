@@ -92,19 +92,30 @@ plt.rcParams.update(
 )
 # Define colorblind-friendly color palette
 COLORBLIND_COLORS = {
-    "blue": "#1f77b4",
-    "orange": "#ff7f0e",
-    "green": "#2ca02c",
-    "red": "#d62728",
-    "purple": "#9467bd",
-    "brown": "#8c564b",
-    "pink": "#e377c2",
-    "gray": "#7f7f7f",
-    "olive": "#bcbd22",
-    "cyan": "#17becf",
-    "dark_blue": "#0c2c84",
-    "dark_orange": "#cc5500",
-    "dark_green": "#006400",
+    # Okabe-Ito palette: optimized for colorblind accessibility
+    # Works for red-green colorblindness, blue-yellow colorblindness, and grayscale
+    "blue": "#0173B2",
+    "orange": "#DE8F05",
+    "green": "#029E73",
+    "red": "#CC78BC",
+    "yellow": "#CA9161",
+    "gray": "#949494",
+    "black": "#ECE133",
+    # Extended palette for more colors when needed
+    "sky_blue": "#56B4E9",
+    "blueish_green": "#009E73",
+    "light_blue": "#86C4D0",
+    "light_orange": "#F0B555",
+    "light_gray": "#D0D0D0",
+    # Additional aliases for compatibility
+    "purple": "#CC78BC",
+    "brown": "#CA9161",
+    "pink": "#CC78BC",
+    "olive": "#029E73",
+    "cyan": "#0173B2",
+    "dark_blue": "#0173B2",
+    "dark_orange": "#DE8F05",
+    "dark_green": "#029E73",
 }
 # Enhanced color schemes for specific plot types
 UNCERTAINTY_COLORS = {
@@ -125,7 +136,7 @@ PDF_FUNCTION_COLORS = {
 # Import optional dependencies with fallbacks
 try:
     import umap.umap_ as umap
-except ImportError:
+except (ImportError, AttributeError):
     umap = None
 
 try:
@@ -785,246 +796,6 @@ def plot_params_distribution_single(
     plt.close(fig)
 
 
-def plot_PDF_distribution_single(
-    model,
-    pointnet_model,
-    true_params,
-    device,
-    n_mc=200,  # bump a bit if you like smoother quantiles
-    laplace_model=None,
-    problem="simplified_dis",
-    Q2_slices=None,
-    save_dir=None,
-    save_path="pdf_distribution.png",
-):
-    """
-    Create publication-ready PDF distribution plots with function-level uncertainty quantification.
-
-    This function generates beautiful, clear plots showing posterior uncertainty over predicted
-    functions (PDFs), providing more interpretable uncertainty visualization than parameter-only plots.
-
-    **ENHANCED APPROACH**: Uncertainty is computed over the predicted functions f(x), not just
-    parameter uncertainty. For each parameter sample θ drawn from the posterior, we evaluate
-    f(x|θ) at each x-point and then compute pointwise statistics (median, IQR) of the function values.
-
-    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation to generate event data
-    for latent extraction from true parameters. Results may vary between runs unless random
-    seeds are fixed. For reproducible latent extraction, prefer using precomputed data via
-    extract_latents_from_data() where possible.
-
-    Parameters:
-    -----------
-    model : torch.nn.Module
-        The parameter prediction model (head)
-    pointnet_model : torch.nn.Module
-        The PointNet feature extractor
-    true_params : torch.Tensor
-        True parameter values for comparison
-    device : torch.device
-        Device to run computations on
-    n_mc : int
-        Number of Monte Carlo samples for uncertainty estimation
-    laplace_model : object, optional
-        Fitted Laplace approximation object for analytic uncertainty
-    problem : str
-        Problem type ('simplified_dis', 'mceg')
-    Q2_slices : list of float, optional
-        Q² values for realistic_dis problem (ignored for simplified_dis)
-    save_dir : str, optional
-        Directory to save plots (if None, uses current directory)
-    save_path : str
-        Base name for saved plots
-
-    Returns:
-    --------
-    None
-        Saves publication-ready plots to specified paths
-
-    Method:
-    -------
-    1. Extract latent representation from events generated with true parameters (via simulation)
-    2. Sample parameters from posterior (Laplace if available, otherwise model intrinsic)
-    3. For each parameter sample θ_i: evaluate f(x|θ_i) at each x in evaluation grid
-    4. Compute pointwise median and quantiles of f(x) across all parameter samples
-    5. Plot uncertainty bands reflecting function uncertainty at each x-point
-
-    Features:
-    ---------
-    - Colorblind-friendly color palette
-    - Professional mathematical notation
-    - Clear uncertainty bands with IQR visualization
-    - Proper log-scale handling
-    - Statistical annotations and legends
-    """
-    model.eval()
-    pointnet_model.eval()
-
-    print(f"📊 Generating PDF distribution plot for {problem}")
-    print(f"🎲 Simulating events from true parameters for latent extraction")
-
-    # Get simulators with fallback
-    SimplifiedDIS, MCEGSimulator = get_simulator_module()
-    if problem in ["mceg", "mceg4dis"]:
-        simulator = MCEGSimulator(torch.device("cpu"))
-    else:
-        simulator = SimplifiedDIS(torch.device("cpu"))
-
-    log_feature_engineering = get_log_feature_engineering()
-
-    true_params = true_params.to(device)
-    xs = simulator.sample(true_params.detach().cpu(), 100000).to(device)
-    xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-    if problem not in ["mceg", "mceg4dis"]:
-        xs_tensor = log_feature_engineering(xs_tensor)
-    else:
-        from utils import log_feature_engineering
-
-        xs_tensor = log_feature_engineering(xs_tensor).float()
-    latent_embedding = pointnet_model(xs_tensor.unsqueeze(0))
-
-    # --- Enhanced Sampling Strategy ---
-    if laplace_model is not None:
-        samples = get_gaussian_samples(
-            model, latent_embedding, n_samples=n_mc, laplace_model=laplace_model
-        ).cpu()
-        uncertainty_method = "Laplace Posterior"
-        label_curve = "Median (Analytic Uncertainty)"
-        label_band = "IQR (Function Uncertainty)"
-    else:
-        samples = get_gaussian_samples(
-            model, latent_embedding, n_samples=n_mc, laplace_model=None
-        ).cpu()
-        uncertainty_method = "Monte Carlo"
-        label_curve = "Median (MC Uncertainty)"
-        label_band = "IQR (Function Uncertainty)"
-
-    if problem == "simplified_dis":
-        x_vals = torch.linspace(0.001, 1, 500).to(
-            device
-        )  # Start slightly above 0 for log scale
-
-        # Enhanced color scheme
-        function_colors = {
-            "up": COLORBLIND_COLORS["blue"],
-            "down": COLORBLIND_COLORS["orange"],
-        }
-
-        for fn_name, fn_label, _ in [("up", "u", None), ("down", "d", None)]:
-            color = function_colors[fn_name]
-
-            # Evaluate function for each sampled parameter vector
-            fn_vals_all = []
-            for i in range(samples.shape[0]):
-                simulator.init(samples[i])
-                fn = getattr(simulator, fn_name)
-                fn_vals_all.append(fn(x_vals).unsqueeze(0))
-
-            fn_stack = torch.cat(fn_vals_all, dim=0)  # [n_mc, 500]
-            median_vals = fn_stack.median(dim=0).values.detach().cpu()
-            lower_bounds = torch.quantile(fn_stack, 0.25, dim=0).detach().cpu()
-            upper_bounds = torch.quantile(fn_stack, 0.75, dim=0).detach().cpu()
-
-            # Additional confidence levels
-            p05_bounds = torch.quantile(fn_stack, 0.05, dim=0).detach().cpu()
-            p95_bounds = torch.quantile(fn_stack, 0.95, dim=0).detach().cpu()
-
-            # True curve
-            simulator.init(true_params.squeeze())
-            true_vals = getattr(simulator, fn_name)(x_vals).detach().cpu()
-
-            # Create enhanced plot
-            fig, ax = plt.subplots(figsize=(10, 7))
-
-            # Plot true function with enhanced styling
-            ax.plot(
-                x_vals.detach().cpu(),
-                true_vals,
-                label=rf"True ${fn_label}(x|\theta^*)$",
-                color=COLORBLIND_COLORS["dark_green"],
-                linewidth=3,
-                alpha=0.9,
-                zorder=3,
-            )
-
-            # Plot predicted median with enhanced styling
-            ax.plot(
-                x_vals.detach().cpu(),
-                median_vals,
-                linestyle="-",
-                label=rf"{label_curve} ${fn_label}(x)$",
-                color=color,
-                linewidth=2.5,
-                alpha=0.9,
-                zorder=2,
-            )
-
-            # Plot uncertainty bands with multiple confidence levels
-            ax.fill_between(
-                x_vals.detach().cpu(),
-                p05_bounds,
-                p95_bounds,
-                color=color,
-                alpha=0.15,
-                label="90% Confidence",
-                zorder=0,
-            )
-
-            ax.fill_between(
-                x_vals.detach().cpu(),
-                lower_bounds,
-                upper_bounds,
-                color=color,
-                alpha=0.3,
-                label="IQR (25%-75%)",
-                zorder=1,
-            )
-
-            # Enhanced axis styling
-            ax.set_xlabel(r"$x$", fontsize=20)
-            ax.set_ylabel(rf"${fn_label}(x|\theta)$", fontsize=20)
-            ax.set_xlim(1e-3, 1)
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.grid(True, which="both", linestyle=":", linewidth=0.5, alpha=0.3)
-            ax.tick_params(which="both", direction="in", labelsize=20)
-
-            # Enhanced legend
-            ax.legend(frameon=True, fancybox=True, shadow=True, fontsize=20, loc="best")
-
-            # Enhanced title with method information
-            ax.set_title(
-                f"PDF Function Uncertainty: {fn_name.title()} Distribution\n"
-                f"Method: {uncertainty_method} ({n_mc} samples)",
-                fontsize=20,
-                pad=20,
-                fontweight="bold",
-            )
-
-            # Add statistical information box
-            mean_error = torch.mean(torch.abs(median_vals - true_vals)).item()
-            max_error = torch.max(torch.abs(median_vals - true_vals)).item()
-            stats_text = f"Mean |Error|: {mean_error:.4f}\nMax |Error|: {max_error:.4f}"
-
-            ax.text(
-                0.02,
-                0.02,
-                stats_text,
-                transform=ax.transAxes,
-                verticalalignment="bottom",
-                fontsize=20,
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="white", alpha=0.8),
-            )
-
-            plt.tight_layout()
-            out_path = (
-                f"{save_dir}/{fn_name}_enhanced.png"
-                if save_dir
-                else f"{fn_name}_enhanced.png"
-            )
-            plt.savefig(out_path, dpi=300, bbox_inches="tight")
-            plt.close(fig)
-
-
 def plot_PDF_distribution_single_same_plot(
     model,
     pointnet_model,
@@ -1331,56 +1102,172 @@ def plot_function_error_histogram_simplified_dis(
             else:
                 errors_down[idx] = avg_error
 
-    # Create side-by-side histograms
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    # --- Compute NPE errors if available ---
+    npe_errors_up = np.array([])
+    npe_errors_down = np.array([])
+    try:
+        import pickle
+        import os
+        npe_path = "npe_posterior.pkl"
+        if os.path.exists(npe_path):
+            print(f"Loading NPE posterior from {npe_path}...")
+            with open(npe_path, "rb") as f:
+                posterior_npe = pickle.load(f)
+            
+            # Sample parameters from NPE for each true parameter
+            npe_errors_up_list = []
+            npe_errors_down_list = []
+            for idx in range(n_samples):
+                true_theta = torch.tensor(true_params_list[idx], dtype=torch.float32)
+                
+                # Generate observation from true parameters
+                xs = sim.sample(true_theta.detach().cpu(), 10000)
+                xs_tensor = torch.tensor(xs, dtype=torch.float32, device=torch.device("cpu"))
+                
+                # Get summary for NPE
+                try:
+                    from sbibm_benchmark import histogram_summary
+                    x_o_summary = histogram_summary(xs_tensor)
+                except Exception:
+                    continue
+                
+                # Sample from NPE posterior
+                try:
+                    npe_samples = posterior_npe.sample((1,), x=x_o_summary)
+                    pred_theta_npe = npe_samples[0]
+                except Exception:
+                    continue
+                
+                # Evaluate both u and d functions
+                for fn_idx, fn_name in enumerate(["up", "down"]):
+                    try:
+                        # True function
+                        sim.init(true_theta)
+                        fn_true = getattr(sim, fn_name)(x_grid).detach().cpu().numpy()
+                    except Exception:
+                        fn_true = np.full(nx, np.nan)
+                    
+                    try:
+                        # NPE predicted function
+                        sim.init(pred_theta_npe)
+                        fn_pred = getattr(sim, fn_name)(x_grid).detach().cpu().numpy()
+                    except Exception:
+                        fn_pred = np.full(nx, np.nan)
+                    
+                    # Compute absolute errors
+                    diff = np.abs(fn_true - fn_pred)
+                    mask = np.isfinite(diff)
+                    avg_error = float(np.nanmean(diff[mask])) if np.any(mask) else 0.0
+                    
+                    # Store in appropriate array
+                    if fn_idx == 0:
+                        npe_errors_up_list.append(avg_error)
+                    else:
+                        npe_errors_down_list.append(avg_error)
+            
+            npe_errors_up = np.array(npe_errors_up_list)
+            npe_errors_down = np.array(npe_errors_down_list)
+            print(f"✓ Computed NPE errors: {len(npe_errors_up)} samples")
+        else:
+            print(f"NPE posterior not found at {npe_path}, skipping NPE comparison")
+    except Exception as e:
+        print(f"Could not compute NPE errors: {e}")
+    
+    # Create side-by-side histograms (now with NPE overlay if available)
+    fig, axes = plt.subplots(1, 2, figsize=(20, 8))
 
     # Function names and properties
     func_data = [
         (errors_up, "up", r"$u(x)$", COLORBLIND_COLORS["blue"]),
         (errors_down, "down", r"$d(x)$", COLORBLIND_COLORS["orange"]),
     ]
+    npe_data = [npe_errors_up, npe_errors_down]
 
-    for ax, (errors, fn_name, fn_label, color) in zip(axes, func_data):
+    for ax, (errors, fn_name, fn_label, color), npe_errors in zip(axes, func_data, npe_data):
+        # Create log-spaced bins for better visualization
+        all_errors_combined = errors
+        if len(npe_errors) > 0:
+            all_errors_combined = np.concatenate([errors, npe_errors])
+        
+        # Ensure all values are positive for log spacing
+        min_err = np.min(all_errors_combined[all_errors_combined > 0]) if np.any(all_errors_combined > 0) else 1e-10
+        max_err = np.max(all_errors_combined)
+        log_bins = np.logspace(np.log10(min_err), np.log10(max_err), n_bins_hist + 1)
+        
         ax.hist(
             errors,
-            bins=n_bins_hist,
-            alpha=0.8,
+            bins=log_bins,
+            alpha=0.6,
             color=color,
             edgecolor="white",
             linewidth=0.8,
+            label="Ours",
         )
+        
+        # Overlay NPE histogram if available
+        if len(npe_errors) > 0:
+            ax.hist(
+                npe_errors,
+                bins=log_bins,
+                alpha=0.6,
+                color=COLORBLIND_COLORS["purple"],
+                edgecolor="white",
+                linewidth=0.8,
+                label="NPE",
+            )
+        
+        # Set log scale for x-axis
+        ax.set_xscale('log')
 
         mean_err = np.mean(errors)
         std_err = np.std(errors)
         median_err = np.median(errors)
 
-        # Add vertical lines for mean and median
+        # Add vertical lines for mean and median (Ours)
         ax.axvline(
             mean_err,
             color=COLORBLIND_COLORS["red"],
             linestyle="--",
-            linewidth=2.5,
-            label=f"Mean = {mean_err:.4g}",
+            linewidth=3,
+            label=f"Ours (Mean) = {mean_err:.4g}",
             alpha=0.9,
         )
         ax.axvline(
             median_err,
             color=COLORBLIND_COLORS["dark_green"],
             linestyle=":",
-            linewidth=2,
-            label=f"Median = {median_err:.4g}",
+            linewidth=3,
+            label=f"Ours (Median) = {median_err:.4g}",
             alpha=0.9,
         )
+        
+        # Add NPE median line if available
+        if len(npe_errors) > 0:
+            npe_median = np.median(npe_errors)
+            ax.axvline(
+                npe_median,
+                color=COLORBLIND_COLORS["purple"],
+                linestyle="-.",
+                linewidth=3,
+                label=f"NPE (Median) = {npe_median:.4g}",
+                alpha=0.9,
+            )
 
-        # Statistics text box
+        # Statistics text box (our method)
+        stats_text = f"Ours:\nμ = {mean_err:.4g}\nσ = {std_err:.4g}"
+        if len(npe_errors) > 0:
+            npe_mean = np.mean(npe_errors)
+            npe_std = np.std(npe_errors)
+            stats_text += f"\n\nNPE:\nμ = {npe_mean:.4g}\nσ = {npe_std:.4g}"
+        
         ax.text(
             0.98,
             0.97,
-            f"μ = {mean_err:.4g}\nσ = {std_err:.4g}",
+            stats_text,
             transform=ax.transAxes,
             verticalalignment="top",
             horizontalalignment="right",
-            fontsize=18,
+            fontsize=22,
             bbox=dict(
                 boxstyle="round,pad=0.5",
                 facecolor="white",
@@ -1391,24 +1278,30 @@ def plot_function_error_histogram_simplified_dis(
 
         # Axis labels and styling
         ax.set_xlabel(
-            f"Function Errors",
-            fontsize=16,
+            "Errors",
+            fontsize=24,
         )
-        ax.set_ylabel("Frequency", fontsize=16)
+        ax.set_ylabel("Frequency", fontsize=24)
         # ax.set_title(
         #     f"Function Error Distribution: {fn_label}",
         #     fontsize=18,
         #     fontweight="bold",
         # )
-        ax.tick_params(which="both", direction="in", labelsize=14)
-        ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5)
-        ax.legend(fontsize=16, loc="upper left", frameon=True, fancybox=True, shadow=True)
-
-        # Sparse x-ticks to avoid overlap
-        xmin, xmax = ax.get_xlim()
-        xticks = np.linspace(xmin, xmax, num=6)
-        ax.set_xticks(xticks)
-        ax.set_xticklabels([f"{t:.2g}" for t in xticks], fontsize=14)
+        ax.tick_params(which="both", direction="in", labelsize=22)
+        ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5, which="both")
+        ax.legend(fontsize=20, loc="upper left", frameon=True, fancybox=True, shadow=True)
+        
+        # Format x-axis labels with 10^x notation
+        from matplotlib.ticker import FuncFormatter
+        def log_formatter(x, pos):
+            if x <= 0:
+                return ''
+            exponent = np.log10(x)
+            if abs(exponent - round(exponent)) < 0.01:  # Close to integer power
+                return f'$10^{{{int(round(exponent))}}}$'
+            else:
+                return f'$10^{{{exponent:.1f}}}$'
+        ax.xaxis.set_major_formatter(FuncFormatter(log_formatter))
 
     # fig.suptitle(
     #     "Function Error Analysis: Simplified DIS (up and down separately)",
@@ -1942,6 +1835,19 @@ def plot_event_histogram_simplified_DIS(
         ax.grid(True, alpha=0.3, which="both")
         ax.tick_params(which="both", direction="in")
 
+    # Compute consistent axis limits for both scatter and histogram plots
+    x_min = min(np.min(true_events_np[:, 0]), np.min(generated_events_np[:, 0]))
+    x_max = max(np.max(true_events_np[:, 0]), np.max(generated_events_np[:, 0]))
+    y_min = min(np.min(true_events_np[:, 1]), np.min(generated_events_np[:, 1]))
+    y_max = max(np.max(true_events_np[:, 1]), np.max(generated_events_np[:, 1]))
+
+    # Add small margin in log space
+    x_margin = (np.log10(x_max) - np.log10(x_min)) * 0.05
+    y_margin = (np.log10(y_max) - np.log10(y_min)) * 0.05
+    
+    x_lim = [10**(np.log10(x_min) - x_margin), 10**(np.log10(x_max) + x_margin)]
+    y_lim = [10**(np.log10(y_min) - y_margin), 10**(np.log10(y_max) + y_margin)]
+
     # Plot scatter plots if requested
     if plot_type in ["scatter", "both"]:
         if plot_type == "both":
@@ -1959,6 +1865,8 @@ def plot_event_histogram_simplified_DIS(
             edgecolors="none",
         )
         setup_axes(ax_true_scat, r"$\Xi[\theta^{*}]$ (True) - Scatter", False)
+        ax_true_scat.set_xlim(x_lim)
+        ax_true_scat.set_ylim(y_lim)
 
         # Generated events scatter
         ax_gen_scat.scatter(
@@ -1970,6 +1878,8 @@ def plot_event_histogram_simplified_DIS(
             edgecolors="none",
         )
         setup_axes(ax_gen_scat, rf"$\Xi[\hat{{\theta}}]$ (Generated) - Scatter", True)
+        ax_gen_scat.set_xlim(x_lim)
+        ax_gen_scat.set_ylim(y_lim)
 
     # Plot 2D histograms if requested
     if plot_type in ["histogram", "both"]:
@@ -1978,21 +1888,12 @@ def plot_event_histogram_simplified_DIS(
         else:
             ax_true_hist_ax, ax_gen_hist_ax = ax_true, ax_gen
 
-        # Create log-spaced bins for better visualization
-        x_min = min(np.min(true_events_np[:, 0]), np.min(generated_events_np[:, 0]))
-        x_max = max(np.max(true_events_np[:, 0]), np.max(generated_events_np[:, 0]))
-        y_min = min(np.min(true_events_np[:, 1]), np.min(generated_events_np[:, 1]))
-        y_max = max(np.max(true_events_np[:, 1]), np.max(generated_events_np[:, 1]))
-
-        # Add small margin in log space
-        x_margin = (np.log10(x_max) - np.log10(x_min)) * 0.05
-        y_margin = (np.log10(y_max) - np.log10(y_min)) * 0.05
-
+        # Create log-spaced bins using the same limits as scatter plots
         x_bins = np.logspace(
-            np.log10(x_min) - x_margin, np.log10(x_max) + x_margin, bins
+            np.log10(x_lim[0]), np.log10(x_lim[1]), bins
         )
         y_bins = np.logspace(
-            np.log10(y_min) - y_margin, np.log10(y_max) + y_margin, bins
+            np.log10(y_lim[0]), np.log10(y_lim[1]), bins
         )
 
         # True events histogram
@@ -2008,6 +1909,8 @@ def plot_event_histogram_simplified_DIS(
             x_bins, y_bins, hist_true_masked, cmap="Blues", norm=colors.LogNorm(vmin=1)
         )
         setup_axes(ax_true_hist_ax, r"$\Xi[\theta^{*}]$ (True) - 2D Histogram", False)
+        ax_true_hist_ax.set_xlim(x_lim)
+        ax_true_hist_ax.set_ylim(y_lim)
 
         # Add colorbar for true events
         cbar_true = plt.colorbar(im_true, ax=ax_true_hist_ax, fraction=0.046, pad=0.04)
@@ -2029,6 +1932,8 @@ def plot_event_histogram_simplified_DIS(
         setup_axes(
             ax_gen_hist_ax, rf"$\Xi[\hat{{\theta}}]$ (Generated) - 2D Histogram", True
         )
+        ax_gen_hist_ax.set_xlim(x_lim)
+        ax_gen_hist_ax.set_ylim(y_lim)
 
         # Add colorbar for generated events
         cbar_gen = plt.colorbar(im_gen, ax=ax_gen_hist_ax, fraction=0.046, pad=0.04)
@@ -3018,297 +2923,6 @@ def plot_PDF_distribution_single_same_plot_mceg(
         f"✅ [MCEG4DIS] Generated: 2D histograms + Q² slices with log-scaled axes and error bars"
     )
 
-def plot_bootstrap_PDF_distribution(
-    model,
-    pointnet_model,
-    true_params,
-    device,
-    num_events,
-    n_bootstrap,
-    problem="simplified_dis",
-    save_dir=None,
-):
-    """
-    Bootstrap uncertainty visualization with function-level uncertainty focus.
-
-    **REFACTORED & UPDATED**: This function emphasizes uncertainty over the predicted PDF
-    functions f(x) at each x-point, complementing the main combined uncertainty
-    analysis but focusing specifically on data uncertainty via bootstrap resampling.
-
-    ⚠️  **REPRODUCIBILITY WARNING**: This function requires simulation for uncertainty
-    estimation (by design for bootstrap analysis). Each bootstrap sample generates
-    new simulated events to capture data uncertainty. Results may vary between runs
-    unless random seeds are fixed. For reproducible latent extraction in other
-    contexts, prefer functions that use precomputed data.
-
-    For each bootstrap sample:
-    - Generates independent event sets from true parameters via simulation
-    - Applies appropriate feature engineering based on problem type
-    - Extracts latent representations and predicts parameters
-    - Evaluates PDF functions f(x|θ) using predicted parameters
-    - Aggregates function values pointwise to compute uncertainty at each x
-
-    The uncertainty bands show variability in the predicted PDF functions due to
-    finite event samples (data uncertainty), providing interpretable confidence
-    intervals on the PDF predictions themselves.
-
-    Args:
-        model: Trained model head for parameter prediction
-        pointnet_model: Trained PointNet model for latent extraction
-        true_params: Fixed true parameter values [tensor of shape (param_dim,)]
-        device: Device to run computations on
-        num_events: Number of events per bootstrap sample
-        n_bootstrap: Number of bootstrap samples to generate
-        problem: Problem type ('simplified_dis', 'mceg')
-        save_dir: Directory to save plots (required)
-
-    Returns:
-        None (saves plots to save_dir)
-
-    Saves:
-        - bootstrap_pdf_median_up.png: u(x) with function-level uncertainty bands
-        - bootstrap_pdf_median_down.png: d(x) with function-level uncertainty bands
-        - bootstrap_pdf_Q2_{value}.png: q(x) at fixed Q2 with function uncertainty
-        - bootstrap_param_histograms.png: Parameter distribution histograms (diagnostic)
-
-    Example Usage:
-        # For simplified DIS problem with function-level uncertainty
-        plot_bootstrap_PDF_distribution(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=torch.tensor([2.0, 1.2, 2.0, 1.2]),
-            device=device,
-            num_events=100000,
-            n_bootstrap=50,
-            problem='simplified_dis',
-            save_dir='./plots/bootstrap'
-        )
-    """
-    if save_dir is None:
-        raise ValueError("save_dir must be specified for saving bootstrap plots")
-
-    import os
-
-    os.makedirs(save_dir, exist_ok=True)
-
-    print(f"🎯 Starting bootstrap PDF analysis with {n_bootstrap} samples...")
-    print(f"⚠️  Note: Bootstrap analysis requires simulation for uncertainty estimation")
-    print(
-        f"📊 Each bootstrap sample generates {num_events} new events for data uncertainty"
-    )
-
-    # Initialize simulator based on problem type
-    SimplifiedDIS, MCEGSimulator = get_simulator_module()
-
-    if problem == "simplified_dis":
-        if SimplifiedDIS is None:
-            raise ImportError(
-                "SimplifiedDIS not available - please install required dependencies"
-            )
-        simulator = SimplifiedDIS(device=torch.device("cpu"))
-        param_names = [r"$a_u$", r"$b_u$", r"$a_d$", r"$b_d$"]
-    elif problem in ["mceg", "mceg4dis"]:
-        if MCEGSimulator is None:
-            raise ImportError(
-                "MCEGSimulator not available - please install required dependencies"
-            )
-        simulator = MCEGSimulator(device=torch.device("cpu"))
-        param_names = [f"Param {i+1}" for i in range(len(true_params))]
-    else:
-        raise ValueError(
-            f"Unknown problem type: {problem}. Supported: 'simplified_dis', 'mceg', 'mceg4dis'"
-        )
-
-    model.eval()
-    pointnet_model.eval()
-    true_params = true_params.to(device)
-
-    # Storage for bootstrap results
-    bootstrap_params = []
-    bootstrap_pdfs = {}  # Will store PDFs for each function/Q2 slice
-
-    print("🔄 Generating bootstrap samples via simulation...")
-    print(
-        f"📈 This generates fresh simulated data for each of {n_bootstrap} bootstrap samples"
-    )
-    for i in range(n_bootstrap):
-        if (i + 1) % 10 == 0:
-            print(f"  ✓ Bootstrap sample {i+1}/{n_bootstrap}")
-
-        # Generate independent event set via simulation (required for bootstrap uncertainty)
-        with torch.no_grad():
-            # Generate events directly from simulator
-            xs = simulator.sample(true_params.detach().cpu(), num_events)
-            xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-
-            # Apply feature engineering based on problem type
-            log_feature_engineering = get_log_feature_engineering()
-            if problem not in ["mceg", "mceg4dis"]:
-                xs_tensor = log_feature_engineering(xs_tensor)
-            else:
-                # For mceg/mceg4dis, apply log feature engineering as used in training
-                from utils import log_feature_engineering
-
-                xs_tensor = log_feature_engineering(xs_tensor).float()
-
-            # Extract latent embedding using PointNet
-            latent = pointnet_model(xs_tensor.unsqueeze(0))
-
-            # Predict parameters from latent
-            predicted_params = model(latent).cpu().squeeze(0)  # [param_dim]
-            bootstrap_params.append(predicted_params)
-
-            # Compute PDFs for this parameter set
-            simulator.init(predicted_params.detach().cpu())
-
-            if problem == "simplified_dis":
-                # Compute up and down PDFs
-                x_vals = torch.linspace(1e-3, 1, 500)
-
-                for fn_name in ["up", "down"]:
-                    fn = getattr(simulator, fn_name)
-                    pdf_vals = fn(x_vals)
-
-                    if fn_name not in bootstrap_pdfs:
-                        bootstrap_pdfs[fn_name] = []
-                    bootstrap_pdfs[fn_name].append(pdf_vals.detach().cpu())
-
-    # Convert to tensors for easier manipulation
-    bootstrap_params = torch.stack(bootstrap_params)  # [n_bootstrap, param_dim]
-
-    for key in bootstrap_pdfs:
-        bootstrap_pdfs[key] = torch.stack(
-            bootstrap_pdfs[key]
-        )  # [n_bootstrap, n_points]
-
-    print("Computing statistics and creating plots...")
-
-    # Plot parameter histograms
-    n_params = bootstrap_params.shape[1]
-    fig, axes = plt.subplots(1, n_params, figsize=(4 * n_params, 4))
-    if n_params == 1:
-        axes = [axes]
-
-    for i in range(n_params):
-        predicted_vals = bootstrap_params[:, i].numpy()
-
-        # Plot histogram of predicted parameters
-        axes[i].hist(
-            predicted_vals,
-            bins=20,
-            alpha=0.6,
-            density=True,
-            color="skyblue",
-            label=f"Bootstrap Predictions",
-        )
-
-        # Add true value line
-        true_val = true_params[i].item()
-        axes[i].axvline(
-            true_val, color="red", linestyle="--", linewidth=2, label="True Value"
-        )
-
-        # Add statistics
-        mean_pred = np.mean(predicted_vals)
-        std_pred = np.std(predicted_vals)
-        axes[i].axvline(
-            mean_pred,
-            color="green",
-            linestyle=":",
-            linewidth=1.5,
-            label=f"Mean: {mean_pred:.3f}",
-        )
-
-        axes[i].set_title(
-            f"{param_names[i]}\nBias: {mean_pred - true_val:.3f}, Std: {std_pred:.3f}"
-        )
-        axes[i].set_xlabel("Parameter Value")
-        axes[i].set_ylabel("Density")
-        axes[i].legend(fontsize=8)
-        axes[i].grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, "bootstrap_param_histograms.png"), dpi=300)
-    plt.close(fig)
-
-    # Plot PDF distributions with uncertainty
-    if problem == "simplified_dis":
-        x_vals = torch.linspace(1e-3, 1, 500)
-
-        for fn_name, fn_label, color in [
-            ("up", "u", "royalblue"),
-            ("down", "d", "darkorange"),
-        ]:
-            if fn_name in bootstrap_pdfs:
-                pdf_stack = bootstrap_pdfs[fn_name]  # [n_bootstrap, n_points]
-
-                # Compute statistics
-                median_vals = torch.median(pdf_stack, dim=0).values
-                std_vals = torch.std(pdf_stack, dim=0)
-                lower_bounds = median_vals - std_vals
-                upper_bounds = median_vals + std_vals
-
-                # Compute true PDF
-                simulator.init(true_params.squeeze().cpu())
-                true_vals = getattr(simulator, fn_name)(x_vals)
-
-                # Create plot
-                fig, ax = plt.subplots(figsize=(8, 6))
-
-                # Plot true PDF
-                ax.plot(
-                    x_vals.numpy(),
-                    true_vals.numpy(),
-                    label=rf"True ${fn_label}(x|\theta^*)$",
-                    color=color,
-                    linewidth=2.5,
-                )
-
-                # Plot bootstrap median and uncertainty
-                ax.plot(
-                    x_vals.numpy(),
-                    median_vals.numpy(),
-                    linestyle="--",
-                    label=rf"Bootstrap Median ${fn_label}(x)$",
-                    color="crimson",
-                    linewidth=2,
-                )
-
-                ax.fill_between(
-                    x_vals.numpy(),
-                    lower_bounds.numpy(),
-                    upper_bounds.numpy(),
-                    color="crimson",
-                    alpha=0.3,
-                    label=rf"±1STD Function Uncertainty (Bootstrap)",
-                )
-
-                ax.set_xlabel(r"$x$")
-                ax.set_ylabel(rf"${fn_label}(x|\theta)$")
-                ax.set_xlim(1e-3, 1)
-                ax.set_xscale("log")
-                ax.grid(True, which="both", linestyle=":", linewidth=0.5)
-                ax.legend(frameon=False)
-                ax.set_title(
-                    f"Function-Level Bootstrap Uncertainty: {fn_name.title()} PDF\n({n_bootstrap} bootstrap samples)"
-                )
-
-                plt.tight_layout()
-                plt.savefig(
-                    os.path.join(save_dir, f"bootstrap_pdf_median_{fn_name}.png"),
-                    dpi=300,
-                )
-                plt.close(fig)
-
-    print(f"✅ Bootstrap analysis complete! Results saved to {save_dir}")
-    print(f"   - Generated {n_bootstrap} bootstrap samples")
-    print(f"   - Parameter histograms: bootstrap_param_histograms.png")
-    if problem == "simplified_dis":
-        print(
-            f"   - PDF plots: bootstrap_pdf_median_up.png, bootstrap_pdf_median_down.png"
-        )
-
-
 def plot_combined_uncertainty_PDF_distribution(
     model,
     pointnet_model,
@@ -3539,17 +3153,16 @@ def plot_combined_uncertainty_PDF_distribution(
     f_up_all = np.array(f_up_all)  # (N, n_x)
     f_down_all = np.array(f_down_all)
 
-    # Plot mean ± sqrt(total_var) per x for up/down
+    # Plot median with IQR bands (per-x aggregation) for up/down
     for fn_name, fn_label, color in [
         ("up", "u", "royalblue"),
         ("down", "d", "darkorange"),
     ]:
-        mean_key = f"mean_{fn_name}"
+        # Extract LoTV decomposition for per-x std curves
         total_key = f"total_var_{fn_name}"
         between_key = f"between_var_{fn_name}"
         within_key = f"avg_within_var_{fn_name}"
 
-        mean_vals = torch.tensor(lotv_results[mean_key], dtype=torch.float32)
         std_total = torch.tensor(lotv_results[total_key], dtype=torch.float32).sqrt()
         std_between = torch.tensor(lotv_results[between_key], dtype=torch.float32).sqrt()
         std_within = torch.tensor(lotv_results[within_key], dtype=torch.float32).sqrt()
@@ -3558,7 +3171,7 @@ def plot_combined_uncertainty_PDF_distribution(
         simulator.init(true_params.squeeze().cpu())
         true_curve = getattr(simulator, fn_name)(x_grid).detach().cpu().numpy()
 
-        fig, ax = plt.subplots(figsize=(10, 6))
+        fig, ax = plt.subplots(figsize=(10, 10))
         ax.plot(
             x_grid.detach().cpu().numpy(),
             true_curve,
@@ -3566,68 +3179,32 @@ def plot_combined_uncertainty_PDF_distribution(
             color=color,
             linewidth=2.5,
         )
-        ax.plot(
-            x_grid.detach().cpu().numpy(),
-            mean_vals.detach().cpu().numpy(),
-            linestyle="--",
-            label=rf"Mean ${fn_label}(x)$",
-            color="crimson",
-            linewidth=2,
-        )
 
-        # Prepare x and mean arrays
+        # Prepare x array for plotting
         x_np = x_grid.detach().cpu().numpy()
-        mean_np = mean_vals.detach().cpu().numpy()
-        # Percentile bands from empirical ensembles (5–95% and 25–75%)
+
+        # IQR bands and median from empirical ensembles
         if fn_name == "up" and f_up_all.size > 0:
-            p5 = np.nanpercentile(f_up_all, 5, axis=0)
             p25 = np.nanpercentile(f_up_all, 25, axis=0)
+            p50 = np.nanpercentile(f_up_all, 50, axis=0)
             p75 = np.nanpercentile(f_up_all, 75, axis=0)
-            p95 = np.nanpercentile(f_up_all, 95, axis=0)
-            ax.fill_between(
-                x_np, p5, p95, color="gray", alpha=0.15, label="5–95% (empirical)"
-            )
-            ax.fill_between(
-                x_np, p25, p75, color="gray", alpha=0.25, label="25–75% (empirical)"
-            )
+            ax.fill_between(x_np, p25, p75, color="gray", alpha=0.20)
+            ax.plot(x_np, p50, color="black", linestyle="-.", linewidth=1.5, label="Median (empirical)")
         if fn_name == "down" and f_down_all.size > 0:
-            p5 = np.nanpercentile(f_down_all, 5, axis=0)
             p25 = np.nanpercentile(f_down_all, 25, axis=0)
+            p50 = np.nanpercentile(f_down_all, 50, axis=0)
             p75 = np.nanpercentile(f_down_all, 75, axis=0)
-            p95 = np.nanpercentile(f_down_all, 95, axis=0)
-            ax.fill_between(
-                x_np, p5, p95, color="gray", alpha=0.15, label="5–95% (empirical)"
-            )
-            ax.fill_between(
-                x_np, p25, p75, color="gray", alpha=0.25, label="25–75% (empirical)"
-            )
-
-        # Combined bands: mean ± k * sqrt(total variance) for k=1,2,3 (LoTV total variance)
-        std_np = std_total.detach().cpu().numpy()
-
-        # Plot ±1σ, ±2σ, ±3σ with fading alpha
-        band_specs = [
-            (1.0, 0.30, r"$\pm\,1\sigma$"),
-            (2.0, 0.20, r"$\pm\,2\sigma$"),
-            (3.0, 0.10, r"$\pm\,3\sigma$"),
-        ]
-        for k, alpha, lbl in band_specs:
-            ax.fill_between(
-                x_np,
-                mean_np - k * std_np,
-                mean_np + k * std_np,
-                color="crimson",
-                alpha=alpha,
-                label=lbl,
-            )
+            ax.fill_between(x_np, p25, p75, color="gray", alpha=0.20)
+            ax.plot(x_np, p50, color="black", linestyle="-.", linewidth=1.5, label="Median (empirical)")
 
         ax.set_xlabel(r"$x$")
         ax.set_ylabel(rf"${fn_label}(x|\theta)$")
         ax.set_xlim(1e-3, 1)
         ax.set_xscale("log")
+        ax.set_yscale("log")
         ax.grid(True, which="both", linestyle=":", linewidth=0.5)
         ax.legend(frameon=False)
-        ax.set_title("Function-Space Combined Uncertainty (LoTV)")
+        # ax.set_title("Function-Space Combined Uncertainty (LoTV)")
 
         plt.tight_layout()
         plt.savefig(
@@ -3637,20 +3214,37 @@ def plot_combined_uncertainty_PDF_distribution(
         )
         plt.close(fig)
 
-        # Save per-x breakdown file
+        # Save per-x breakdown file with median and IQR
         breakdown_path = os.path.join(
             save_dir, f"function_uncertainty_lotv_breakdown_{fn_name}.txt"
         )
+        
+        # Compute median and IQR from empirical ensembles
+        if fn_name == "up" and f_up_all.size > 0:
+            median_vals = np.nanpercentile(f_up_all, 50, axis=0)
+            p25_vals = np.nanpercentile(f_up_all, 25, axis=0)
+            p75_vals = np.nanpercentile(f_up_all, 75, axis=0)
+        elif fn_name == "down" and f_down_all.size > 0:
+            median_vals = np.nanpercentile(f_down_all, 50, axis=0)
+            p25_vals = np.nanpercentile(f_down_all, 25, axis=0)
+            p75_vals = np.nanpercentile(f_down_all, 75, axis=0)
+        else:
+            median_vals = np.full(x_grid.numel(), np.nan)
+            p25_vals = np.full(x_grid.numel(), np.nan)
+            p75_vals = np.full(x_grid.numel(), np.nan)
+        
         with open(breakdown_path, "w") as f:
-            f.write(f"LoTV per-x breakdown for {fn_name}(x)\n")
+            f.write(f"LoTV per-x breakdown for {fn_name}(x) - Median and IQR aggregation\n")
             f.write("=" * 60 + "\n")
             f.write(
-                "Columns: x, mean(x), sqrt(total_var), sqrt(between_var), sqrt(avg_within_var)\n"
+                "Columns: x, median(x), IQR_25(x), IQR_75(x), sqrt(total_var), sqrt(between_var), sqrt(avg_within_var)\n"
             )
             for i in range(x_grid.numel()):
                 f.write(
                     f"{x_grid[i].item():.6e} "
-                    f"{mean_vals[i].item():.6e} "
+                    f"{median_vals[i]:.6e} "
+                    f"{p25_vals[i]:.6e} "
+                    f"{p75_vals[i]:.6e} "
                     f"{std_total[i].item():.6e} "
                     f"{std_between[i].item():.6e} "
                     f"{std_within[i].item():.6e}\n"
@@ -3667,17 +3261,16 @@ def plot_combined_uncertainty_PDF_distribution(
             std_total = np.sqrt(np.array(lotv_results[total_key]))
             std_between = np.sqrt(np.array(lotv_results[between_key]))
             std_within = np.sqrt(np.array(lotv_results[within_key]))
-            ax[j].plot(x_np, std_total, label="Total std (LoTV)", color="crimson")
-            ax[j].plot(x_np, std_between, label="Between std (boot)", color="teal")
-            ax[j].plot(x_np, std_within, label="AvgWithin std (LA)", color="purple")
-            scalar_unc = float(np.mean(std_total))
-            ax[j].set_title(f"{fn_name}: mean std = {scalar_unc:.3e}")
+            ax[j].plot(x_np, std_total, label="Total std. (LoTV)", color="crimson")
+            ax[j].plot(x_np, std_between, label="Between std. (bootstrapping)", color="teal")
+            ax[j].plot(x_np, std_within, label="AvgWithin std. (LA)", color="purple")
             ax[j].set_xscale("log")
             ax[j].set_xlim(1e-3, 1)
             ax[j].set_xlabel("x")
             ax[j].set_ylabel("std over f(x)")
             ax[j].grid(True, linestyle=":")
-            ax[j].legend(frameon=False)
+            if j == 0:
+                ax[j].legend(frameon=False)
         plt.tight_layout()
         plt.savefig(
             os.path.join(save_dir, "function_uncertainty_lotv_summary.png"),
@@ -3788,7 +3381,14 @@ def get_parameter_bounds_for_problem(problem):
     """
     if problem == "simplified_dis":
         # From DISDataset class: [[0.0, 5]] * theta_dim for theta_dim=4
-        return torch.tensor([[0.0, 5.0]] * 4)
+        return torch.tensor(
+            [
+                [-1.0, 0.0],
+                [0.0, 5.0],
+                [-1.0, 0.0],
+                [0.0, 5.0],
+            ]
+        )
     elif problem in ["mceg", "mceg4dis"]:
         # From MCEGDISDataset class
         return torch.tensor(
@@ -4262,6 +3862,7 @@ def plot_function_error_histogram_mceg(
     # Storage
     true_params_list = []
     predicted_params_list = []
+    observed_events_list = []  # Store observed events for NPE comparison
     per_draw_scalar_errors = []
     failed = 0
 
@@ -4464,6 +4065,7 @@ def plot_function_error_histogram_mceg(
                 else torch.tensor(true_params)
             )
             predicted_params_list.append(torch.tensor(inferred_theta_cpu))
+            observed_events_list.append(evts_true_np.copy())  # Store observed events
             per_draw_scalar_errors.append(draw_scalar)
 
         except Exception as e:
@@ -4497,16 +4099,193 @@ def plot_function_error_histogram_mceg(
         print(
             f"      mean={mean_error:.6g}, median={med_error:.6g}, std={std_error:.6g}"
         )
+    
+    # --- Compute NPE errors if available ---
+    npe_errors_array = np.array([])
+    try:
+        import pickle
+        import os
+        npe_path = "npe_posterior_mceg.pkl"
+        if os.path.exists(npe_path):
+            if verbose:
+                print(f"Loading NPE posterior from {npe_path}...")
+            with open(npe_path, "rb") as f:
+                posterior_npe = pickle.load(f)
+            
+            from simulator import ALPHAS, MELLIN, PDF
+            npe_errors_list = []
+            
+            # Use same true parameters AND observed events as our method
+            for idx in range(min(len(true_params_list), len(observed_events_list), n_draws)):
+                try:
+                    true_params_idx = true_params_list[idx]
+                    true_theta_cpu = (
+                        true_params_idx.detach().cpu().numpy()
+                        if torch.is_tensor(true_params_idx)
+                        else np.asarray(true_params_idx)
+                    )
+                    
+                    # Use the SAME observed events that our method used (stored earlier)
+                    evts_np = observed_events_list[idx]
+                    
+                    # Get summary for NPE (2D histogram)
+                    try:
+                        from sbibm_benchmark_mceg4dis import histogram_summary
+                        x_o_summary = histogram_summary(evts_np, nx=30, nQ2=20)
+                    except Exception:
+                        continue
+                    
+                    # Sample from NPE posterior
+                    try:
+                        npe_samples = posterior_npe.sample((1,), x=x_o_summary)
+                        pred_theta_npe = npe_samples[0].cpu().numpy()
+                    except Exception:
+                        continue
+                    
+                    # Evaluate PDF curves at Q2=10 for true and NPE-predicted parameters
+                    x_grid_pdf = np.linspace(0.001, 0.99, 100)
+                    q2_val_pdf = 10.0
+                    
+                    def eval_pdf_u_minus_ub_local(theta_arr):
+                        pdf_temp = PDF(MELLIN(npts=8), ALPHAS())
+                        cpar = pdf_temp.get_current_par_array()[::]
+                        arr = np.asarray(theta_arr)
+                        try:
+                            cpar[4 : 4 + arr.shape[0]] = arr
+                        except Exception:
+                            try:
+                                cpar[4:8] = arr
+                            except Exception:
+                                cpar[4 : 4 + arr.shape[0]] = arr
+                        try:
+                            pdf_temp.setup(cpar)
+                        except Exception:
+                            try:
+                                pdf_temp.setup(arr)
+                            except Exception:
+                                raise
+                        vals = []
+                        for x_val in x_grid_pdf:
+                            try:
+                                u = pdf_temp.get_xF(float(x_val), q2_val_pdf, "u", evolve=True)
+                                ub = pdf_temp.get_xF(float(x_val), q2_val_pdf, "ub", evolve=True)
+                                uval = float(u[0]) if hasattr(u, "__len__") else float(u)
+                                ubval = float(ub[0]) if hasattr(ub, "__len__") else float(ub)
+                                vals.append(uval - ubval)
+                            except Exception:
+                                vals.append(np.nan)
+                        return np.asarray(vals)
+                    
+                    true_curve = eval_pdf_u_minus_ub_local(true_theta_cpu)
+                    pred_curve = eval_pdf_u_minus_ub_local(pred_theta_npe)
+                    
+                    diff = np.abs(true_curve - pred_curve)
+                    mask = np.isfinite(diff)
+                    draw_scalar = float(np.nanmean(diff[mask])) if np.any(mask) else np.nan
+                    
+                    if not np.isnan(draw_scalar):
+                        npe_errors_list.append(draw_scalar)
+                except Exception as e_inner:
+                    if verbose:
+                        print(f"   ⚠️ NPE draw {idx} failed: {e_inner}")
+                    continue
+            
+            npe_errors_array = np.array(npe_errors_list)
+            if verbose and len(npe_errors_array) > 0:
+                print(f"   ✓ Computed NPE errors: {len(npe_errors_array)} samples")
+                print(f"      NPE mean={np.mean(npe_errors_array):.6g}, median={np.median(npe_errors_array):.6g}")
+        else:
+            if verbose:
+                print(f"   NPE posterior not found at {npe_path}, skipping NPE comparison")
+    except Exception as e:
+        if verbose:
+            print(f"   Could not compute NPE errors: {e}")
 
-    # Plot histogram of per-draw averaged errors
-    plt.figure(figsize=(8, 5))
-    plt.hist(per_draw_array, bins=30, alpha=0.85)
-    plt.xlabel("Function Errors", fontsize=20)
-    plt.xticks(fontsize=20)
-    plt.ylabel("Count", fontsize=20)
-    # plt.title(f"Function error histogram (problem={problem})\nmean={mean_error:.3e}, median={med_error:.3e}")
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=200)
+    # Plot histogram of per-draw averaged errors (with NPE overlay if available)
+    fig, ax = plt.subplots(figsize=(10, 6))
+    
+    # Compute log-spaced bin edges to ensure both histograms are directly comparable
+    if len(npe_errors_array) > 0:
+        all_errors = np.concatenate([per_draw_array, npe_errors_array])
+    else:
+        all_errors = per_draw_array
+    
+    # Ensure all values are positive for log spacing
+    min_err = np.min(all_errors[all_errors > 0]) if np.any(all_errors > 0) else 1e-10
+    max_err = np.max(all_errors)
+    bin_edges = np.logspace(np.log10(min_err), np.log10(max_err), 51)  # 51 edges = 50 bins
+    
+    ax.hist(per_draw_array, bins=bin_edges, alpha=0.6, label="Ours", color=COLORBLIND_COLORS["blue"])
+    
+    # Add median lines for Ours
+    ax.axvline(
+        med_error,
+        color=COLORBLIND_COLORS["dark_green"],
+        linestyle=":",
+        linewidth=3,
+        label=f"Ours (Median) = {med_error:.4g}",
+        alpha=0.9,
+    )
+    
+    # Overlay NPE histogram if available
+    if len(npe_errors_array) > 0:
+        ax.hist(npe_errors_array, bins=bin_edges, alpha=0.6, label="NPE", color=COLORBLIND_COLORS["purple"])
+        
+        # Add statistics for NPE
+        npe_mean = np.mean(npe_errors_array)
+        npe_std = np.std(npe_errors_array)
+        npe_median = np.median(npe_errors_array)
+        
+        # Add NPE median line
+        ax.axvline(
+            npe_median,
+            color=COLORBLIND_COLORS["purple"],
+            linestyle="-.",
+            linewidth=3,
+            label=f"NPE (Median) = {npe_median:.4g}",
+            alpha=0.9,
+        )
+        
+        stats_text = f"Ours: μ={mean_error:.4g}, σ={std_error:.4g}\nNPE: μ={npe_mean:.4g}, σ={npe_std:.4g}"
+    else:
+        stats_text = f"Ours: μ={mean_error:.4g}, σ={std_error:.4g}"
+    
+    # Set log scale for x-axis
+    ax.set_xscale('log')
+    
+    ax.text(
+        0.98, 0.97,
+        stats_text,
+        transform=ax.transAxes,
+        verticalalignment="top",
+        horizontalalignment="right",
+        fontsize=20,
+        bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.95, edgecolor="gray"),
+    )
+    
+    ax.set_xlabel("Errors", fontsize=26)
+    ax.tick_params(axis='x', labelsize=24, which='both')
+    ax.set_ylabel("Count", fontsize=26)
+    ax.tick_params(axis='y', labelsize=24)
+    ax.legend(fontsize=20, loc="upper left", frameon=True, fancybox=True, shadow=True)
+    ax.grid(True, alpha=0.3, linestyle=":", linewidth=0.5, which="both")
+    
+    # Format x-axis labels with 10^x notation
+    from matplotlib.ticker import FuncFormatter
+    def log_formatter(x, pos):
+        if x <= 0:
+            return ''
+        exponent = np.log10(x)
+        if abs(exponent - round(exponent)) < 0.01:  # Close to integer power
+            return f'$10^{{{int(round(exponent))}}}$'
+        else:
+            return f'$10^{{{exponent:.1f}}}$'
+    ax.xaxis.set_major_formatter(FuncFormatter(log_formatter))
+    
+    # ax.set_title(f"Function error histogram (problem={problem})\nmean={mean_error:.3e}, median={med_error:.3e}")
+    fig.tight_layout()
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
     if verbose:
         print(f"   ✅ Saved histogram to: {save_path}")
 
@@ -4594,23 +4373,14 @@ def plot_function_posterior_from_sbi_samples(
     eps = 1e-12
 
     plt.subplot(1, 2, 1)
-    # outer band 5-95
-    plt.fill_between(
-        x,
-        np.maximum(q05_up, eps),
-        np.maximum(q95_up, eps),
-        color="C0",
-        alpha=0.12,
-        label=f"{label} 5-95%",
-    )
-    # inner IQR 25-75
+    # IQR 25-75
     plt.fill_between(
         x,
         np.maximum(q25_up, eps),
         np.maximum(q75_up, eps),
         color="C0",
         alpha=0.28,
-        label=f"{label} 25-75%",
+        label=f"{label} IQR",
     )
     # median
     plt.plot(
@@ -4629,19 +4399,11 @@ def plot_function_posterior_from_sbi_samples(
     plt.subplot(1, 2, 2)
     plt.fill_between(
         x,
-        np.maximum(q05_down, eps),
-        np.maximum(q95_down, eps),
-        color="C1",
-        alpha=0.12,
-        label=f"{label} 5-95%",
-    )
-    plt.fill_between(
-        x,
         np.maximum(q25_down, eps),
         np.maximum(q75_down, eps),
         color="C1",
         alpha=0.28,
-        label=f"{label} 25-75%",
+        label=f"{label} IQR",
     )
     plt.plot(
         x,
@@ -5143,17 +4905,20 @@ def plot_function_error_summary_from_sbi_samples(
     except Exception as e:
         print(f"[debug] Could not inspect our_results_dict: {e}")
 
-    # We'll collect results keyed by method label so we can order them consistently
+    # We'll collect results keyed by method label (with aggregation suffix) so we can order them consistently
     method_map_avg_up = {}
     method_map_avg_down = {}
     method_map_per_x_up = {}
     method_map_per_x_down = {}
 
-    # If user provided 'our' approaches (Laplace/Bootstrap/Combined), process them first
+    # If user provided 'our' approaches, combine Laplace and Bootstrap into a single ensemble
     extra_labels = []
     if our_results_dict is not None and isinstance(our_results_dict, dict):
-        # We'll check these keys in order of preference; keep track of those with usable data
-        for k in ["Laplace", "Bootstrap", "Combined_LOTV"]:
+        # Collect ensemble PDFs from Laplace and Bootstrap, concatenate them
+        combined_pdfs_up = []
+        combined_pdfs_down = []
+        
+        for k in ["Laplace", "Bootstrap"]:
             vals = our_results_dict.get(k, {}) or {}
             pup = (
                 np.array(vals.get("pdfs_up", []))
@@ -5165,61 +4930,36 @@ def plot_function_error_summary_from_sbi_samples(
                 if isinstance(vals, dict)
                 else np.array([])
             )
-            mean_up = (
-                np.array(vals.get("mean_up", []))
-                if isinstance(vals, dict)
-                else np.array([])
-            )
-            mean_down = (
-                np.array(vals.get("mean_down", []))
-                if isinstance(vals, dict)
-                else np.array([])
-            )
-
-            # Determine if this entry has usable ensemble or mean data
-            has_ensembles = pup.size > 0 and pdn.size > 0
-            has_means = mean_up.size > 0 and mean_down.size > 0
-            if not (has_ensembles or has_means):
-                # skip entries without usable data
-                continue
-
-            # # mark label present
-            # if k == 'Combined_LOTV':
-            #     extra_labels.append()
-            # else:
-            extra_labels.append(k)
-
-            # Prefer ensembles: compute central curve by aggregation (median or mean)
-            if has_ensembles:
-                central_up = (
-                    np.median(pup, axis=0)
-                    if aggregation == "median"
-                    else np.mean(pup, axis=0)
-                )
-                central_down = (
-                    np.median(pdn, axis=0)
-                    if aggregation == "median"
-                    else np.mean(pdn, axis=0)
-                )
-            else:
-                # Fall back to mean_up/mean_down provided by LoTV-style decomposition
-                central_up = mean_up
-                central_down = mean_down
+            
+            # Only add if we have valid ensemble data
+            if pup.size > 0 and pdn.size > 0 and pup.ndim == 2 and pdn.ndim == 2:
+                combined_pdfs_up.append(pup)
+                combined_pdfs_down.append(pdn)
+        
+        # If we collected any ensembles, concatenate and generate Median-only rows (no mean)
+        if combined_pdfs_up:
+            combined_pup = np.concatenate(combined_pdfs_up, axis=0)  # [N_total, n_x]
+            combined_pdn = np.concatenate(combined_pdfs_down, axis=0)
+            
+            # Generate only Median aggregation for the combined ensemble (removed Mean)
+            label_with_agg = "Combined (Median)"
+            extra_labels.append(label_with_agg)
+            
+            # Compute per-x median
+            central_up = np.median(combined_pup, axis=0)
+            central_down = np.median(combined_pdn, axis=0)
 
             # Compute per-x squared errors (MSE per-x)
             err_up = (central_up - true_up) ** 2
             err_dn = (central_down - true_down) ** 2
 
-            method_map_per_x_up[k] = err_up
-            method_map_per_x_down[k] = err_dn
-            method_map_avg_up[k] = float(
-                np.nanmedian(err_up) if aggregation == "median" else np.nanmean(err_up)
-            )
-            method_map_avg_down[k] = float(
-                np.nanmedian(err_dn) if aggregation == "median" else np.nanmean(err_dn)
-            )
+            method_map_per_x_up[label_with_agg] = err_up
+            method_map_per_x_down[label_with_agg] = err_dn
+            method_map_avg_up[label_with_agg] = float(np.nanmean(err_up))
+            method_map_avg_down[label_with_agg] = float(np.nanmean(err_dn))
 
-    # Now process SBI sample methods (labels correspond to sbi_samples_list)
+    # Now process SBI sample methods with both mean and median aggregations
+    sbi_labels = []
     for sbi_samples, label in zip(sbi_samples_list, labels):
         # Normalize samples to a CPU tensor and optionally subsample to n_mc
         if isinstance(sbi_samples, torch.Tensor):
@@ -5241,42 +4981,34 @@ def plot_function_error_summary_from_sbi_samples(
             sbi_cpu.to(device), device
         )
         if pdfs_up.size == 0 or pdfs_down.size == 0:
-            method_map_avg_up[label] = np.nan
-            method_map_avg_down[label] = np.nan
-            method_map_per_x_up[label] = np.full_like(x_grid, np.nan)
-            method_map_per_x_down[label] = np.full_like(x_grid, np.nan)
+            # Only Median aggregation (removed Mean)
+            label_with_agg = f"{label} (Median)"
+            sbi_labels.append(label_with_agg)
+            method_map_avg_up[label_with_agg] = np.nan
+            method_map_avg_down[label_with_agg] = np.nan
+            method_map_per_x_up[label_with_agg] = np.full_like(x_grid, np.nan)
+            method_map_per_x_down[label_with_agg] = np.full_like(x_grid, np.nan)
             continue
 
-        central_up = (
-            np.median(pdfs_up, axis=0)
-            if aggregation == "median"
-            else np.mean(pdfs_up, axis=0)
-        )
-        central_down = (
-            np.median(pdfs_down, axis=0)
-            if aggregation == "median"
-            else np.mean(pdfs_down, axis=0)
-        )
+        # Generate only Median rows for each SBI method (removed Mean)
+        label_with_agg = f"{label} (Median)"
+        sbi_labels.append(label_with_agg)
+        
+        # Compute per-x median
+        central_up = np.median(pdfs_up, axis=0)
+        central_down = np.median(pdfs_down, axis=0)
 
         # Use per-x squared error (MSE per-x)
         abs_err_up = (central_up - true_up) ** 2
         abs_err_down = (central_down - true_down) ** 2
 
-        method_map_per_x_up[label] = abs_err_up
-        method_map_per_x_down[label] = abs_err_down
-        method_map_avg_up[label] = float(
-            np.nanmedian(abs_err_up)
-            if aggregation == "median"
-            else np.nanmean(abs_err_up)
-        )
-        method_map_avg_down[label] = float(
-            np.nanmedian(abs_err_down)
-            if aggregation == "median"
-            else np.nanmean(abs_err_down)
-        )
+        method_map_per_x_up[label_with_agg] = abs_err_up
+        method_map_per_x_down[label_with_agg] = abs_err_down
+        method_map_avg_up[label_with_agg] = float(np.nanmean(abs_err_up))
+        method_map_avg_down[label_with_agg] = float(np.nanmean(abs_err_down))
 
     # Build combined labels (SBI first, then our approaches if present)
-    final_labels = list(labels)
+    final_labels = sbi_labels
     if extra_labels:
         final_labels += extra_labels
     # Debug: what final labels will be plotted and current method map keys
@@ -5347,20 +5079,17 @@ def plot_function_error_summary_from_sbi_samples(
     )
     ax0.set_xticks(ind)
     for i in range(len(final_labels)):
-        if final_labels[i] == "Combined_LOTV":
-            final_labels[i] = "Combined"
-        elif final_labels[i] == "Wasserstein MCABC":
-            final_labels[i] = "MCABC-W"
-    ax0.set_xticklabels(final_labels, rotation=30, ha="right", fontsize=12)
+        if "Combined_LOTV" in final_labels[i]:
+            final_labels[i] = final_labels[i].replace("Combined_LOTV", "Combined")
+        elif final_labels[i] == "Wasserstein MCABC (Mean)":
+            final_labels[i] = "MCABC-W (Mean)"
+        elif final_labels[i] == "Wasserstein MCABC (Median)":
+            final_labels[i] = "MCABC-W (Median)"
+    ax0.set_xticklabels(final_labels, rotation=45, ha="right", fontsize=11)
     # label reflects aggregation choice
-    # Top bar label: when 'relative' flag was previously used to indicate percent
-    # we now interpret the bottom plot as MSE per-x; update the aggregation label
-    if relative:
-        agg_label = "Median MSE" if aggregation == "median" else "Mean MSE"
-    else:
-        agg_label = f"{aggregation.title()} |Error|"
-    ax0.set_ylabel(agg_label)
-    ax0.set_title("Average Function-space Errors", fontsize=16)
+    # Top bar label: Mean MSE (no longer using aggregation or relative flags)
+    ax0.set_ylabel("Mean MSE")
+    ax0.set_title("Average Function-space MSE (Mean over x)", fontsize=16)
     ax0.legend()
     ax0.grid(True, alpha=0.25)
     # Annotate bar values on top for clarity (use up/down pairs)
@@ -5393,90 +5122,23 @@ def plot_function_error_summary_from_sbi_samples(
     # Bottom: per-x curves (plot Up and Down separately)
     import matplotlib
 
-    # Fallback: if any of the 'our' approaches are missing per-x errors, try to construct them
-    # from the provided our_results_dict (mean_up/mean_down or pdfs_up/pdf_down).
-    filled_by_fallback = []
-    if our_results_dict is not None:
-        for idx, lbl in enumerate(final_labels):
-            arr_up = np.asarray(per_x_errors_up[idx])
-            arr_dn = np.asarray(per_x_errors_down[idx])
-            if np.all(np.isnan(arr_up)) and np.all(np.isnan(arr_dn)):
-                # First try the direct entry for this label
-                vals = (
-                    our_results_dict.get(lbl) if our_results_dict is not None else None
-                )
-                # If empty, try more informative fallbacks: Combined_LOTV then Combined
-                if not vals or (
-                    isinstance(vals, dict)
-                    and not any(np.array(v).size for v in vals.values())
-                ):
-                    vals = (
-                        our_results_dict.get("Combined_LOTV")
-                        if our_results_dict is not None
-                        else None
-                    )
-                if vals:
-                    # prefer mean_up/mean_down
-                    if "mean_up" in vals and "mean_down" in vals:
-                        central_up = np.array(vals.get("mean_up"))
-                        central_dn = np.array(vals.get("mean_down"))
-                    else:
-                        pup = np.array(vals.get("pdfs_up", []))
-                        pdn = np.array(vals.get("pdfs_down", []))
-                        if pup.size > 0 and pdn.size > 0:
-                            central_up = (
-                                np.median(pup, axis=0)
-                                if aggregation == "median"
-                                else np.mean(pup, axis=0)
-                            )
-                            central_dn = (
-                                np.median(pdn, axis=0)
-                                if aggregation == "median"
-                                else np.mean(pdn, axis=0)
-                            )
-                        else:
-                            central_up = None
-                            central_dn = None
-                    if central_up is not None and central_dn is not None:
-                        # Use per-x squared error (MSE per x)
-                        err_up = (central_up - true_up) ** 2
-                        err_dn = (central_dn - true_down) ** 2
-                        per_x_errors_up[idx] = err_up
-                        per_x_errors_down[idx] = err_dn
-                        method_avg_up[idx] = float(
-                            np.nanmedian(err_up)
-                            if aggregation == "median"
-                            else np.nanmean(err_up)
-                        )
-                        method_avg_down[idx] = float(
-                            np.nanmedian(err_dn)
-                            if aggregation == "median"
-                            else np.nanmean(err_dn)
-                        )
-                        filled_by_fallback.append(lbl)
-    if filled_by_fallback:
-        print(
-            f"[debug] Filled per-x errors for methods from our_results_dict fallback: {filled_by_fallback}"
-        )
-    # Create exactly n_methods distinct colors sampled from a colormap to avoid repeats
-    try:
-        if n_methods <= 20:
-            cmap = plt.get_cmap("tab20")
-        else:
-            cmap = plt.get_cmap("hsv")
-        if n_methods > 1:
-            colors = [
-                matplotlib.colors.to_hex(cmap(i / (n_methods - 1)))
-                for i in range(n_methods)
-            ]
-        else:
-            colors = [matplotlib.colors.to_hex(cmap(0.5))]
-    except Exception:
-        colors = [
-            COLORBLIND_COLORS.get("blue"),
-            COLORBLIND_COLORS.get("orange"),
-            COLORBLIND_COLORS.get("green"),
-        ]
+    # Create exactly n_methods distinct colors using expanded colorblind-friendly palette
+    cb_palette = [
+        COLORBLIND_COLORS["blue"],
+        COLORBLIND_COLORS["orange"],
+        COLORBLIND_COLORS["green"],
+        COLORBLIND_COLORS["red"],
+        COLORBLIND_COLORS["yellow"],
+        COLORBLIND_COLORS["gray"],
+        COLORBLIND_COLORS["black"],
+        COLORBLIND_COLORS["sky_blue"],
+        COLORBLIND_COLORS["blueish_green"],
+        COLORBLIND_COLORS["light_blue"],
+        COLORBLIND_COLORS["light_orange"],
+        COLORBLIND_COLORS["light_gray"],
+    ]
+    # Extend palette by cycling if needed
+    colors = [cb_palette[i % len(cb_palette)] for i in range(n_methods)]
 
     handles = []
     labels_legend = []
@@ -5523,126 +5185,138 @@ def plot_function_error_summary_from_sbi_samples(
         # Plot only finite segments to avoid matplotlib quietly skipping or making empty legend entries
         # Up (dashed)
         if np.any(np.isfinite(plot_e_up)):
-            (l_up,) = ax1.plot(
+            ax1.plot(
                 x_grid,
                 plot_e_up,
-                label=f"{label} up",
                 color=color,
                 linestyle="--",
                 linewidth=2.0,
                 alpha=0.95,
             )
-            handles.append(l_up)
-            labels_legend.append(f"{label} up")
         # Down (solid)
         if np.any(np.isfinite(plot_e_dn)):
-            (l_dn,) = ax1.plot(
+            ax1.plot(
                 x_grid,
                 plot_e_dn,
-                label=f"{label} down",
                 color=color,
                 linestyle="-",
                 linewidth=2.0,
                 alpha=0.9,
             )
-            handles.append(l_dn)
-            labels_legend.append(f"{label} down")
 
     ax1.set_xscale("log")
+    ax1.set_yscale("log")
     ax1.set_xlabel("x")
-    ax1.set_ylabel(ylabel)
+    ax1.set_ylabel("MSE (per x)")
     ax1.set_title(
-        "Per-x Error Curves (entrywise median prediction vs true)", fontsize=16
+        "Per-x MSE Curves", fontsize=16
     )
     ax1.grid(True, which="both", linestyle=":", alpha=0.3)
-    # Show legend but avoid overlapping; use 2 columns if many entries
-    if handles:
-        ax1.legend(handles, labels_legend, loc="upper right", fontsize=16, ncol=2)
+    
+    # Create efficient legend: approach colors + line style meanings
+    # Approach entries (colored lines)
+    approach_handles = []
+    approach_labels = []
+    for i, label in enumerate(final_labels):
+        color = colors[i % len(colors)]
+        approach_handles.append(plt.Line2D([0], [0], color=color, linewidth=2.0))
+        approach_labels.append(label)
+    
+    # Line style meaning entries (black lines with different styles)
+    linestyle_handles = [
+        plt.Line2D([0], [0], color='black', linewidth=2.0, linestyle='--', label='Up quark (u)'),
+        plt.Line2D([0], [0], color='black', linewidth=2.0, linestyle='-', label='Down quark (d)')
+    ]
+    
+    # Combine legends: both in bottom left, side-by-side with proper spacing
+    ax1_legend1 = ax1.legend(approach_handles, approach_labels, loc="lower left", fontsize=14, title="Approach", frameon=True, bbox_to_anchor=(0.0, 0.0))
+    ax1_legend2 = ax1.legend(linestyle_handles, ['Up quark (u)', 'Down quark (d)'], loc="lower left", fontsize=14, title="Quark type", frameon=True, bbox_to_anchor=(0.35, 0.0))
+    ax1.add_artist(ax1_legend1)  # Add first legend back so both are displayed
 
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
     print(f"✓ Saved SBI function error summary: {save_path}")
 
-    def save_function_UQ_metrics_table_simplified_dis(
-        save_path, true_params, device, results_dict, aggregation="mean"
-    ):
-        """
-        Save a LaTeX-compatible table of function error and uncertainty metrics for each UQ/SBI approach.
-        Each row: [Approach]
-        Columns: [Up MSE, Up Bias, Up Unc., Down MSE, Down Bias, Down Unc.]
-        results_dict: {
-            "Laplace": {"pdfs_up": [...], "pdfs_down": [...]},
-            "Bootstrap": {"pdfs_up": [...], "pdfs_down": [...]},
-            "Combined": {"pdfs_up": [...], "pdfs_down": [...]},
-            "SNPE": {"pdfs_up": [...], "pdfs_down": [...]},
-            "MCABC": {"pdfs_up": [...], "pdfs_down": [...]},
-            "Wasserstein MCABC": {"pdfs_up": [...], "pdfs_down": [...]},
-        }
-        """
-        from simulator import SimplifiedDIS
+def save_function_UQ_metrics_table_simplified_dis(
+    save_path, true_params, device, results_dict, aggregation="mean"
+):
+    """
+    Save a LaTeX-compatible table of function error and uncertainty metrics for each UQ/SBI approach.
+    Each row: [Approach]
+    Columns: [Up MSE, Up Bias, Up Unc., Down MSE, Down Bias, Down Unc.]
+    results_dict: {
+        "Laplace": {"pdfs_up": [...], "pdfs_down": [...]},
+        "Bootstrap": {"pdfs_up": [...], "pdfs_down": [...]},
+        "Combined": {"pdfs_up": [...], "pdfs_down": [...]},
+        "SNPE": {"pdfs_up": [...], "pdfs_down": [...]},
+        "MCABC": {"pdfs_up": [...], "pdfs_down": [...]},
+        "Wasserstein MCABC": {"pdfs_up": [...], "pdfs_down": [...]},
+    }
+    """
+    from simulator import SimplifiedDIS
 
-        simulator = SimplifiedDIS(device=device)
-        x_grid = torch.linspace(0.01, 0.99, 100).to(device)
-        true_pdf = simulator.f(x_grid, true_params.to(device))
-        true_up = true_pdf["up"].cpu().numpy()
-        true_down = true_pdf["down"].cpu().numpy()
+    simulator = SimplifiedDIS(device=device)
+    x_grid = torch.linspace(0.01, 0.99, 100).to(device)
+    true_pdf = simulator.f(x_grid, true_params.to(device))
+    true_up = true_pdf["up"].cpu().numpy()
+    true_down = true_pdf["down"].cpu().numpy()
 
-        rows = []
-        for approach, vals in results_dict.items():
-            pdfs_up = np.array(vals.get("pdfs_up", []))  # shape [N, 100]
-            pdfs_down = np.array(vals.get("pdfs_down", []))  # shape [N, 100]
-            # If the entry provides full ensembles (pdfs_up/pdf_down), compute metrics from ensembles
-            if pdfs_up.size > 0 and pdfs_down.size > 0:
-                # central function: follow aggregation choice to be consistent with plotting
-                if aggregation == "median":
-                    central_up = np.median(pdfs_up, axis=0)
-                    central_down = np.median(pdfs_down, axis=0)
-                else:
-                    central_up = np.mean(pdfs_up, axis=0)
-                    central_down = np.mean(pdfs_down, axis=0)
+    rows = []
+    for approach, vals in results_dict.items():
+        pdfs_up = np.array(vals.get("pdfs_up", []))  # shape [N, 100]
+        pdfs_down = np.array(vals.get("pdfs_down", []))  # shape [N, 100]
+        # If the entry provides full ensembles (pdfs_up/pdf_down), compute metrics from ensembles
+        if pdfs_up.size > 0 and pdfs_down.size > 0:
+            # central function: follow aggregation choice to be consistent with plotting
+            if aggregation == "median":
+                central_up = np.median(pdfs_up, axis=0)
+                central_down = np.median(pdfs_down, axis=0)
+            else:
+                central_up = np.mean(pdfs_up, axis=0)
+                central_down = np.mean(pdfs_down, axis=0)
 
-                # Up metrics computed from central function and ensemble spread
-                up_mse = np.mean((central_up - true_up) ** 2)
-                up_bias = np.mean(central_up - true_up)
-                up_unc = np.mean(np.std(pdfs_up, axis=0))
-                # Down metrics
-                down_mse = np.mean((central_down - true_down) ** 2)
-                down_bias = np.mean(central_down - true_down)
-                down_unc = np.mean(np.std(pdfs_down, axis=0))
-                rows.append(
-                    [
-                        approach,
-                        f"{up_mse:.4g}",
-                        f"{up_bias:.4g}",
-                        f"{up_unc:.4g}",
-                        f"{down_mse:.4g}",
-                        f"{down_bias:.4g}",
-                        f"{down_unc:.4g}",
-                    ]
-                )
-                continue
+            # Up metrics computed from central function and ensemble spread
+            up_mse = np.mean((central_up - true_up) ** 2)
+            up_bias = np.mean(central_up - true_up)
+            up_unc = np.mean(np.std(pdfs_up, axis=0))
+            # Down metrics
+            down_mse = np.mean((central_down - true_down) ** 2)
+            down_bias = np.mean(central_down - true_down)
+            down_unc = np.mean(np.std(pdfs_down, axis=0))
+            rows.append(
+                [
+                    approach,
+                    f"{up_mse:.4g}",
+                    f"{up_bias:.4g}",
+                    f"{up_unc:.4g}",
+                    f"{down_mse:.4g}",
+                    f"{down_bias:.4g}",
+                    f"{down_unc:.4g}",
+                ]
+            )
+            continue
 
-        header = [
-            "Approach",
-            "Up MSE",
-            "Up Bias",
-            "Up Unc.",
-            "Down MSE",
-            "Down Bias",
-            "Down Unc.",
-        ]
-        latex_lines = []
-        latex_lines.append("\\begin{tabular}{lcccccc}")
-        latex_lines.append("\\toprule")
-        latex_lines.append(" & ".join(header) + " \\\\")
-        latex_lines.append("\\midrule")
-        for row in rows:
-            latex_lines.append(" & ".join(row) + " \\\\")
-        latex_lines.append("\\bottomrule")
-        latex_lines.append("\\end{tabular}")
+    header = [
+        "Approach",
+        "Up MSE",
+        "Up Bias",
+        "Up Unc.",
+        "Down MSE",
+        "Down Bias",
+        "Down Unc.",
+    ]
+    latex_lines = []
+    latex_lines.append("\\begin{tabular}{lcccccc}")
+    latex_lines.append("\\toprule")
+    latex_lines.append(" & ".join(header) + " \\\\")
+    latex_lines.append("\\midrule")
+    for row in rows:
+        latex_lines.append(" & ".join(row) + " \\\\")
+    latex_lines.append("\\bottomrule")
+    latex_lines.append("\\end{tabular}")
 
-        with open(save_path, "w") as f:
-            f.write("\n".join(latex_lines))
+    with open(save_path, "w") as f:
+        f.write("\n".join(latex_lines))
 
     print(f"Saved function UQ metrics table to {save_path}")

@@ -232,6 +232,13 @@ class MCEGDISDataset(IterableDataset):
         self.world_size = world_size
         self.theta_dim = theta_dim
         self.n_repeat = n_repeat
+        
+        # Store the feature engineering function if provided, otherwise use default
+        if feature_engineering is not None:
+            self._feature_engineering_fn = feature_engineering
+        else:
+            # Default fallback: simple log transform
+            self._feature_engineering_fn = lambda x: torch.log(x + 1e-8)
 
         self.theta_bounds = torch.tensor(
             [
@@ -243,7 +250,8 @@ class MCEGDISDataset(IterableDataset):
         )
 
     def feature_engineering(self, x):
-        return torch.log(x + 1e-8)  # Avoid log(0) by adding a small constant
+        """Apply feature engineering using the stored function."""
+        return self._feature_engineering_fn(x)
 
     def __iter__(self):
         device = torch.device(

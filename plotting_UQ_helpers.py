@@ -402,18 +402,24 @@ def compute_function_lotv_for_mceg(
 
 
 def save_function_UQ_metrics_table_simplified_dis(
-    save_path, true_params, device, results_dict, aggregation="mean"
+    save_path, true_params, device, results_dict, aggregation="median"
 ):
     """
-    Compute simple function-space metrics comparing predicted pdf ensembles to the
-    ground truth and save a LaTeX-compatible tabular block to `save_path`.
-
+    Compute per-x aggregated function predictions and compare against true PDF.
+    
+    Generates rows with median aggregation and IQR uncertainty.
+    
+    Metrics computed:
+      - MSE: average per-x squared error between median-aggregated prediction and true PDF
+      - Unc.: average per-x IQR (75th - 25th percentile) across ensemble samples
+    
     Arguments:
-        save_path: str path to write the .tex/.txt file
+        save_path: str path to write the .tex file
         true_params: torch.Tensor (param_dim,) containing true theta
         device: torch.device or string
         results_dict: dict mapping approach name -> {"pdfs_up": array_like, "pdfs_down": array_like}
                       where pdf arrays have shape [N, n_x]
+        aggregation: str, "median" (default) or "mean" - controls aggregation method
     """
     try:
         from simulator import SimplifiedDIS
@@ -427,161 +433,60 @@ def save_function_UQ_metrics_table_simplified_dis(
     true_down = true_pdf["down"].cpu().numpy()
 
     rows = []
-    # First compute rows for each provided approach (Laplace, Bootstrap, SBI etc.)
+    
+    # Process each approach - generate only median rows with IQR uncertainty
     for approach, vals in results_dict.items():
         pdfs_up = np.array(vals.get("pdfs_up", []))
         pdfs_down = np.array(vals.get("pdfs_down", []))
-        # If the entry provides full ensembles (pdfs_up/pdfds_down), compute metrics from ensembles
-        # Use the chosen aggregation (median|mean) to produce a central curve and report MSE/bias
-        if pdfs_up.size > 0 and pdfs_down.size > 0:
+        
+        # If the entry provides full ensembles, compute median aggregation with IQR
+        if pdfs_up.size > 0 and pdfs_down.size > 0 and pdfs_up.ndim == 2 and pdfs_down.ndim == 2:
             try:
-                if aggregation == "median":
-                    central_up = np.median(pdfs_up, axis=0)
-                    central_down = np.median(pdfs_down, axis=0)
-                else:
-                    central_up = np.mean(pdfs_up, axis=0)
-                    central_down = np.mean(pdfs_down, axis=0)
-
-                up_mse = np.mean((central_up - true_up) ** 2)
-                up_bias = np.mean(central_up - true_up)
-                up_unc = np.mean(np.std(pdfs_up, axis=0))
-                down_mse = np.mean((central_down - true_down) ** 2)
-                down_bias = np.mean(central_down - true_down)
-                down_unc = np.mean(np.std(pdfs_down, axis=0))
+                # Median aggregation with IQR uncertainty
+                median_up = np.median(pdfs_up, axis=0)
+                median_down = np.median(pdfs_down, axis=0)
+                up_mse_median = np.mean((median_up - true_up) ** 2)
+                down_mse_median = np.mean((median_down - true_down) ** 2)
+                # Uncertainty is average IQR (75th - 25th percentile)
+                p25_up = np.percentile(pdfs_up, 25, axis=0)
+                p75_up = np.percentile(pdfs_up, 75, axis=0)
+                up_unc_median = np.mean(p75_up - p25_up)
+                p25_down = np.percentile(pdfs_down, 25, axis=0)
+                p75_down = np.percentile(pdfs_down, 75, axis=0)
+                down_unc_median = np.mean(p75_down - p25_down)
+                
                 rows.append(
                     [
                         approach,
-                        f"{up_mse:.4g}",
-                        f"{up_bias:.4g}",
-                        f"{up_unc:.4g}",
-                        f"{down_mse:.4g}",
-                        f"{down_bias:.4g}",
-                        f"{down_unc:.4g}",
+                        f"{up_mse_median:.4g}",
+                        f"{up_unc_median:.4g}",
+                        f"{down_mse_median:.4g}",
+                        f"{down_unc_median:.4g}",
                     ]
                 )
                 continue
-            except Exception:
-                # fallback to previous conservative computation if aggregation fails
-                up_mse = np.mean((pdfs_up - true_up[None, :]) ** 2)
-                up_bias = np.mean(pdfs_up - true_up[None, :])
-                up_unc = np.mean(np.std(pdfs_up, axis=0))
-                down_mse = np.mean((pdfs_down - true_down[None, :]) ** 2)
-                down_bias = np.mean(pdfs_down - true_down[None, :])
-                down_unc = np.mean(np.std(pdfs_down, axis=0))
-                rows.append(
-                    [
-                        approach,
-                        f"{up_mse:.4g}",
-                        f"{up_bias:.4g}",
-                        f"{up_unc:.4g}",
-                        f"{down_mse:.4g}",
-                        f"{down_bias:.4g}",
-                        f"{down_unc:.4g}",
-                    ]
-                )
+            except Exception as e:
+                print(f"⚠️ Error processing ensemble for {approach}: {e}")
+                rows.append([approach, "--", "--", "--", "--"])
                 continue
 
-        # Otherwise, allow entries that provide mean+unc directly (decomposition output)
-        mean_up = vals.get("mean_up", None)
-        mean_down = vals.get("mean_down", None)
-        unc_up = vals.get("unc_up", None)
-        unc_down = vals.get("unc_down", None)
-        if (
-            mean_up is not None
-            and mean_down is not None
-            and unc_up is not None
-            and unc_down is not None
-        ):
-            # mean_* expected as 1D arrays over x; unc_* as scalar summary (e.g., mean_x sqrt(total_var(x)))
-            mean_up = np.array(mean_up)
-            mean_down = np.array(mean_down)
-            up_mse = np.mean((mean_up - true_up) ** 2)
-            up_bias = np.mean(mean_up - true_up)
-            up_unc = float(unc_up)
-            down_mse = np.mean((mean_down - true_down) ** 2)
-            down_bias = np.mean(mean_down - true_down)
-            down_unc = float(unc_down)
-            rows.append(
-                [
-                    approach,
-                    f"{up_mse:.4g}",
-                    f"{up_bias:.4g}",
-                    f"{up_unc:.4g}",
-                    f"{down_mse:.4g}",
-                    f"{down_bias:.4g}",
-                    f"{down_unc:.4g}",
-                ]
-            )
+        # Skip Combined_LOTV - it doesn't have ensemble data for median comparison
+        if approach == "Combined_LOTV":
             continue
 
-        # If neither ensembles nor mean+unc provided, write placeholder
-        rows.append([approach, "--", "--", "--", "--", "--", "--"])
-
-    # Now add a Combined row that matches `plot_function_uncertainty(..., mode='combined')`
-    # i.e. pool (concatenate) the posterior/Laplace ensemble and the bootstrap ensemble
-    # and compute metrics on the pooled set. Avoid duplicating the Combined row if already present.
-    existing_approaches = [r[0] for r in rows]
-    if "Combined" not in existing_approaches:
-        laplace = results_dict.get("Laplace")
-        bootstrap = results_dict.get("Bootstrap")
-        if laplace is not None and bootstrap is not None:
-            lap_up = np.array(laplace.get("pdfs_up", []))
-            lap_down = np.array(laplace.get("pdfs_down", []))
-            boot_up = np.array(bootstrap.get("pdfs_up", []))
-            boot_down = np.array(bootstrap.get("pdfs_down", []))
-            if (
-                lap_up.size > 0
-                and lap_down.size > 0
-                and boot_up.size > 0
-                and boot_down.size > 0
-            ):
-                pooled_up = np.concatenate([lap_up, boot_up], axis=0)
-                pooled_down = np.concatenate([lap_down, boot_down], axis=0)
-
-                # central pooled curve follows aggregation choice
-                if aggregation == "median":
-                    pooled_up_mean = np.median(pooled_up, axis=0)
-                    pooled_down_mean = np.median(pooled_down, axis=0)
-                else:
-                    pooled_up_mean = np.mean(pooled_up, axis=0)
-                    pooled_down_mean = np.mean(pooled_down, axis=0)
-
-                pooled_up_unc = np.mean(np.std(pooled_up, axis=0))
-                pooled_down_unc = np.mean(np.std(pooled_down, axis=0))
-
-                pooled_up_mse = np.mean((pooled_up_mean - true_up) ** 2)
-                pooled_up_bias = np.mean(pooled_up_mean - true_up)
-                pooled_down_mse = np.mean((pooled_down_mean - true_down) ** 2)
-                pooled_down_bias = np.mean(pooled_down_mean - true_down)
-
-                rows.append(
-                    [
-                        "Combined",
-                        f"{pooled_up_mse:.4g}",
-                        f"{pooled_up_bias:.4g}",
-                        f"{pooled_up_unc:.4g}",
-                        f"{pooled_down_mse:.4g}",
-                        f"{pooled_down_bias:.4g}",
-                        f"{pooled_down_unc:.4g}",
-                    ]
-                )
-            else:
-                rows.append(["Combined", "--", "--", "--", "--", "--", "--"])
-        else:
-            rows.append(["Combined", "--", "--", "--", "--", "--", "--"])
+        # If no ensembles provided, write placeholder
+        rows.append([approach, "--", "--", "--", "--"])
 
     header = [
         "Approach",
         "Up MSE",
-        "Up Bias",
         "Up Unc.",
         "Down MSE",
-        "Down Bias",
         "Down Unc.",
     ]
 
     latex_lines = []
-    latex_lines.append("\\begin{tabular}{lcccccc}")
+    latex_lines.append("\\begin{tabular}{lcccc}")
     latex_lines.append("\\toprule")
     header_line = " & ".join(header) + " \\\\"
     latex_lines.append(header_line)

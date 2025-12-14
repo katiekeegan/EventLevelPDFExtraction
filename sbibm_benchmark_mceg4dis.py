@@ -2,7 +2,7 @@ import os
 
 import numpy as np
 import torch
-from sbi.inference import MCABC, SNPE, simulate_for_sbi
+from sbi.inference import MCABC, NPE, simulate_for_sbi
 from sbi.utils.torchutils import BoxUniform
 from scipy.stats import wasserstein_distance
 
@@ -97,15 +97,15 @@ def simulator_batch_summary(theta_batch, n_events=10000, nx=30, nQ2=20):
 ########################
 
 
-def snpe_benchmark(simulator_summary_fn, param_prior, num_simulations=10000):
-    """Run SNPE using summary simulator function (maps theta_batch->summary).
+def NPE_benchmark(simulator_summary_fn, param_prior, num_simulations=10000):
+    """Run NPE using summary simulator function (maps theta_batch->summary).
     Returns a posterior object with .sample()."""
 
     def sim_fn(theta_batch):
         return simulator_summary_fn(theta_batch)
 
     theta, x = simulate_for_sbi(sim_fn, param_prior, num_simulations=num_simulations)
-    inference = SNPE(param_prior)
+    inference = NPE(param_prior)
     density_estimator = inference.append_simulations(theta, x).train()
     return inference.build_posterior(density_estimator)
 
@@ -117,7 +117,7 @@ def wasserstein_abc_benchmark(simulator_summary_fn, param_prior, num_simulations
         distance=wasserstein_distance_wrapper,
     )
     # pick an example true theta (arbitrary)
-    true_theta = torch.tensor([1.0, 1.0, 1.0, 1.0])
+    true_theta = torch.tensor([-7.10000000e-01, 3.48000000e00, 1.34000000e00, 2.33000000])
     x_o = histogram_summary(simulator(true_theta))
     return inference(x_o, num_simulations=num_simulations, quantile=0.01)
 
@@ -167,10 +167,10 @@ if __name__ == "__main__":
         raise SystemExit(1)
 
     # Prior: 4-dimensional box like original benchmark
-    prior_dist = BoxUniform(low=torch.zeros(4), high=5 * torch.ones(4))
+    prior_dist = BoxUniform(low=torch.tensor([-1.0, 0.0, -10.0, -10.0]), high=torch.tensor([10.0, 10.0, 10.0, 10.0]))
 
     # True observation
-    true_theta = torch.tensor([1.0, 1.2, 1.1, 0.5])
+    true_theta = torch.tensor([-7.10000000e-01, 3.48000000e00, 1.34000000e00, 2.33000000])
     x_o = simulator(true_theta, n_events=10000)
     x_o_summary = histogram_summary(x_o)
 
@@ -229,14 +229,26 @@ if __name__ == "__main__":
     np.savetxt("samples_mmd_mceg.txt", samples_mmd.cpu().numpy())
     print("MMD Posterior median:", samples_mmd.median(0))
 
-    ### 2. SNPE
-    print("Running SNPE (2D log-histogram summaries)...")
-    posterior_snpe = snpe_benchmark(
+    ## 2. NPE
+    print("Running NPE (2D log-histogram summaries)...")
+    posterior_NPE = NPE_benchmark(
         simulator_batch_summary, prior_dist, num_simulations=10000
     )
-    samples_snpe = posterior_snpe.sample((100,), x=x_o_summary)
-    print("SNPE Posterior mean:", samples_snpe.mean(0))
-    np.savetxt("samples_snpe_mceg.txt", samples_snpe.cpu().numpy())
+    
+    # Save the posterior for later use
+    # Option 1: Save the density estimator (neural network)
+    torch.save(posterior_NPE.posterior_estimator.state_dict(), "npe_density_estimator_mceg.pth")
+    
+    # Option 2: Pickle the entire posterior object (alternative, but less portable)
+    import pickle
+    with open("npe_posterior_mceg.pkl", "wb") as f:
+        pickle.dump(posterior_NPE, f)
+    
+    print("✓ Saved NPE posterior to npe_density_estimator_mceg.pth and npe_posterior_mceg.pkl")
+    
+    samples_NPE = posterior_NPE.sample((100,), x=x_o_summary)
+    print("NPE Posterior mean:", samples_NPE.mean(0))
+    np.savetxt("samples_NPE_mceg.txt", samples_NPE.cpu().numpy())
 
     ### 3. Wasserstein ABC
     print("Running MCABC (Wasserstein Distance)...")

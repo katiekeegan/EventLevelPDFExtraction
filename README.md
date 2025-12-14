@@ -137,7 +137,7 @@ python parameter_prediction.py \
   --single_gpu
 ```
 
-- Output dir: `experiments/{problem}_latent{latent}_ns_{num_samples}_ne_{num_events}_parameter_predidction/`
+- Output dir: `experiments/{problem}_latent{latent}_ns_{num_samples}_ne_{num_events}_parameter_prediction/`
   - Saves `final_model.pth` (PointNet encoder) and `final_params_model.pth` (MLP head).
   - Periodic checkpoints `model_epoch_*.pth`, `params_model_epoch_*.pth`.
 - Precomputed data: add `--use_precomputed --precomputed_data_dir precomputed_data`. If exact files are missing, they will be generated via `generate_precomputed_data.py`.
@@ -150,7 +150,7 @@ MCEG or realistic DIS:
 python parameter_prediction.py --latent_dim=64 --num_events=10000 --num_samples=10000 --wandb --batch_size=64 --num_epochs=1000 --problem='simplified_dis' --use_precomputed
 
 # MCEG-based DIS (requires mceg4dis deps)
-python parameter_prediction.py --latent_dim=512 --num_events=10000 --num_samples=10000 --wandb --batch_size=32 --num_epochs=10000 --problem='mceg' --use_precomputed
+python parameter_prediction.py --latent_dim=512 --num_events=10000 --num_samples=10000 --wandb --batch_size=32 --num_epochs=2000 --problem='mceg' --use_precomputed
 ```
 
 W&B logging:

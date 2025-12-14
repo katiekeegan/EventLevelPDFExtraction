@@ -177,9 +177,9 @@ def generate_theta_samples(problem, num_samples, device):
         # [au, bu, ad, bd]
         theta_bounds = torch.tensor(
             [
+                [-1.0, 0.0],
                 [0.0, 5.0],
-                [0.0, 5.0],
-                [0.0, 5.0],
+                [-1.0, 0.0],
                 [0.0, 5.0],
             ],
             device=device,

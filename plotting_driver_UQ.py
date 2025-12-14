@@ -405,7 +405,7 @@ def main():
     parser.add_argument(
         "--aggregation",
         type=str,
-        default="mean",
+        default="median",
         choices=["median", "mean"],
         help="Aggregation to reduce per-x errors to a scalar for the bar chart: 'median' or 'mean'.",
     )
@@ -461,7 +461,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Construct the base experiment directory (without repeat)
-    base_experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_predidction"
+    base_experiment_dir = f"experiments/{args.problem}_latent{args.latent_dim}_ns_{args.num_samples}_ne_{args.num_events}_parameter_prediction"
     # Find the correct experiment dir (with repeat, if exists)
     experiment_dir = find_experiment_dir_with_repeats(base_experiment_dir)
     experiment_dir_pointnet = experiment_dir
@@ -488,7 +488,7 @@ def main():
                 dtype=torch.float32,
             )
         elif args.problem == "simplified_dis":
-            true_params = torch.tensor([1.0, 1.2, 1.1, 0.5], dtype=torch.float32)
+            true_params = torch.tensor([-0.5, 1.09375, -0.5, 4.0], dtype=torch.float32)
 
     # Diagnostic: Check if true parameters are within training bounds
     print(f"\n🔍 PARAMETER BOUNDS DIAGNOSTIC:")
@@ -673,29 +673,17 @@ def main():
             print(
                 "Output parameter std  (preview):", param_std.squeeze(0).cpu().numpy()
             )
-        if args.problem not in ["mceg", "mceg4dis"]:
-            # Add to plotting workflow
-            plot_bootstrap_PDF_distribution(
-                model=model,
-                pointnet_model=pointnet_model,
-                true_params=true_params,
-                device=device,
-                num_events=args.num_events,
-                n_bootstrap=args.n_bootstrap,
-                problem=args.problem,
-                save_dir=plot_dir,
-            )
         # SBI sample file names vary by problem: mceg/mceg4dis use *_mceg.txt suffixes
         if args.problem in ["mceg", "mceg4dis"]:
-            snpe_file = "samples_snpe_mceg.txt"
+            npe_file = "samples_NPE_mceg.txt"
             wass_file = "samples_wasserstein_mceg.txt"
             mmd_file = "samples_mmd_mceg.txt"
         else:
-            snpe_file = "samples_snpe.txt"
+            npe_file = "samples_npe.txt"
             wass_file = "samples_wasserstein.txt"
             mmd_file = "samples_mmd.txt"
 
-        samples_snpe = torch.tensor(np.loadtxt(snpe_file), dtype=torch.float32)
+        samples_npe = torch.tensor(np.loadtxt(npe_file), dtype=torch.float32)
         samples_wass = torch.tensor(np.loadtxt(wass_file), dtype=torch.float32)
         samples_mmd = torch.tensor(np.loadtxt(mmd_file), dtype=torch.float32)
 
@@ -706,20 +694,20 @@ def main():
             true_params=true_params,
             device=device,
             n_mc=args.n_mc,
-            sbi_posteriors=[samples_snpe, samples_mmd, samples_wass],
-            sbi_labels=["SNPE", "MCABC", "MCABC-W"],
+            sbi_posteriors=[samples_npe, samples_mmd, samples_wass],
+            sbi_labels=["NPE", "MCABC", "MCABC-W"],
             laplace_model=laplace_model,
             compare_with_sbi=True if args.problem == "simplified_dis" else False,
             problem=args.problem,
             save_path=os.path.join(plot_dir, "params_distribution.png"),
         )
         if args.problem == "simplified_dis":
-            # Combined SBI plot: overlay SNPE, Wasserstein MCABC, and MCABC on one figure
+            # Combined SBI plot: overlay NPE, Wasserstein MCABC, and MCABC on one figure
             plot_function_posterior_from_multiple_sbi_samples(
                 model=model,
                 pointnet_model=pointnet_model,
-                sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                labels=["SNPE", "Wasserstein MCABC", "MCABC"],
+                sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                labels=["NPE", "Wasserstein MCABC", "MCABC"],
                 true_params=true_params,
                 device=device,
                 num_events=args.num_events,
@@ -739,13 +727,13 @@ def main():
                     plot_dir, "sbi_function_error_summary_sbi_only.png"
                 )
                 plot_function_error_summary_from_sbi_samples(
-                    sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                    labels=["SNPE", "Wasserstein MCABC", "MCABC"],
+                    sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                    labels=["NPE", "Wasserstein MCABC", "MCABC"],
                     true_params=true_params,
                     device=device,
                     problem="simplified_dis",
                     save_path=sbi_only_path,
-                    aggregation=args.aggregation,
+                    aggregation="median",
                     n_mc=args.n_mc,
                     rng_seed=args.rng_seed,
                 )
@@ -760,11 +748,11 @@ def main():
 
                 results_dict = {}
 
-                # SNPE
-                up_snpe, down_snpe = collect_predicted_pdfs_simplified_dis(
-                    samples_snpe, device
+                # NPE
+                up_npe, down_npe = collect_predicted_pdfs_simplified_dis(
+                    samples_npe, device
                 )
-                results_dict["SNPE"] = {"pdfs_up": up_snpe, "pdfs_down": down_snpe}
+                results_dict["NPE"] = {"pdfs_up": up_npe, "pdfs_down": down_npe}
                 # MCABC (MMD)
                 up_mmd, down_mmd = collect_predicted_pdfs_simplified_dis(
                     samples_mmd, device
@@ -825,9 +813,9 @@ def main():
                     )
                     results_dict["Laplace"] = {"pdfs_up": [], "pdfs_down": []}
 
-                # --- Bootstrap ensemble (generate smaller set for table if not already available) ---
+                # --- Observed-data posterior ensemble (single observation + Laplace samples) ---
                 try:
-                    # We'll generate a smaller bootstrap ensemble (at most 50 samples) to keep table computation cheap
+                    # Generate ensemble from single observed data sample with Laplace posterior
                     from plotting_UQ_utils import (
                         get_log_feature_engineering, get_gaussian_samples,
                         get_simulator_module)
@@ -837,172 +825,118 @@ def main():
                     )
                     simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
                     advanced_fe = get_log_feature_engineering()
-                    n_boot_for_table = min(50, max(10, args.n_bootstrap))
                     x_grid = torch.linspace(0.01, 0.99, 100)
-                    bootstrap_up = []
-                    bootstrap_down = []
-                    per_boot_param_samples = []
-                    for i in range(n_boot_for_table):
-                        xs = simulator.sample(
-                            true_params.detach().cpu(), args.num_events
+                    
+                    # Single observed data sample (fixed)
+                    xs = simulator.sample(
+                        true_params.detach().cpu(), args.num_events
+                    )
+                    xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
+                    if advanced_fe is not None:
+                        xs_tensor = advanced_fe(xs_tensor)
+                    latent = pointnet_model(xs_tensor.unsqueeze(0))
+                    
+                    # Generate Laplace posterior samples from this single observation
+                    observed_up = []
+                    observed_down = []
+                    per_boot_param_samples = []  # Will contain single list of posterior samples
+                    
+                    if laplace_model is not None:
+                        # Draw posterior samples from Laplace approximation
+                        n_posterior_samples = 100  # Match Laplace row
+                        posterior_samples = get_gaussian_samples(
+                            model,
+                            latent,
+                            n_samples=n_posterior_samples,
+                            laplace_model=laplace_model,
                         )
-                        xs_tensor = torch.tensor(xs, dtype=torch.float32, device=device)
-                        if advanced_fe is not None:
-                            xs_tensor = advanced_fe(xs_tensor)
-                        latent = pointnet_model(xs_tensor.unsqueeze(0))
+                        per_boot_param_samples.append(
+                            posterior_samples.detach().cpu().numpy()
+                        )
+                        # Evaluate PDF for each posterior sample
+                        for j in range(n_posterior_samples):
+                            theta_sample = posterior_samples[j:j+1].cpu()
+                            pdf = simulator.f(x_grid, theta_sample.squeeze(0))
+                            observed_up.append(pdf["up"].cpu().numpy())
+                            observed_down.append(pdf["down"].cpu().numpy())
+                    else:
+                        # Fallback: MAP prediction only
                         with torch.no_grad():
                             pred = model(latent).cpu().squeeze(0)
                         pdf = simulator.f(x_grid, pred)
-                        bootstrap_up.append(pdf["up"].cpu().numpy())
-                        bootstrap_down.append(pdf["down"].cpu().numpy())
-                        # Collect per-bootstrap parameter posterior samples when Laplace is available
-                        try:
-                            if laplace_model is not None:
-                                # draw a modest number of posterior samples per bootstrap
-                                per_boot_samples = get_gaussian_samples(
-                                    model,
-                                    latent,
-                                    n_samples=20,
-                                    laplace_model=laplace_model,
-                                )
-                                per_boot_param_samples.append(
-                                    per_boot_samples.detach().cpu().numpy()
-                                )
-                            else:
-                                # fallback: singleton posterior (the MAP prediction)
-                                per_boot_param_samples.append(
-                                    pred.detach().cpu().numpy()[None, :]
-                                )
-                        except Exception:
-                            # On any failure, fall back to singleton
-                            per_boot_param_samples.append(
-                                pred.detach().cpu().numpy()[None, :]
-                            )
-                    results_dict["Bootstrap"] = {
-                        "pdfs_up": np.array(bootstrap_up),
-                        "pdfs_down": np.array(bootstrap_down),
+                        observed_up.append(pdf["up"].cpu().numpy())
+                        observed_down.append(pdf["down"].cpu().numpy())
+                        per_boot_param_samples.append(
+                            pred.detach().cpu().numpy()[None, :]
+                        )
+                    
+                    results_dict["Observed"] = {
+                        "pdfs_up": np.array(observed_up),
+                        "pdfs_down": np.array(observed_down),
                     }
-                    # Compute LoTV decomposition for function uncertainty using per-bootstrap posterior samples
+                    # Compute median and uncertainty from single observed-data posterior
                     try:
-                        from plotting_UQ_helpers import \
-                            compute_function_lotv_for_simplified_dis
-
-                        SimplifiedDIS_cls, MCEGSimulator_cls = (
-                            get_simulator_module()
-                        )
-                        simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
-                        lotv = compute_function_lotv_for_simplified_dis(
-                            simulator,
-                            x_grid,
-                            per_boot_posterior_samples=per_boot_param_samples,
-                            device="cpu",
-                        )
-                        # Save a decomposition row that contains mean functions and scalar uncertainties
+                        # Use direct median and IQR from the observed-data posterior ensemble
+                        observed_up_arr = np.array(observed_up)
+                        observed_down_arr = np.array(observed_down)
+                        
+                        # Compute per-x median
+                        median_up = np.nanmedian(observed_up_arr, axis=0)
+                        median_down = np.nanmedian(observed_down_arr, axis=0)
+                        
+                        # Compute per-x IQR for uncertainty
+                        p25_up, p75_up = np.nanpercentile(observed_up_arr, [25, 75], axis=0)
+                        p25_down, p75_down = np.nanpercentile(observed_down_arr, [25, 75], axis=0)
+                        iqr_up = p75_up - p25_up
+                        iqr_down = p75_down - p25_down
+                        
+                        # Save median and scalar IQR uncertainty (mean of per-x IQRs)
                         results_dict["Combined_LOTV"] = {
-                            "mean_up": lotv["mean_up"],
-                            "mean_down": lotv["mean_down"],
-                            "unc_up": lotv["unc_up"],
-                            "unc_down": lotv["unc_down"],
+                            "mean_up": median_up,  # Actually median, kept key name for compatibility
+                            "mean_down": median_down,
+                            "unc_up": np.mean(iqr_up),
+                            "unc_down": np.mean(iqr_down),
                         }
                     except Exception as e:
-                        print(f"⚠️ Could not compute Combined LoTV decomposition: {e}")
+                        print(f"⚠️ Could not compute Combined_LOTV statistics: {e}")
                 except Exception as e:
                     print(
-                        f"⚠️ Could not generate Bootstrap ensemble for function UQ table: {e}"
+                        f"⚠️ Could not generate Observed-data posterior ensemble for function UQ table: {e}"
                     )
-                    results_dict["Bootstrap"] = {"pdfs_up": [], "pdfs_down": []}
+                    results_dict["Observed"] = {"pdfs_up": [], "pdfs_down": []}
 
-                # --- Combined ensemble (concatenate Laplace + Bootstrap when both exist) ---
-                # Use explicit size checks to avoid ambiguous numpy array truth-value errors.
-                lap_up = results_dict.get("Laplace", {}).get("pdfs_up")
-                lap_down = results_dict.get("Laplace", {}).get("pdfs_down")
-                bst_up = results_dict.get("Bootstrap", {}).get("pdfs_up")
-                bst_down = results_dict.get("Bootstrap", {}).get("pdfs_down")
-                # If both Laplace and Bootstrap ensembles available, compute a principled LoTV decomposition
-                try:
-                    from plotting_UQ_helpers import \
-                        compute_function_lotv_for_simplified_dis
+                # --- Combined ensemble (same as Observed since no bootstrap) ---
+                # With no bootstrap, Combined is just the observed-data posterior
+                obs_up = results_dict.get("Observed", {}).get("pdfs_up")
+                obs_down = results_dict.get("Observed", {}).get("pdfs_down")
+                
+                if (
+                    isinstance(obs_up, np.ndarray)
+                    and obs_up.size > 0
+                    and isinstance(obs_down, np.ndarray)
+                    and obs_down.size > 0
+                ):
+                    # Combined is identical to Observed (single fixed observation + Laplace posterior)
+                    results_dict["Combined"] = {
+                        "pdfs_up": obs_up.copy(),
+                        "pdfs_down": obs_down.copy(),
+                    }
+                else:
+                    results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
 
-                    if (
-                        isinstance(lap_up, np.ndarray)
-                        and lap_up.size > 0
-                        and isinstance(bst_up, np.ndarray)
-                        and bst_up.size > 0
-                    ):
-                        # We have numpy ensembles: create per-bootstrap posterior samples list from bootstrap (bst)
-                        # For Laplace we treat its ensemble as one 'bootstrap' with many posterior samples
-                        per_boot_posterior_samples = []
-                        # Laplace ensemble: treat each row as a sample -> make it a single bootstrap with many posterior samples
-                        per_boot_posterior_samples.append(lap_up.copy())
-                        # For bootstraps, each row is itself a param sample (we lack per-bootstrap posterior samples),
-                        # so approximate each bootstrap by a singleton posterior at the bootstrap MAP (i.e., the predicted params)
-                        # This is a lightweight approximation; for a more accurate LoTV, supply per-bootstrap posterior samples.
-                        for i in range(bst_up.shape[0]):
-                            # Here, bst_up[i] is a function output; we need parameter samples. We don't have them saved here,
-                            # so fall back to treating each bootstrap prediction as a single theta (approximate)
-                            # To keep behavior consistent, just append the Laplace samples as representing posterior variability
-                            # This branch will be improved by producing per-bootstrap posterior samples below when available.
-                            pass
-                        # As we don't have per-bootstrap parameter samples for the bootstrap ensemble in this driver,
-                        # fall back to pooled concatenation for the Combined table but also compute LoTV when possible via
-                        # a conservative approximation: use Laplace samples as posterior samples and bootstrap means from bst_up.
-                        # Build a fake per-bootstrap sample list: each bootstrap will use the Laplace samples shifted to match the
-                        # bootstrap predicted mean. This is a heuristic.
-                        try:
-                            from plotting_UQ_utils import get_simulator_module
-
-                            SimplifiedDIS_cls, MCEGSimulator_cls = (
-                                get_simulator_module()
-                            )
-                            simulator = SimplifiedDIS_cls(device=torch.device("cpu"))
-                            x_grid = torch.linspace(0.01, 0.99, 100)
-                            # Build per-bootstrap posterior samples by re-centering Laplace samples to each bootstrap MAP
-                            # First reconstruct Laplace param samples from lap_up/down via inverse mapping is not possible here.
-                            # So as a pragmatic step, compute pooled Combined for table and also add a placeholder LoTV row
-                            combined_up = np.concatenate([lap_up, bst_up], axis=0)
-                            combined_down = np.concatenate([lap_down, bst_down], axis=0)
-                            results_dict["Combined"] = {
-                                "pdfs_up": combined_up,
-                                "pdfs_down": combined_down,
-                            }
-                        except Exception:
-                            results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
-                    else:
-                        results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
-                except Exception as e:
-                    print(f"⚠️ Could not compute LoTV Combined decomposition: {e}")
-                    # fall back to previous behavior
-                    try:
-                        if (
-                            isinstance(lap_up, np.ndarray)
-                            and lap_up.size > 0
-                            and isinstance(bst_up, np.ndarray)
-                            and bst_up.size > 0
-                        ):
-                            combined_up = np.concatenate([lap_up, bst_up], axis=0)
-                            combined_down = np.concatenate([lap_down, bst_down], axis=0)
-                            results_dict["Combined"] = {
-                                "pdfs_up": combined_up,
-                                "pdfs_down": combined_down,
-                            }
-                        else:
-                            results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
-                    except Exception:
-                        results_dict["Combined"] = {"pdfs_up": [], "pdfs_down": []}
-
-                # Save table: include SBI methods (SNPE, MCABC, Wasserstein MCABC) and Combined_LOTV
+                # Save table: include SBI methods (NPE, MCABC, Wasserstein MCABC) and our method
                 table_path = os.path.join(plot_dir, "function_UQ_metrics_table.tex")
                 sbi_plus_lotv = {
                     # SBI ensembles
-                    "SNPE": results_dict.get("SNPE", {"pdfs_up": [], "pdfs_down": []}),
+                    "NPE": results_dict.get("NPE", {"pdfs_up": [], "pdfs_down": []}),
                     "MCABC": results_dict.get("MCABC", {"pdfs_up": [], "pdfs_down": []}),
                     "Wasserstein MCABC": results_dict.get("Wasserstein MCABC", {"pdfs_up": [], "pdfs_down": []}),
-                    # Combined LoTV decomposition (mean functions + scalar uncertainties)
+                    # Our method: observed-data posterior (median + IQR uncertainty)
                     "Combined_LOTV": results_dict.get(
                         "Combined_LOTV",
                         {"mean_up": [], "mean_down": [], "unc_up": 0.0, "unc_down": 0.0},
                     ),
-                    # Optional pooled combined (if present)
+                    # Combined is same as Observed (single observation + Laplace posterior)
                     "Combined": results_dict.get("Combined", {"pdfs_up": [], "pdfs_down": []}),
                 }
                 save_function_UQ_metrics_table_simplified_dis(
@@ -1010,10 +944,10 @@ def main():
                     true_params,
                     device,
                     sbi_plus_lotv,
-                    aggregation=args.aggregation,
+                    aggregation="median",
                 )
                 print(
-                    f"✓ Saved function UQ metrics table with SBI + Combined_LOTV: {table_path}"
+                    f"✓ Saved function UQ metrics table with SBI + Ours (observed-data posterior): {table_path}"
                 )
                 # Also generate combined SBI + our-approach function error summary (relative errors)
                 try:
@@ -1027,17 +961,18 @@ def main():
                     print(
                         f"[driver-debug] results_dict keys: {list(results_dict.keys())}"
                     )
-                    our_results = {}
-                    for k in ["Laplace", "Bootstrap", "Combined_LOTV", "Combined"]:
-                        our_results[k] = results_dict.get(
-                            k, {"pdfs_up": [], "pdfs_down": []}
-                        )
+                    our_results = {
+                        # Use Observed (single fixed observation + Laplace posterior samples)
+                        "Observed": results_dict.get("Observed", {"pdfs_up": [], "pdfs_down": []}),
+                        "Combined_LOTV": results_dict.get("Combined_LOTV", {"mean_up": [], "mean_down": [], "unc_up": 0.0, "unc_down": 0.0}),
+                        "Combined": results_dict.get("Combined", {"pdfs_up": [], "pdfs_down": []}),
+                    }
                     print(
                         f"[driver-debug] our_results prepared with keys: {list(our_results.keys())}"
                     )
                     plot_function_error_summary_from_sbi_samples(
-                        sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                        labels=["SNPE", "Wasserstein MCABC", "MCABC"],
+                        sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                        labels=["NPE", "Wasserstein MCABC", "MCABC"],
                         true_params=true_params,
                         device=device,
                         problem="simplified_dis",
@@ -1046,7 +981,7 @@ def main():
                         ),
                         our_results_dict=our_results,
                         relative=True,
-                        aggregation=args.aggregation,
+                        aggregation="median",
                         n_mc=args.n_mc,
                         rng_seed=args.rng_seed,
                     )
@@ -1070,8 +1005,8 @@ def main():
                         for k in ["Laplace", "Bootstrap", "Combined_LOTV", "Combined"]
                     }
                     plot_function_error_summary_from_sbi_samples(
-                        sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                        labels=["SNPE", "Wasserstein MCABC", "MCABC"],
+                        sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                        labels=["NPE", "Wasserstein MCABC", "MCABC"],
                         true_params=true_params,
                         device=device,
                         problem="simplified_dis",
@@ -1080,7 +1015,7 @@ def main():
                         ),
                         our_results_dict=our_results,
                         relative=True,
-                        aggregation=args.aggregation,
+                        aggregation="median",
                         n_mc=args.n_mc,
                         rng_seed=args.rng_seed,
                     )
@@ -1102,8 +1037,8 @@ def main():
                 f"[driver-debug] Unconditional combined plot call; our_results keys: {list(our_results.keys())}"
             )
             plot_function_error_summary_from_sbi_samples(
-                sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                labels=["SNPE", "Wasserstein MCABC", "MCABC"],
+                sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                labels=["NPE", "Wasserstein MCABC", "MCABC"],
                 true_params=true_params,
                 device=device,
                 problem="simplified_dis",
@@ -1112,7 +1047,7 @@ def main():
                 ),
                 our_results_dict=our_results,
                 relative=True,
-                aggregation=args.aggregation,
+                aggregation="median",
                 n_mc=args.n_mc,
                 rng_seed=args.rng_seed,
             )
@@ -1201,8 +1136,7 @@ def main():
                     f"⚠️ Could not generate function error histogram for simplified_dis: {e}"
                 )
 
-        from uq_plotting_demo import (plot_function_uncertainty_mceg,
-                                      plot_parameter_uncertainty,
+        from uq_plotting_demo import (plot_parameter_uncertainty,
                                       plot_pdf_uncertainty_mceg)
 
         print(f"🎯 Generating demonstration events for uncertainty plotting...")
@@ -1221,61 +1155,7 @@ def main():
             save_dir=plot_dir,
             mode="posterior",
         )
-        plot_parameter_uncertainty(
-            model=model,
-            pointnet_model=pointnet_model,
-            laplace_model=laplace_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            problem=args.problem,
-            save_dir=plot_dir,
-            mode="bootstrap",
-        )
-        plot_parameter_uncertainty(
-            model=model,
-            pointnet_model=pointnet_model,
-            laplace_model=laplace_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            problem=args.problem,
-            save_dir=plot_dir,
-            mode="combined",
-        )
         if args.problem in ["mceg", "mceg4dis"]:
-            plot_function_uncertainty_mceg(
-                model=model,
-                pointnet_model=pointnet_model,
-                laplace_model=laplace_model,
-                true_params=true_params,
-                device=device,
-                num_events=args.num_events,
-                save_dir=plot_dir,
-                mode="posterior",
-            )
-            
-            plot_function_uncertainty_mceg(
-                model=model,
-                pointnet_model=pointnet_model,
-                laplace_model=laplace_model,
-                true_params=true_params,
-                device=device,
-                num_events=args.num_events,
-                save_dir=plot_dir,
-                mode="bootstrap",
-            )
-            
-            plot_function_uncertainty_mceg(
-                model=model,
-                pointnet_model=pointnet_model,
-                laplace_model=laplace_model,
-                true_params=true_params,
-                device=device,
-                num_events=args.num_events,
-                save_dir=plot_dir,
-                mode="combined",
-            )
             # Single combined+SBI overlay: show our combined curve together with SBI methods
             try:
                 print(
@@ -1290,10 +1170,11 @@ def main():
                     num_events=args.num_events,
                     save_dir=plot_dir,
                     mode="combined",
-                    sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                    sbi_labels=["SNPE", "MCABC-W", "MCABC"],
+                    sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                    sbi_labels=["NPE", "MCABC-W", "MCABC"],
                     combined_plot_modes=True,
                     combined_plot_sbi=True,
+                    aggregation="median",
                 )
             except Exception as e:
                 print(f"⚠️ Failed to generate combined+SBI overlay plot: {e}")
@@ -1307,82 +1188,38 @@ def main():
                     device=device,
                     num_events=args.num_events,
                     save_dir=plot_dir,
-                    mode="combined",
-                    sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                    sbi_labels=["SNPE", "MCABC-W", "MCABC"],
+                    mode="posterior",
+                    sbi_samples_list=[samples_npe, samples_wass, samples_mmd],
+                    sbi_labels=["NPE", "MCABC-W", "MCABC"],
                     combined_plot_sbi=True,
+                    aggregation="median",
+                )
+                plot_pdf_uncertainty_mceg(
+                    model=model,
+                    pointnet_model=pointnet_model,
+                    laplace_model=laplace_model,
+                    true_params=true_params,
+                    device=device,
+                    num_events=100,
+                    save_dir=plot_dir,
+                    mode="combined",
+                    aggregation="median",
+                )
+                plot_pdf_uncertainty_mceg(
+                    model=model,
+                    pointnet_model=pointnet_model,
+                    laplace_model=laplace_model,
+                    true_params=true_params,
+                    device=device,
+                    num_events=1000,
+                    save_dir=plot_dir,
+                    mode="combined",
+                    aggregation="median",
                 )
             except Exception as e:
                 print(f"⚠️ Could not generate combined+SBI overlay plot: {e}")
         else:
             pass
-
-        if args.problem not in ["mceg", "mceg4dis"]:
-            plot_PDF_distribution_single_same_plot(
-                model=model,
-                pointnet_model=pointnet_model,
-                true_params=true_params,
-                device=device,
-                n_mc=args.n_mc,
-                laplace_model=laplace_model,
-                problem=args.problem,
-                save_path=os.path.join(plot_dir, "pdf_overlay.png"),
-            )
-        elif args.problem in ["mceg", "mceg4dis"]:
-            # INVESTIGATION: mceg/mceg4dis plotting issues
-            print(f"🔍 [DEBUG] Starting mceg plotting for problem: {args.problem}")
-            print(f"🔍 [DEBUG] Laplace model available: {laplace_model is not None}")
-            print(
-                f"🔍 [DEBUG] Expected Q2 slices: [0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0]"
-            )
-
-            plot_PDF_distribution_single_same_plot_mceg(
-                model=model,
-                pointnet_model=pointnet_model,
-                true_params=true_params,
-                device=device,
-                n_mc=args.n_mc,
-                laplace_model=laplace_model,
-                problem=args.problem,  # Pass through the actual problem type (mceg or mceg4dis)
-                save_dir=plot_dir,
-            )
-            print(
-                f"✅ [MCEG4DIS] Enhanced mceg/mceg4dis plotting completed with Q2 slice curves"
-            )
-            # Also create SBI-based function posterior plots for mceg4dis (per-method files)
-            try:
-                import plotting_UQ_utils as puq
-
-                # Use same SBI samples loaded earlier
-                puq.plot_function_posterior_from_multiple_sbi_samples(
-                    model=model,
-                    pointnet_model=pointnet_model,
-                    sbi_samples_list=[samples_snpe, samples_wass, samples_mmd],
-                    labels=["SNPE", "MCABC-W", "MCABC"],
-                    true_params=true_params,
-                    device=device,
-                    num_events=args.num_events,
-                    problem=args.problem,
-                    save_path=os.path.join(
-                        plot_dir, "function_posterior_sbi_mceg4dis.png"
-                    ),
-                )
-                print(
-                    f"✓ Saved SBI mceg4dis function posterior plots (per-method) in {plot_dir}"
-                )
-            except Exception as e:
-                print(f"⚠️ Could not generate SBI mceg4dis plots: {e}")
-        plot_PDF_distribution_single(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=true_params,
-            device=device,
-            n_mc=args.n_mc,
-            laplace_model=laplace_model,
-            problem=args.problem,
-            Q2_slices=[0.5, 1.0, 1.5, 2.0, 10.0, 50.0, 200.0],
-            save_dir=plot_dir,
-        )
         if args.problem == "simplified_dis":
             plot_event_histogram_simplified_DIS(
                 model=model,
@@ -1394,18 +1231,19 @@ def main():
                 num_events=args.num_events,
                 save_path=os.path.join(plot_dir, "event_histogram_simplified.png"),
             )
-        # Simplified DIS with combined uncertainty
-        plot_combined_uncertainty_PDF_distribution(
-            model=model,
-            pointnet_model=pointnet_model,
-            true_params=true_params,
-            device=device,
-            num_events=args.num_events,
-            n_bootstrap=args.n_bootstrap,
-            laplace_model=laplace_model,
-            problem=args.problem,
-            save_dir=plot_dir,
-        )
+        
+            # Simplified DIS with combined uncertainty
+            plot_combined_uncertainty_PDF_distribution(
+                model=model,
+                pointnet_model=pointnet_model,
+                true_params=true_params,
+                device=device,
+                num_events=args.num_events,
+                n_bootstrap=args.n_bootstrap,
+                laplace_model=laplace_model,
+                problem=args.problem,
+                save_dir=plot_dir,
+            )
 
         print(f"✅ Finished plotting for {arch} (plots in {plot_dir})")
 
